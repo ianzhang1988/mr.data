@@ -37,7 +37,7 @@ class ChromaStore:
             ids=[doc_id],
             documents=[event.content],
             metadatas=[{
-                "dimension_tags": ",".join(event.dimension_tags),
+                "dimension_ids": ",".join(str(d) for d in event.dimension_ids),
                 "source_type": event.source_type,
                 "source_id": event.source_id or doc_id,
             }],
@@ -48,10 +48,15 @@ class ChromaStore:
         result = self.personality.query(query_texts=[query], n_results=top_k)
         docs = []
         for i in range(len(result["ids"][0])):
+            metadata = result["metadatas"][0][i]
+            dim_ids_str = metadata.get("dimension_ids", "")
             docs.append({
                 "id": result["ids"][0][i],
                 "page_content": result["documents"][0][i],
-                "metadata": result["metadatas"][0][i],
+                "metadata": {
+                    **metadata,
+                    "dimension_ids": [int(x) for x in dim_ids_str.split(",") if x],
+                },
             })
         return docs
 

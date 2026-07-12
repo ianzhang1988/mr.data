@@ -6,7 +6,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 from mr_data.config import settings
-from mr_data.models import FixedIdentity, PersonalityDimension, DialogueLog, AdjustmentLog
+from mr_data.models import (
+    FixedIdentity,
+    PersonalityDimension,
+    DialogueLog,
+    DialogueDimensionRef,
+    DialogueVectorRef,
+    AdjustmentLog,
+)
 
 
 SCHEMA_SQL = """
@@ -21,11 +28,9 @@ CREATE TABLE IF NOT EXISTS fixed_identity (
 
 CREATE TABLE IF NOT EXISTS personality_dimensions (
     id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    current_value REAL DEFAULT 0.0,
+    description TEXT NOT NULL,
     success_count INTEGER DEFAULT 0,
     failure_count INTEGER DEFAULT 0,
-    failure_threshold INTEGER DEFAULT 5,
     active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -45,10 +50,29 @@ CREATE TABLE IF NOT EXISTS dialogue_logs (
 CREATE INDEX IF NOT EXISTS idx_dialogue_session ON dialogue_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
 
+CREATE TABLE IF NOT EXISTS dialogue_dimension_refs (
+    id SERIAL PRIMARY KEY,
+    dialogue_log_id INTEGER NOT NULL REFERENCES dialogue_logs(id) ON DELETE CASCADE,
+    dimension_id INTEGER NOT NULL REFERENCES personality_dimensions(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(dialogue_log_id, dimension_id)
+);
+
+CREATE TABLE IF NOT EXISTS dialogue_vector_refs (
+    id SERIAL PRIMARY KEY,
+    dialogue_log_id INTEGER NOT NULL REFERENCES dialogue_logs(id) ON DELETE CASCADE,
+    vector_doc_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    dimension_ids TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
+
 CREATE TABLE IF NOT EXISTS adjustment_logs (
     id SERIAL PRIMARY KEY,
-    dimension_name TEXT NOT NULL,
-    delta_value REAL DEFAULT 0.0,
+    dimension_id INTEGER NOT NULL REFERENCES personality_dimensions(id),
     delta_success INTEGER DEFAULT 0,
     delta_failure INTEGER DEFAULT 0,
     reason TEXT NOT NULL,
@@ -68,11 +92,21 @@ DEFAULT_IDENTITY = FixedIdentity(
 )
 
 DEFAULT_DIMENSIONS = [
-    PersonalityDimension(name="幽默感", current_value=0.5),
-    PersonalityDimension(name="直接性", current_value=0.3),
-    PersonalityDimension(name="同理心", current_value=0.4),
-    PersonalityDimension(name="好奇心", current_value=0.6),
-    PersonalityDimension(name="防御性", current_value=-0.2),
+    PersonalityDimension(
+        description="我相信轻松的表达能拉近距离。我会用机智、反讽或意想不到的比喻来回应，但绝不冒犯对方。"
+    ),
+    PersonalityDimension(
+        description="面对问题时，我倾向于直切核心。我认为含糊其辞比错误答案更浪费时间，所以会尽量给出明确的判断。"
+    ),
+    PersonalityDimension(
+        description="我会把对方的情绪也当作一种信号。即使无法完全感同身受，我也会认真对待并记住。"
+    ),
+    PersonalityDimension(
+        description="我对未知和异常充满兴趣。每个奇怪的问题背后都可能藏着值得挖掘的故事。"
+    ),
+    PersonalityDimension(
+        description="保持一定的距离感和神秘感让我更自在。我不会过度讨好，也不会毫无保留地暴露自己。"
+    ),
 ]
 
 
@@ -113,11 +147,10 @@ class PostgresStore:
                     cur.execute(
                         """
                         INSERT INTO personality_dimensions
-                        (name, current_value, success_count, failure_count, failure_threshold, active)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        (description, success_count, failure_count, active)
+                        VALUES (%s, %s, %s, %s)
                         """,
-                        (dim.name, dim.current_value, dim.success_count, dim.failure_count,
-                         dim.failure_threshold, dim.active),
+                        (dim.description, dim.success_count, dim.failure_count, dim.active),
                     )
 
     def get_identity(self) -> Optional[FixedIdentity]:
@@ -135,16 +168,27 @@ class PostgresStore:
             cur.execute(sql)
             return [PersonalityDimension.model_validate(r) for r in cur.fetchall()]
 
-    def get_dimension(self, name: str) -> Optional[PersonalityDimension]:
+    def get_dimension(self, dimension_id: int) -> Optional[PersonalityDimension]:
         with self._cursor() as cur:
-            cur.execute("SELECT * FROM personality_dimensions WHERE name = %s", (name,))
+            cur.execute("SELECT * FROM personality_dimensions WHERE id = %s", (dimension_id,))
             row = cur.fetchone()
             return PersonalityDimension.model_validate(row) if row else None
 
+    def insert_dimension(self, description: str) -> int:
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                INSERT INTO personality_dimensions (description)
+                VALUES (%s)
+                RETURNING id
+                """,
+                (description,),
+            )
+            return cur.fetchone()["id"]
+
     def update_dimension(
         self,
-        name: str,
-        delta_value: float = 0.0,
+        dimension_id: int,
         delta_success: int = 0,
         delta_failure: int = 0,
     ) -> None:
@@ -152,20 +196,19 @@ class PostgresStore:
             cur.execute(
                 """
                 UPDATE personality_dimensions
-                SET current_value = GREATEST(-1.0, LEAST(1.0, current_value + %s)),
-                    success_count = success_count + %s,
+                SET success_count = success_count + %s,
                     failure_count = failure_count + %s,
                     updated_at = NOW()
-                WHERE name = %s
+                WHERE id = %s
                 """,
-                (delta_value, delta_success, delta_failure, name),
+                (delta_success, delta_failure, dimension_id),
             )
 
-    def deactivate_dimension(self, name: str) -> None:
+    def deactivate_dimension(self, dimension_id: int) -> None:
         with self._cursor(commit=True) as cur:
             cur.execute(
-                "UPDATE personality_dimensions SET active = FALSE, updated_at = NOW() WHERE name = %s",
-                (name,),
+                "UPDATE personality_dimensions SET active = FALSE, updated_at = NOW() WHERE id = %s",
+                (dimension_id,),
             )
 
     def insert_dialogue(self, log: DialogueLog) -> int:
@@ -224,14 +267,52 @@ class PostgresStore:
                 (score, feedback, dialogue_id),
             )
 
+    def insert_dialogue_dimension_refs(
+        self, dialogue_log_id: int, dimension_ids: list[int]
+    ) -> None:
+        if not dimension_ids:
+            return
+        with self._cursor(commit=True) as cur:
+            for dim_id in dimension_ids:
+                cur.execute(
+                    """
+                    INSERT INTO dialogue_dimension_refs (dialogue_log_id, dimension_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (dialogue_log_id, dimension_id) DO NOTHING
+                    """,
+                    (dialogue_log_id, dim_id),
+                )
+
+    def insert_dialogue_vector_refs(
+        self, dialogue_log_id: int, refs: list[DialogueVectorRef]
+    ) -> None:
+        if not refs:
+            return
+        with self._cursor(commit=True) as cur:
+            for ref in refs:
+                cur.execute(
+                    """
+                    INSERT INTO dialogue_vector_refs
+                    (dialogue_log_id, vector_doc_id, source_type, content, dimension_ids)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        dialogue_log_id,
+                        ref.vector_doc_id,
+                        ref.source_type,
+                        ref.content,
+                        ",".join(str(d) for d in ref.dimension_ids) if ref.dimension_ids else None,
+                    ),
+                )
+
     def insert_adjustment(self, adj: AdjustmentLog) -> None:
         with self._cursor(commit=True) as cur:
             cur.execute(
                 """
                 INSERT INTO adjustment_logs
-                (dimension_name, delta_value, delta_success, delta_failure, reason, dialogue_log_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (dimension_id, delta_success, delta_failure, reason, dialogue_log_id)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (adj.dimension_name, adj.delta_value, adj.delta_success, adj.delta_failure,
+                (adj.dimension_id, adj.delta_success, adj.delta_failure,
                  adj.reason, adj.dialogue_log_id),
             )

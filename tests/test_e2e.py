@@ -3,25 +3,31 @@ import os
 import pytest
 
 from mr_data.db import PostgresStore, ChromaStore
-from mr_data.models import DialogueLog, PersonalityDimension, PersonalityEvent
+from mr_data.models import (
+    DialogueLog,
+    PersonalityDimension,
+    PersonalityEvent,
+    DialogueVectorRef,
+)
 from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
 
 
 def test_models_serialize():
-    dim = PersonalityDimension(name="幽默感", current_value=0.5)
-    assert dim.name == "幽默感"
-    assert -1.0 <= dim.current_value <= 1.0
+    dim = PersonalityDimension(description="我相信轻松的表达能拉近距离。")
+    assert dim.description
+    assert dim.success_count == 0
 
 
 def test_chroma_personality(tmp_path):
     store = ChromaStore(persist_dir=str(tmp_path / "chroma"))
-    event = PersonalityEvent(content="测试事件", dimension_tags=["幽默感"], source_type="event")
+    event = PersonalityEvent(content="测试事件", dimension_ids=[1, 2], source_type="event")
     doc_id = store.add_personality_event(event)
     assert doc_id
 
     docs = store.query_personality("测试")
     assert any("测试事件" in d["page_content"] for d in docs)
+    assert any(1 in d["metadata"]["dimension_ids"] for d in docs)
 
 
 def test_chroma_memories(tmp_path):
@@ -46,6 +52,8 @@ def test_postgres_schema_and_seed():
     assert identity is not None
     dims = store.list_dimensions()
     assert len(dims) > 0
+    assert dims[0].description
+    assert not hasattr(dims[0], "current_value")
 
 
 @pytest.mark.skipif(

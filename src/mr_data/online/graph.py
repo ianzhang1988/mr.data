@@ -2,13 +2,17 @@ from typing import Annotated, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.llm import LLMClient
-from mr_data.models import DialogueLog, FixedIdentity, PersonalityDimension
+from mr_data.models import (
+    DialogueLog,
+    DialogueDimensionRef,
+    DialogueVectorRef,
+    FixedIdentity,
+    PersonalityDimension,
+)
 
 
-# Use TypedDict for broad langgraph compatibility
 def _merge_docs(old: list[dict], new: list[dict]) -> list[dict]:
     return old + new
 
@@ -22,6 +26,7 @@ class DialogueState(TypedDict, total=False):
     personality_docs: Annotated[list[dict], _merge_docs]
     memory_docs: Annotated[list[dict], _merge_docs]
     reply: str
+    assistant_log_id: Optional[int]
 
 
 class DialogueGraph:
@@ -88,8 +93,8 @@ class DialogueGraph:
         memory_docs = state.get("memory_docs", [])
 
         dim_text = "\n".join(
-            f"- {d.name}: {d.current_value:.2f} (成功{d.success_count} / 失败{d.failure_count})"
-            for d in dimensions
+            f"- {dim.description} (成功{dim.success_count} / 失败{dim.failure_count})"
+            for dim in dimensions
         )
         personality_text = "\n".join(
             f"- [{d['metadata'].get('source_type', 'line')}] {d['page_content']}"
@@ -100,7 +105,7 @@ class DialogueGraph:
         system = f"""你是 {identity.name if identity else 'mr.data'}，{identity.role if identity else '一个对话程序'}。
 {identity.base_prompt if identity else ''}
 
-当前活跃的性格维度（数值范围 -1 到 1）：
+你的基础性格自白：
 {dim_text}
 
 与你人格相关的素材：
@@ -109,7 +114,7 @@ class DialogueGraph:
 与当前会话相关的记忆：
 {memory_text}
 
-请根据以上人格维度、人格素材和记忆生成回复，保持性格一致性。
+请根据以上性格自白、人格素材和记忆生成回复，保持性格一致性。
 """
         prompt = f"用户说：{state['user_input']}\n请回复："
         reply = self.llm.chat(system, prompt, temperature=0.8)
@@ -119,16 +124,37 @@ class DialogueGraph:
         session_id = state["session_id"]
         user_input = state["user_input"]
         reply = state["reply"]
+        dimensions = state.get("dimensions", [])
+        personality_docs = state.get("personality_docs", [])
 
         self.pg.insert_dialogue(
             DialogueLog(session_id=session_id, role="user", content=user_input)
         )
-        self.pg.insert_dialogue(
+        assistant_log_id = self.pg.insert_dialogue(
             DialogueLog(session_id=session_id, role="assistant", content=reply)
         )
+
+        # 记录加载的基础维度
+        self.pg.insert_dialogue_dimension_refs(assistant_log_id, [dim.id for dim in dimensions if dim.id])
+
+        # 记录检索到的向量素材
+        vector_refs = [
+            DialogueVectorRef(
+                dialogue_log_id=assistant_log_id,
+                vector_doc_id=doc["id"],
+                source_type=doc["metadata"].get("source_type", "line"),
+                content=doc["page_content"],
+                dimension_ids=doc["metadata"].get("dimension_ids", []),
+            )
+            for doc in personality_docs
+        ]
+        self.pg.insert_dialogue_vector_refs(assistant_log_id, vector_refs)
+
+        # 写入记忆向量库
         self.chroma.add_memory(session_id, f"用户：{user_input}")
         self.chroma.add_memory(session_id, f"助手：{reply}")
-        return state
+
+        return {**state, "assistant_log_id": assistant_log_id}
 
     def chat(self, session_id: str, user_input: str) -> str:
         state: DialogueState = {

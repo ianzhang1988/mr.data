@@ -14,11 +14,9 @@ class FixedIdentity(BaseModel):
 
 class PersonalityDimension(BaseModel):
     id: Optional[int] = None
-    name: str
-    current_value: float = Field(default=0.0, ge=-1.0, le=1.0)
+    description: str
     success_count: int = 0
     failure_count: int = 0
-    failure_threshold: int = 5
     active: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -35,10 +33,26 @@ class DialogueLog(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class DialogueDimensionRef(BaseModel):
+    id: Optional[int] = None
+    dialogue_log_id: int
+    dimension_id: int
+    created_at: Optional[datetime] = None
+
+
+class DialogueVectorRef(BaseModel):
+    id: Optional[int] = None
+    dialogue_log_id: int
+    vector_doc_id: str
+    source_type: str  # 'line' | 'event'
+    content: str
+    dimension_ids: list[int] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+
+
 class AdjustmentLog(BaseModel):
     id: Optional[int] = None
-    dimension_name: str
-    delta_value: float = 0.0
+    dimension_id: int
     delta_success: int = 0
     delta_failure: int = 0
     reason: str
@@ -49,6 +63,6 @@ class AdjustmentLog(BaseModel):
 class PersonalityEvent(BaseModel):
     id: Optional[str] = None
     content: str
-    dimension_tags: list[str] = Field(default_factory=list)
+    dimension_ids: list[int] = Field(default_factory=list)
     source_type: str = "line"  # 'line' | 'event'
     source_id: Optional[str] = None

@@ -1,6 +1,6 @@
 # 数据库设计
 
-mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性格维度、对话记录和归因调整日志。
+mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性格维度、对话记录、对话引用和归因调整日志。
 
 ---
 
@@ -9,8 +9,10 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | 表名 | 说明 |
 |------|------|
 | `fixed_identity` | 固定身份：名称、角色、基础设定 |
-| `personality_dimensions` | 性格维度：当前值、成功/失败计数、淘汰阈值 |
+| `personality_dimensions` | 性格维度：描述性自白、成功/失败计数 |
 | `dialogue_logs` | 对话记录：用户与助手的每轮消息及评估反馈 |
+| `dialogue_dimension_refs` | 对话引用的基础性格维度 |
+| `dialogue_vector_refs` | 对话检索到的向量素材快照 |
 | `adjustment_logs` | 归因调整日志：离线任务对维度的每次调整 |
 
 ---
@@ -32,29 +34,31 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 
 ## `personality_dimensions`
 
-保存可调整的动态性格维度。每个维度有一个当前值和成功/失败计数，失败次数超过阈值时会被淘汰（`active = FALSE`）。
+保存可调整的动态性格维度。每个维度是一段描述性自白，并记录成功/失败计数，失败次数超过系统阈值时会被淘汰（`active = FALSE`）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | SERIAL PK | 自增主键 |
-| `name` | TEXT UNIQUE | 维度名称，例如 `幽默感`、`直接性` |
-| `current_value` | REAL | 当前值，范围 [-1.0, 1.0] |
+| `description` | TEXT | 基础性格描述，类似自白 |
 | `success_count` | INTEGER | 成功次数 |
 | `failure_count` | INTEGER | 失败次数 |
-| `failure_threshold` | INTEGER | 淘汰阈值，默认 5 |
-| `active` | BOOLEAN | 是否仍活跃，默认 TRUE |
+| `active` | BOOLEAN | 是否仍活跃 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 | `updated_at` | TIMESTAMPTZ | 更新时间 |
 
-### 默认维度
+- 没有 `name` 字段：避免 LLM 归因产生同名不同义的性格时无法入库。
+- 没有 `current_value`：后续只参考成功/失败数据。
+- 没有 `failure_threshold`：淘汰阈值是系统级设置，放在 `.env` / `config.py` 中。
 
-初始化时会插入以下维度：
+### 默认维度示例
 
-- 幽默感
-- 直接性
-- 同理心
-- 好奇心
-- 防御性
+```text
+我相信轻松的表达能拉近距离。我会用机智、反讽或意想不到的比喻来回应，但绝不冒犯对方。
+```
+
+```text
+面对问题时，我倾向于直切核心。我认为含糊其辞比错误答案更浪费时间，所以会尽量给出明确的判断。
+```
 
 ---
 
@@ -82,20 +86,63 @@ CREATE INDEX idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
 
 ---
 
+## `dialogue_dimension_refs`
+
+记录每次助手回复时，系统提示词中加载了哪些基础性格维度。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | SERIAL PK | 自增主键 |
+| `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联的助手回复 |
+| `dimension_id` | INTEGER FK → `personality_dimensions(id)` | 使用的性格维度 |
+| `created_at` | TIMESTAMPTZ | 创建时间 |
+
+- 与向量素材分离，避免基础性格和向量内容的笛卡尔积。
+- 唯一约束：`(dialogue_log_id, dimension_id)`。
+
+---
+
+## `dialogue_vector_refs`
+
+记录每次助手回复时，从 Chroma `personality` 集合实际检索到的向量素材。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | SERIAL PK | 自增主键 |
+| `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联的助手回复 |
+| `vector_doc_id` | TEXT | Chroma 中的文档 ID |
+| `source_type` | TEXT | `line` 或 `event` |
+| `content` | TEXT | 向量库返回的文本快照 |
+| `dimension_ids` | TEXT | 该素材关联的维度 ID 列表，逗号分隔 |
+| `created_at` | TIMESTAMPTZ | 创建时间 |
+
+- 一条助手回复可对应多条向量素材记录。
+- 向量内容只保存一次；通过 `dimension_ids` 字段保留它与基础维度的关系。
+- 至少保留向量库返回的文本；同时保留 `vector_doc_id` 便于反向追溯。
+
+### 索引
+
+```sql
+CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
+```
+
+---
+
 ## `adjustment_logs`
 
 记录离线归因任务对性格维度的每一次调整，便于审计和回滚分析。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | SERIAL PK | 自增主键 |
-| `dimension_name` | TEXT | 被调整的维度名称 |
-| `delta_value` | REAL | 维度值变化量 |
-| `delta_success` | INTEGER | 成功计数变化量 |
-| `delta_failure` | INTEGER | 失败计数变化量 |
-| `reason` | TEXT | 调整原因 |
-| `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联的对话记录 |
-| `created_at` | TIMESTAMPTZ | 创建时间 |
+| `id` | SERIAL PK | |
+| `dimension_id` | INTEGER FK → `personality_dimensions(id)` | 维度 ID |
+| `delta_success` | INTEGER | 成功计数变化 |
+| `delta_failure` | INTEGER | 失败计数变化 |
+| `reason` | TEXT | 原因 |
+| `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联对话 |
+| `created_at` | TIMESTAMPTZ | |
+
+- 不再记录 `delta_value`（已移除 `current_value`）。
 
 ---
 
@@ -114,11 +161,9 @@ erDiagram
 
     personality_dimensions {
         int id PK
-        text name UK
-        real current_value
+        text description
         int success_count
         int failure_count
-        int failure_threshold
         boolean active
         timestamptz created_at
         timestamptz updated_at
@@ -135,10 +180,26 @@ erDiagram
         timestamptz created_at
     }
 
+    dialogue_dimension_refs {
+        int id PK
+        int dialogue_log_id FK
+        int dimension_id FK
+        timestamptz created_at
+    }
+
+    dialogue_vector_refs {
+        int id PK
+        int dialogue_log_id FK
+        text vector_doc_id
+        text source_type
+        text content
+        text dimension_ids
+        timestamptz created_at
+    }
+
     adjustment_logs {
         int id PK
-        text dimension_name
-        real delta_value
+        int dimension_id FK
         int delta_success
         int delta_failure
         text reason
@@ -146,6 +207,10 @@ erDiagram
         timestamptz created_at
     }
 
+    dialogue_logs ||--o{ dialogue_dimension_refs : "引用"
+    dialogue_logs ||--o{ dialogue_vector_refs : "检索"
+    personality_dimensions ||--o{ dialogue_dimension_refs : "被引用"
+    personality_dimensions ||--o{ adjustment_logs : "调整"
     dialogue_logs ||--o{ adjustment_logs : "归因"
 ```
 
@@ -154,6 +219,10 @@ erDiagram
 ## 数据流
 
 1. **在线对话**：`dialogue_logs` 持续写入 `user` 和 `assistant` 消息。
-2. **评估反馈**：用户或自动评估为助手回复打分，更新 `evaluation_score` 和 `evaluation_feedback`。
-3. **离线归因**：读取未处理的 `dialogue_logs`，分析后更新 `personality_dimensions`。
-4. **审计**：每次更新写入 `adjustment_logs`。
+2. **记录引用**：助手回复写入后，同时写入：
+   - `dialogue_dimension_refs`：本次加载了哪些基础维度。
+   - `dialogue_vector_refs`：从 Chroma 检索到了哪些素材及其文本快照。
+3. **评估反馈**：用户或自动评估为助手回复打分，更新 `evaluation_score` 和 `evaluation_feedback`。
+4. **离线归因**：读取未处理的 `dialogue_logs`，分析后更新 `personality_dimensions`。
+5. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
+6. **审计**：每次更新写入 `adjustment_logs`。

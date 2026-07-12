@@ -16,6 +16,9 @@ class FakeLLMClient(LLMClient):
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
         if "查询改写" in system_prompt:
             return "用户查询改写"
+        if "归因分析器" in system_prompt:
+            # Return empty attribution to avoid creating dimensions in tests
+            return '{"deltas": []}'
         return "这是一个测试回复。"
 
     def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):

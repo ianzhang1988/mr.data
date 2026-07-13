@@ -13,9 +13,17 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
 
-    postgres_dsn: str = "postgresql://user:password@localhost:5432/mrdata"
+    postgres_dsn: str = ""  # 留空且 use_pgembed=true 时使用嵌入式 PostgreSQL
+
+    # pgembed 配置（未设置外部 DSN 时的默认运行方式）
+    use_pgembed: bool = True
+    pgembed_data_dir: str = "./data/pgembed"
 
     chroma_persist_dir: str = "./data/chroma"
+
+    # 网络搜索 RAG 配置
+    enable_web_search: bool = True
+    web_search_max_results: int = 3
 
     # 离线任务参数
     offline_batch_size: int = 50

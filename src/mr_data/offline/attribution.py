@@ -34,27 +34,34 @@ class AttributionEngine:
         self.llm = llm or LLMClient()
 
     def run(self, lookback_days: Optional[int] = None, batch_size: Optional[int] = None) -> None:
-        lookback = lookback_days or settings.offline_lookback_days
         limit = batch_size or settings.offline_batch_size
 
-        logs = self.pg.get_recent_dialogues(
-            unprocessed_only=True,
-            lookback_days=lookback,
-            limit=limit,
-        )
-        if not logs:
-            print("No unprocessed dialogues to attribute.")
+        sessions = self.pg.list_closed_sessions_with_unprocessed(limit=limit)
+        if not sessions:
+            print("No closed sessions with unprocessed dialogues to attribute.")
             return
 
-        # Group assistant replies with preceding user message
-        pairs = self._pair_dialogues(logs)
-        for user_log, assistant_log in pairs:
-            result = self._attribute_pair(user_log, assistant_log)
-            self._apply(result, assistant_log.id)
-            self.pg.mark_dialogue_processed(user_log.id)
-            self.pg.mark_dialogue_processed(assistant_log.id)
+        total_pairs = 0
+        for session in sessions:
+            logs = self.pg.get_recent_dialogues(
+                session_id=session.id,
+                unprocessed_only=True,
+                limit=limit,
+                lookback_days=lookback_days,
+            )
+            if not logs:
+                continue
 
-        print(f"Processed {len(pairs)} dialogue pairs.")
+            pairs = self._pair_dialogues(logs)
+            for user_log, assistant_log in pairs:
+                result = self._attribute_pair(user_log, assistant_log)
+                self._apply(result, assistant_log.id, session.id)
+                self.pg.mark_dialogue_processed(user_log.id)
+                self.pg.mark_dialogue_processed(assistant_log.id)
+
+            total_pairs += len(pairs)
+
+        print(f"Processed {total_pairs} dialogue pairs across {len(sessions)} sessions.")
 
     def _pair_dialogues(self, logs: list[DialogueLog]) -> list[tuple[DialogueLog, DialogueLog]]:
         sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
@@ -85,7 +92,7 @@ class AttributionEngine:
         except Exception:
             return AttributionResult()
 
-    def _apply(self, result: AttributionResult, dialogue_id: Optional[int]) -> None:
+    def _apply(self, result: AttributionResult, dialogue_id: Optional[int], session_id: Optional[str]) -> None:
         for delta in result.deltas:
             dim_id = delta.dimension_id
             if dim_id is None and delta.description:
@@ -102,6 +109,7 @@ class AttributionEngine:
             self.pg.insert_adjustment(
                 AdjustmentLog(
                     dimension_id=dim_id,
+                    session_id=session_id,
                     delta_success=delta.delta_success,
                     delta_failure=delta.delta_failure,
                     reason=delta.reason,

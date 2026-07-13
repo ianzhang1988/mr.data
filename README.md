@@ -16,7 +16,7 @@ mr.data 需要性格子程序：
 flowchart TB
     subgraph Offline["离线定时任务层（独立进程）"]
         direction LR
-        OFF1["拉取最近对话 + 评估数据"]
+        OFF1["拉取已关闭会话的最近对话 + 评估数据"]
         OFF2["LLM归因分析 (成功率分析)"]
         OFF3["更新人格参数 (PostgreSQL)"]
         OFF1 --> OFF2 --> OFF3
@@ -26,17 +26,18 @@ flowchart TB
         direction TB
         ON1["加载人格: 从 PostgreSQL 读取 current_personality"]
         ON2["Think: 生成语义解释 (用于向量检索)"]
+        ON2b["检索网络资料: DuckDuckGo (可选)"]
         ON3["检索人格素材: 查询 personality 向量库"]
         ON4["检索记忆: 查询 memories 对话记忆向量库"]
-        ON5["组装上下文: 合并人格参数 + 素材 + 记忆"]
+        ON5["组装上下文: 合并人格参数 + 素材 + 记忆 + 网络资料"]
         ON6["LLM生成: 调用模型，返回回复"]
-        ON7["记录日志: 写入对话记录表"]
-        ON1 --> ON2 --> ON3 --> ON4 --> ON5 --> ON6 --> ON7
+        ON7["记录日志: 写入对话记录表 + 引用"]
+        ON1 --> ON2 --> ON2b --> ON3 --> ON4 --> ON5 --> ON6 --> ON7
     end
 
-    subgraph Data["数据层（外置服务）"]
+    subgraph Data["数据层"]
         direction LR
-        DB1["PostgreSQL: 人格维度表 / 调整日志表 / 固定身份表"]
+        DB1["PostgreSQL: 人格维度表 / 调整日志表 / 固定身份表 / 会话表"]
         DB2["Chroma: personality 人格素材向量库 (line + event)"]
         DB3["Chroma: memories 对话记忆向量库 (episodic memory)"]
     end
@@ -45,6 +46,7 @@ flowchart TB
     ON7 -->|"供离线任务分析"| OFF1
 
     ON1 -.->|"读取"| DB1
+    ON2b -.->|"搜索"| WEB["DuckDuckGo"]
     ON3 -.->|"查询"| DB2
     ON4 -.->|"查询"| DB3
     ON7 -.->|"写入"| DB1
@@ -54,22 +56,24 @@ flowchart TB
     classDef data fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
 
     class OFF1,OFF2,OFF3 offline
-    class ON1,ON2,ON3,ON4,ON5,ON6,ON7 online
+    class ON1,ON2,ON2b,ON3,ON4,ON5,ON6,ON7 online
     class DB1,DB2,DB3 data
 ```
 
 ## 当前实现要点
 
-* 使用 PostgreSQL 保存结构化人格维度与对话记录。
+* 使用 PostgreSQL 保存结构化人格维度、对话记录、会话与调整日志。
+* 默认通过 `pgembed` 启动嵌入式 PostgreSQL，无需单独安装/启动外部 PG；也可通过 `MR_DATA_POSTGRES_DSN` 使用外部数据库。
 * 使用 Chroma（原型阶段替代 Qdrant）保存人格素材向量库与对话记忆向量库；`personality` 集合既包含原始台词，也包含后续交流中产生的、影响人格的事件。
-* 在线对话由 LangGraph 编排：加载人格 → 生成检索意图 → 检索人格素材与记忆 → 组装上下文 → LLM 生成回复 → 记录对话。
-* 离线定时任务分析近期对话，将成功/失败归因到性格维度，更新维度计数并淘汰多次失败维度；同时将值得记住的事件写回人格素材库。
+* 在线对话由 LangGraph 编排：加载人格 → 生成检索意图 → 检索网络资料（可选） → 检索人格素材与记忆 → 组装上下文 → LLM 生成回复 → 记录对话与引用。
+* 离线定时任务只分析**已关闭会话**中的近期对话，将成功/失败归因到性格维度，更新维度计数并淘汰多次失败维度；同时将值得记住的事件写回人格素材库。
+* CLI `chat` 支持 `/newsession` 切换会话；退出时自动关闭当前会话。
 
 ## 环境要求
 
-* Python >= 3.10
-* PostgreSQL 14+（需自行安装并启动）
+* Python >= 3.12
 * LLM：OpenAI 兼容 API 或本地模型（Ollama / vLLM 等提供 OpenAI 兼容接口）
+* （可选）外部 PostgreSQL；默认使用 `pgembed` 嵌入式 PostgreSQL
 
 ## 快速开始
 
@@ -86,17 +90,27 @@ uv pip install -e ".[dev]"
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入 LLM 与 PostgreSQL 连接信息
+# 编辑 .env，至少填入 LLM 信息
 ```
 
 示例 `.env`：
 
 ```env
+# LLM（OpenAI 兼容接口）
 MR_DATA_LLM_BASE_URL=https://api.openai.com/v1
 MR_DATA_LLM_API_KEY=sk-xxx
 MR_DATA_LLM_MODEL=gpt-4o-mini
-MR_DATA_POSTGRES_DSN=postgresql://user:password@localhost:5432/mrdata
+
+# pgembed 嵌入式 PostgreSQL（默认开启，无需安装外部 PG）
+MR_DATA_USE_PGEMBED=true
+MR_DATA_PGEMBED_DATA_DIR=./data/pgembed
+
+# Chroma 持久化目录
 MR_DATA_CHROMA_PERSIST_DIR=./data/chroma
+
+# 网络搜索 RAG（默认开启）
+MR_DATA_ENABLE_WEB_SEARCH=true
+MR_DATA_WEB_SEARCH_MAX_RESULTS=3
 ```
 
 本地模型示例（Ollama）：
@@ -105,6 +119,13 @@ MR_DATA_CHROMA_PERSIST_DIR=./data/chroma
 MR_DATA_LLM_BASE_URL=http://localhost:11434/v1
 MR_DATA_LLM_API_KEY=ollama
 MR_DATA_LLM_MODEL=llama3.1
+```
+
+使用外部 PostgreSQL 时：
+
+```env
+MR_DATA_USE_PGEMBED=false
+MR_DATA_POSTGRES_DSN=postgresql://user:password@localhost:5432/mrdata
 ```
 
 ### 3. 初始化数据库
@@ -127,10 +148,18 @@ mr-data ingest
 mr-data chat
 ```
 
+对话中输入 `/newsession` 可结束当前会话并开始新会话。
+
 带评估反馈（用于离线归因）：
 
 ```bash
 mr-data chat --eval
+```
+
+临时关闭网络搜索：
+
+```bash
+mr-data chat --no-web-search
 ```
 
 ### 6. 运行离线归因
@@ -141,17 +170,17 @@ mr-data offline
 
 ## 运行测试
 
-需要先在环境变量中配置 `MR_DATA_POSTGRES_DSN` 才能跑涉及数据库的集成测试。
+测试默认使用 `pgembed` 启动临时嵌入式 PostgreSQL，无需配置外部数据库。
+
+```bash
+pytest
+```
+
+使用外部 PostgreSQL 时：
 
 ```bash
 export MR_DATA_POSTGRES_DSN=postgresql://user:password@localhost:5432/mrdata
 pytest
-```
-
-不依赖数据库的单测（Chroma、模型序列化）可直接运行：
-
-```bash
-pytest -k "not postgres and not dialogue_graph and not offline"
 ```
 
 ## 项目结构
@@ -161,17 +190,19 @@ mr.data/
 ├── pyproject.toml
 ├── .env.example
 ├── src/mr_data/
-│   ├── config.py          # 配置
+│   ├── config.py              # 配置
 │   ├── db/
-│   │   ├── postgres.py    # PostgreSQL 封装
-│   │   └── chroma.py      # Chroma 向量库封装
-│   ├── models/            # Pydantic 模型
-│   ├── llm/               # 统一 LLM 客户端
-│   ├── online/            # LangGraph 在线对话
-│   ├── offline/           # 离线归因引擎
-│   └── cli.py             # 命令行入口
-├── scripts/               # 独立脚本
-└── tests/                 # 测试
+│   │   ├── postgres.py        # PostgreSQL 封装
+│   │   ├── chroma.py          # Chroma 向量库封装
+│   │   └── pgembed_manager.py # 嵌入式 PostgreSQL 管理
+│   ├── models/                # Pydantic 模型
+│   ├── llm/                   # 统一 LLM 客户端
+│   ├── online/                # LangGraph 在线对话
+│   │   └── web_search.py      # 网络搜索 RAG
+│   ├── offline/               # 离线归因引擎
+│   └── cli.py                 # 命令行入口
+├── scripts/                   # 独立脚本
+└── tests/                     # 测试
 ```
 
 ## 从原型到生产
@@ -179,3 +210,4 @@ mr.data/
 * 向量库：Chroma → Qdrant（接口封装在 `mr_data.db.chroma`，替换成本低）。
 * 数据库：当前使用 `psycopg` 直连；如需更复杂查询可迁移到 SQLAlchemy。
 * 评估数据：MVP 阶段 CLI 支持人工评分；后续可接入真实用户反馈或自动评估。
+* 嵌入式 PG：`pgembed` 适合本地原型；生产环境建议切换至托管 PostgreSQL。

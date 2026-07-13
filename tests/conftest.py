@@ -1,9 +1,14 @@
 import os
+import shutil
+import tempfile
 import uuid
+
+# Disable web search by default in tests to avoid external network calls.
+os.environ.setdefault("MR_DATA_ENABLE_WEB_SEARCH", "false")
 
 import pytest
 
-from mr_data.db import PostgresStore
+from mr_data.db import PostgresStore, PgEmbedManager
 from mr_data.llm import LLMClient
 
 
@@ -31,8 +36,30 @@ def fake_llm():
 
 
 @pytest.fixture(scope="session")
-def pg_available():
-    dsn = os.environ.get("MR_DATA_POSTGRES_DSN", "postgresql://user:password@localhost:5432/mrdata")
+def pgembed_server():
+    """Start a temporary pgembed server for the test session when needed."""
+    if os.environ.get("MR_DATA_POSTGRES_DSN"):
+        # User provided an external DSN; no need to start embedded PG.
+        yield None
+        return
+
+    data_dir = tempfile.mkdtemp(prefix="pgembed-")
+    manager = PgEmbedManager(data_dir=data_dir)
+    dsn = manager.start()
+    os.environ["MR_DATA_POSTGRES_DSN"] = dsn
+    yield manager
+    manager.stop()
+    shutil.rmtree(data_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def pg_available(pgembed_server):
+    """Returns True if PostgreSQL is reachable."""
+    dsn = os.environ.get("MR_DATA_POSTGRES_DSN")
+    if not dsn and pgembed_server is not None:
+        dsn = pgembed_server.get_dsn()
+    if not dsn:
+        return False
     try:
         store = PostgresStore(dsn=dsn)
         with store._cursor() as cur:

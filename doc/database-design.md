@@ -1,6 +1,6 @@
 # 数据库设计
 
-mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性格维度、对话记录、对话引用和归因调整日志。
+mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性格维度、会话、对话记录、对话引用和归因调整日志。
 
 ---
 
@@ -10,6 +10,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 |------|------|
 | `fixed_identity` | 固定身份：名称、角色、基础设定 |
 | `personality_dimensions` | 性格维度：描述性自白、成功/失败计数 |
+| `sessions` | 会话：标记对话的语义边界 |
 | `dialogue_logs` | 对话记录：用户与助手的每轮消息及评估反馈 |
 | `dialogue_dimension_refs` | 对话引用的基础性格维度 |
 | `dialogue_vector_refs` | 对话检索到的向量素材快照 |
@@ -62,6 +63,22 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 
 ---
 
+## `sessions`
+
+保存对话会话，用于为离线归因提供语义边界。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | TEXT PK | 会话 ID（UUID 字符串） |
+| `status` | TEXT | `active` 或 `closed` |
+| `created_at` | TIMESTAMPTZ | 创建时间 |
+| `closed_at` | TIMESTAMPTZ | 关闭时间 |
+
+- 用户通过 `/newsession` 或退出 CLI 结束当前会话，旧会话标记为 `closed`。
+- 离线归因只处理状态为 `closed` 且包含未处理对话的会话。
+
+---
+
 ## `dialogue_logs`
 
 保存每次会话中的用户输入和助手回复，用于在线记忆和离线归因分析。
@@ -69,7 +86,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | SERIAL PK | 自增主键 |
-| `session_id` | TEXT | 会话 ID |
+| `session_id` | TEXT FK → `sessions(id)` | 会话 ID |
 | `role` | TEXT | 角色：`user` 或 `assistant` |
 | `content` | TEXT | 消息内容 |
 | `evaluation_score` | INTEGER | 评估分数：-1（差）、0（中）、1（好），可为空 |
@@ -104,15 +121,15 @@ CREATE INDEX idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
 
 ## `dialogue_vector_refs`
 
-记录每次助手回复时，从 Chroma `personality` 集合实际检索到的向量素材。
+记录每次助手回复时，从 Chroma `personality` 集合或网络搜索实际检索到的素材。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | SERIAL PK | 自增主键 |
 | `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联的助手回复 |
-| `vector_doc_id` | TEXT | Chroma 中的文档 ID |
-| `source_type` | TEXT | `line` 或 `event` |
-| `content` | TEXT | 向量库返回的文本快照 |
+| `vector_doc_id` | TEXT | Chroma 中的文档 ID 或网络结果 ID |
+| `source_type` | TEXT | `line`、`event` 或 `web` |
+| `content` | TEXT | 向量库/网络返回的文本快照 |
 | `dimension_ids` | TEXT | 该素材关联的维度 ID 列表，逗号分隔 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 
@@ -136,6 +153,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 |------|------|------|
 | `id` | SERIAL PK | |
 | `dimension_id` | INTEGER FK → `personality_dimensions(id)` | 维度 ID |
+| `session_id` | TEXT FK → `sessions(id)` | 所属会话，可为空 |
 | `delta_success` | INTEGER | 成功计数变化 |
 | `delta_failure` | INTEGER | 失败计数变化 |
 | `reason` | TEXT | 原因 |
@@ -143,6 +161,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 | `created_at` | TIMESTAMPTZ | |
 
 - 不再记录 `delta_value`（已移除 `current_value`）。
+- `session_id` 用于追溯一次归因来自哪个已关闭会话。
 
 ---
 
@@ -169,9 +188,16 @@ erDiagram
         timestamptz updated_at
     }
 
+    sessions {
+        text id PK
+        text status
+        timestamptz created_at
+        timestamptz closed_at
+    }
+
     dialogue_logs {
         int id PK
-        text session_id
+        text session_id FK
         text role
         text content
         int evaluation_score
@@ -200,6 +226,7 @@ erDiagram
     adjustment_logs {
         int id PK
         int dimension_id FK
+        text session_id FK
         int delta_success
         int delta_failure
         text reason
@@ -207,22 +234,25 @@ erDiagram
         timestamptz created_at
     }
 
+    sessions ||--o{ dialogue_logs : "包含"
     dialogue_logs ||--o{ dialogue_dimension_refs : "引用"
     dialogue_logs ||--o{ dialogue_vector_refs : "检索"
     personality_dimensions ||--o{ dialogue_dimension_refs : "被引用"
     personality_dimensions ||--o{ adjustment_logs : "调整"
     dialogue_logs ||--o{ adjustment_logs : "归因"
+    sessions ||--o{ adjustment_logs : "归因"
 ```
 
 ---
 
 ## 数据流
 
-1. **在线对话**：`dialogue_logs` 持续写入 `user` 和 `assistant` 消息。
+1. **在线对话**：`dialogue_logs` 持续写入 `user` 和 `assistant` 消息，每条消息归属一个 `sessions` 记录。
 2. **记录引用**：助手回复写入后，同时写入：
    - `dialogue_dimension_refs`：本次加载了哪些基础维度。
-   - `dialogue_vector_refs`：从 Chroma 检索到了哪些素材及其文本快照。
+   - `dialogue_vector_refs`：从 Chroma 或网络检索到了哪些素材及其文本快照。
 3. **评估反馈**：用户或自动评估为助手回复打分，更新 `evaluation_score` 和 `evaluation_feedback`。
-4. **离线归因**：读取未处理的 `dialogue_logs`，分析后更新 `personality_dimensions`。
-5. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
-6. **审计**：每次更新写入 `adjustment_logs`。
+4. **会话结束**：用户输入 `/newsession` 或退出 CLI 时，当前 `sessions` 记录标记为 `closed`。
+5. **离线归因**：只读取状态为 `closed` 且包含未处理对话的会话，按会话分析后更新 `personality_dimensions`。
+6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
+7. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。

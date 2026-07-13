@@ -5,11 +5,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from mr_data.db import PostgresStore
 from mr_data.offline import AttributionEngine
 
 
 def main() -> None:
-    engine = AttributionEngine()
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    engine = AttributionEngine(pg_store=pg)
     engine.run()
 
 

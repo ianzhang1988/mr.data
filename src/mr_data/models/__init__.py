@@ -1,6 +1,7 @@
 from .personality import (
     FixedIdentity,
     PersonalityDimension,
+    Session,
     DialogueLog,
     DialogueDimensionRef,
     DialogueVectorRef,
@@ -11,6 +12,7 @@ from .personality import (
 __all__ = [
     "FixedIdentity",
     "PersonalityDimension",
+    "Session",
     "DialogueLog",
     "DialogueDimensionRef",
     "DialogueVectorRef",

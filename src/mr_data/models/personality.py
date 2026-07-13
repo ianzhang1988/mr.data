@@ -22,6 +22,13 @@ class PersonalityDimension(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class Session(BaseModel):
+    id: str
+    status: str = "active"  # 'active' | 'closed'
+    created_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+
+
 class DialogueLog(BaseModel):
     id: Optional[int] = None
     session_id: str
@@ -44,7 +51,7 @@ class DialogueVectorRef(BaseModel):
     id: Optional[int] = None
     dialogue_log_id: int
     vector_doc_id: str
-    source_type: str  # 'line' | 'event'
+    source_type: str  # 'line' | 'event' | 'web'
     content: str
     dimension_ids: list[int] = Field(default_factory=list)
     created_at: Optional[datetime] = None
@@ -53,6 +60,7 @@ class DialogueVectorRef(BaseModel):
 class AdjustmentLog(BaseModel):
     id: Optional[int] = None
     dimension_id: int
+    session_id: Optional[str] = None
     delta_success: int = 0
     delta_failure: int = 0
     reason: str

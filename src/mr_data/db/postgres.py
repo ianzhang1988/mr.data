@@ -1,3 +1,5 @@
+import os
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional
@@ -6,9 +8,11 @@ import psycopg
 from psycopg.rows import dict_row
 
 from mr_data.config import settings
+from mr_data.db.pgembed_manager import PgEmbedManager
 from mr_data.models import (
     FixedIdentity,
     PersonalityDimension,
+    Session,
     DialogueLog,
     DialogueDimensionRef,
     DialogueVectorRef,
@@ -36,9 +40,18 @@ CREATE TABLE IF NOT EXISTS personality_dimensions (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    closed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+
 CREATE TABLE IF NOT EXISTS dialogue_logs (
     id SERIAL PRIMARY KEY,
-    session_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     evaluation_score INTEGER,
@@ -73,12 +86,15 @@ CREATE INDEX IF NOT EXISTS idx_vector_ref_dialogue ON dialogue_vector_refs(dialo
 CREATE TABLE IF NOT EXISTS adjustment_logs (
     id SERIAL PRIMARY KEY,
     dimension_id INTEGER NOT NULL REFERENCES personality_dimensions(id),
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
     delta_success INTEGER DEFAULT 0,
     delta_failure INTEGER DEFAULT 0,
     reason TEXT NOT NULL,
     dialogue_log_id INTEGER REFERENCES dialogue_logs(id),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_adjustment_session ON adjustment_logs(session_id);
 """
 
 DEFAULT_IDENTITY = FixedIdentity(
@@ -112,7 +128,19 @@ DEFAULT_DIMENSIONS = [
 
 class PostgresStore:
     def __init__(self, dsn: Optional[str] = None):
-        self.dsn = dsn or settings.postgres_dsn
+        if dsn:
+            self.dsn = dsn
+        elif os.environ.get("MR_DATA_POSTGRES_DSN"):
+            # Allow runtime env overrides (e.g. test fixtures).
+            self.dsn = os.environ["MR_DATA_POSTGRES_DSN"]
+        elif settings.postgres_dsn:
+            self.dsn = settings.postgres_dsn
+        elif settings.use_pgembed:
+            self.dsn = PgEmbedManager(data_dir=settings.pgembed_data_dir).get_dsn()
+        else:
+            raise RuntimeError(
+                "No PostgreSQL DSN configured. Set MR_DATA_POSTGRES_DSN or MR_DATA_USE_PGEMBED=true."
+            )
 
     @contextmanager
     def _cursor(self, *, commit: bool = False):
@@ -210,6 +238,59 @@ class PostgresStore:
                 "UPDATE personality_dimensions SET active = FALSE, updated_at = NOW() WHERE id = %s",
                 (dimension_id,),
             )
+
+    # --- Session management ---
+
+    def create_session(self, session_id: Optional[str] = None) -> str:
+        sid = session_id or str(uuid.uuid4())
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                INSERT INTO sessions (id, status)
+                VALUES (%s, 'active')
+                ON CONFLICT (id) DO UPDATE SET status = 'active', closed_at = NULL
+                RETURNING id
+                """,
+                (sid,),
+            )
+            return cur.fetchone()["id"]
+
+    def close_session(self, session_id: str) -> None:
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE sessions
+                SET status = 'closed', closed_at = NOW()
+                WHERE id = %s
+                """,
+                (session_id,),
+            )
+
+    def get_session(self, session_id: str) -> Optional[Session]:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+            row = cur.fetchone()
+            return Session.model_validate(row) if row else None
+
+    def list_closed_sessions_with_unprocessed(
+        self, limit: int = 50
+    ) -> list[Session]:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT s.*
+                FROM sessions s
+                JOIN dialogue_logs d ON d.session_id = s.id
+                WHERE s.status = 'closed'
+                  AND d.processed_for_attribution = FALSE
+                ORDER BY s.closed_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return [Session.model_validate(r) for r in cur.fetchall()]
+
+    # --- Dialogue logs ---
 
     def insert_dialogue(self, log: DialogueLog) -> int:
         with self._cursor(commit=True) as cur:
@@ -310,9 +391,9 @@ class PostgresStore:
             cur.execute(
                 """
                 INSERT INTO adjustment_logs
-                (dimension_id, delta_success, delta_failure, reason, dialogue_log_id)
-                VALUES (%s, %s, %s, %s, %s)
+                (dimension_id, session_id, delta_success, delta_failure, reason, dialogue_log_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (adj.dimension_id, adj.delta_success, adj.delta_failure,
+                (adj.dimension_id, adj.session_id, adj.delta_success, adj.delta_failure,
                  adj.reason, adj.dialogue_log_id),
             )

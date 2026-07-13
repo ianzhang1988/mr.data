@@ -1,9 +1,11 @@
 import uuid
+from typing import Optional
 
 import typer
 from rich import print as rprint
 from rich.prompt import Prompt
 
+from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.llm import LLMClient
 from mr_data.models import DialogueLog
@@ -13,43 +15,65 @@ from mr_data.offline import AttributionEngine
 app = typer.Typer(help="mr.data personality subsystem CLI")
 
 
+def _ensure_session(pg: PostgresStore, session_id: Optional[str]) -> str:
+    if session_id:
+        pg.create_session(session_id)
+        return session_id
+    return pg.create_session()
+
+
 @app.command()
 def chat(
     session_id: str = typer.Option(None, "--session-id", help="Session ID for the conversation"),
     eval_mode: bool = typer.Option(False, "--eval", help="Ask for evaluation feedback after each assistant reply"),
+    web_search: bool = typer.Option(settings.enable_web_search, "--web-search/--no-web-search", help="Enable web search RAG"),
 ) -> None:
     """Start an interactive chat with mr.data."""
-    session_id = session_id or str(uuid.uuid4())
-    rprint(f"[dim]Session: {session_id}[/dim]")
-    rprint("[dim]Type 'exit' or press Ctrl+C to quit.[/dim]\n")
+    import os
 
-    graph = DialogueGraph()
+    graph = DialogueGraph(enable_web_search=web_search)
     pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
 
-    while True:
-        try:
-            user_input = Prompt.ask("You")
-        except (EOFError, KeyboardInterrupt):
-            break
+    current_session_id = _ensure_session(pg, session_id)
+    rprint(f"[dim]Session: {current_session_id}[/dim]")
+    rprint("[dim]Type '/newsession' to start a new session, 'exit' or Ctrl+C to quit.[/dim]\n")
 
-        user_input = user_input.strip()
-        if user_input.lower() in ("exit", "quit", "bye"):
-            break
-
-        reply = graph.chat(session_id, user_input)
-        rprint(f"[bold cyan]mr.data:[/bold cyan] {reply}\n")
-
-        if eval_mode:
-            score_str = Prompt.ask("Evaluate reply: -1 (bad) / 0 / 1 (good)", default="0")
-            feedback = Prompt.ask("Feedback (optional)", default="")
+    try:
+        while True:
             try:
-                score = int(score_str)
-            except ValueError:
-                score = None
-            # Update the last assistant log with evaluation
-            recent = pg.get_recent_dialogues(session_id=session_id, limit=1)
-            if recent and recent[0].role == "assistant":
-                pg.update_evaluation(recent[0].id, score, feedback)
+                user_input = Prompt.ask("You")
+            except (EOFError, KeyboardInterrupt):
+                break
+
+            user_input = user_input.strip()
+            if user_input.lower() in ("exit", "quit", "bye"):
+                break
+
+            if user_input.lower() == "/newsession":
+                pg.close_session(current_session_id)
+                current_session_id = pg.create_session()
+                rprint(f"[dim]New session: {current_session_id}[/dim]\n")
+                continue
+
+            reply = graph.chat(current_session_id, user_input)
+            rprint(f"[bold cyan]mr.data:[/bold cyan] {reply}\n")
+
+            if eval_mode:
+                score_str = Prompt.ask("Evaluate reply: -1 (bad) / 0 / 1 (good)", default="0")
+                feedback = Prompt.ask("Feedback (optional)", default="")
+                try:
+                    score = int(score_str)
+                except ValueError:
+                    score = None
+                # Update the last assistant log with evaluation
+                recent = pg.get_recent_dialogues(session_id=current_session_id, limit=1)
+                if recent and recent[0].role == "assistant":
+                    pg.update_evaluation(recent[0].id, score, feedback)
+    finally:
+        # Ensure the active session is closed so offline attribution can process it.
+        pg.close_session(current_session_id)
 
     rprint("[dim]Goodbye.[/dim]")
 
@@ -57,7 +81,10 @@ def chat(
 @app.command()
 def offline() -> None:
     """Run offline attribution analysis."""
-    engine = AttributionEngine()
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    engine = AttributionEngine(pg_store=pg)
     engine.run()
 
 

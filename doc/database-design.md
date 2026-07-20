@@ -9,7 +9,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | 表名 | 说明 |
 |------|------|
 | `fixed_identity` | 固定身份：名称、角色、基础设定 |
-| `personality_dimensions` | 性格维度：描述性自白、成功/失败计数 |
+| `personality_dimensions` | 性格维度：描述性自白、成功/失败计数、核心标记 |
 | `sessions` | 会话：标记对话的语义边界 |
 | `dialogue_logs` | 对话记录：用户与助手的每轮消息及评估反馈 |
 | `dialogue_dimension_refs` | 对话引用的基础性格维度 |
@@ -35,12 +35,13 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 
 ## `personality_dimensions`
 
-保存可调整的动态性格维度。每个维度是一段描述性自白，并记录成功/失败计数，失败次数超过系统阈值时会被淘汰（`active = FALSE`）。
+保存可调整的动态性格维度。每个维度是一段描述性自白，并记录成功/失败计数；非核心维度的失败次数超过系统阈值时会被淘汰（`active = FALSE`）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | SERIAL PK | 自增主键 |
 | `description` | TEXT | 基础性格描述，类似自白 |
+| `core` | BOOLEAN | 是否为固定核心维度；核心维度不会被自动失效 |
 | `success_count` | INTEGER | 成功次数 |
 | `failure_count` | INTEGER | 失败次数 |
 | `active` | BOOLEAN | 是否仍活跃 |
@@ -50,6 +51,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 - 没有 `name` 字段：避免 LLM 归因产生同名不同义的性格时无法入库。
 - 没有 `current_value`：后续只参考成功/失败数据。
 - 没有 `failure_threshold`：淘汰阈值是系统级设置，放在 `.env` / `config.py` 中。
+- `core` 用于保持角色稳定性：核心维度即使多次失败也会保持 `active = TRUE`。
 
 ### 默认维度示例
 
@@ -128,7 +130,7 @@ CREATE INDEX idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
 | `id` | SERIAL PK | 自增主键 |
 | `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联的助手回复 |
 | `vector_doc_id` | TEXT | Chroma 中的文档 ID 或网络结果 ID |
-| `source_type` | TEXT | `line`、`event` 或 `web` |
+| `source_type` | TEXT | `line`、`event`、`evidence` 或 `web` |
 | `content` | TEXT | 向量库/网络返回的文本快照 |
 | `dimension_ids` | TEXT | 该素材关联的维度 ID 列表，逗号分隔 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
@@ -181,6 +183,7 @@ erDiagram
     personality_dimensions {
         int id PK
         text description
+        boolean core
         int success_count
         int failure_count
         boolean active
@@ -255,4 +258,5 @@ erDiagram
 4. **会话结束**：用户输入 `/newsession` 或退出 CLI 时，当前 `sessions` 记录标记为 `closed`。
 5. **离线归因**：只读取状态为 `closed` 且包含未处理对话的会话，按会话分析后更新 `personality_dimensions`。
 6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
-7. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。
+7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词，供后续对话检索。
+8. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。

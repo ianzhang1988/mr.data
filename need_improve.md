@@ -1,3 +1,6 @@
+# prompt
+* 使用 scripts下的code_struct.py 获取src目录下的代码结构
+
 # 待改进
 
 （当前暂无待改进项）

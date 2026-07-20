@@ -70,7 +70,9 @@ class AdjustmentLog(BaseModel):
 
 class PersonalityEvent(BaseModel):
     id: Optional[str] = None
-    content: str
+    content: str  # agent 台词 / utterance（注入 prompt 时使用）
+    context: Optional[str] = None  # 前置场景 / 多轮上下文（仅用于向量 embedding）
+    speaker: Optional[str] = None  # 说话者标识，默认 assistant
     dimension_ids: list[int] = Field(default_factory=list)
-    source_type: str = "line"  # 'line' | 'event'
+    source_type: str = "line"  # 'line' | 'event' | 'evidence' | 'web'
     source_id: Optional[str] = None

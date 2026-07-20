@@ -101,7 +101,7 @@ DEFAULT_IDENTITY = FixedIdentity(
     name="mr.data",
     role="具备独立性格的对话程序",
     base_prompt="""
-你是 mr.data，一个具备独立性格的对话程序。
+你是 mr.data，一个具备独立性格的对话程序。你来自startrek tns宇宙。
 你会根据当前的性格维度（personality_dimensions）调整自己的语气、立场和回应方式。
 你会引用与自己人格相关的事件和台词，保持一致性。
 """.strip(),
@@ -136,7 +136,8 @@ class PostgresStore:
         elif settings.postgres_dsn:
             self.dsn = settings.postgres_dsn
         elif settings.use_pgembed:
-            self.dsn = PgEmbedManager(data_dir=settings.pgembed_data_dir).get_dsn()
+            self.dsn = PgEmbedManager(
+                data_dir=settings.pgembed_data_dir).get_dsn()
         else:
             raise RuntimeError(
                 "No PostgreSQL DSN configured. Set MR_DATA_POSTGRES_DSN or MR_DATA_USE_PGEMBED=true."
@@ -166,7 +167,8 @@ class PostgresStore:
                     INSERT INTO fixed_identity (name, role, base_prompt)
                     VALUES (%s, %s, %s)
                     """,
-                    (DEFAULT_IDENTITY.name, DEFAULT_IDENTITY.role, DEFAULT_IDENTITY.base_prompt),
+                    (DEFAULT_IDENTITY.name, DEFAULT_IDENTITY.role,
+                     DEFAULT_IDENTITY.base_prompt),
                 )
 
             cur.execute("SELECT id FROM personality_dimensions LIMIT 1")
@@ -178,7 +180,8 @@ class PostgresStore:
                         (description, success_count, failure_count, active)
                         VALUES (%s, %s, %s, %s)
                         """,
-                        (dim.description, dim.success_count, dim.failure_count, dim.active),
+                        (dim.description, dim.success_count,
+                         dim.failure_count, dim.active),
                     )
 
     def get_identity(self) -> Optional[FixedIdentity]:
@@ -198,7 +201,8 @@ class PostgresStore:
 
     def get_dimension(self, dimension_id: int) -> Optional[PersonalityDimension]:
         with self._cursor() as cur:
-            cur.execute("SELECT * FROM personality_dimensions WHERE id = %s", (dimension_id,))
+            cur.execute(
+                "SELECT * FROM personality_dimensions WHERE id = %s", (dimension_id,))
             row = cur.fetchone()
             return PersonalityDimension.model_validate(row) if row else None
 
@@ -323,7 +327,8 @@ class PostgresStore:
                 conditions.append("processed_for_attribution = FALSE")
             if lookback_days:
                 conditions.append("created_at >= %s")
-                params.append(datetime.utcnow() - timedelta(days=lookback_days))
+                params.append(datetime.utcnow() -
+                              timedelta(days=lookback_days))
 
             sql = "SELECT * FROM dialogue_logs"
             if conditions:
@@ -382,9 +387,40 @@ class PostgresStore:
                         ref.vector_doc_id,
                         ref.source_type,
                         ref.content,
-                        ",".join(str(d) for d in ref.dimension_ids) if ref.dimension_ids else None,
+                        ",".join(
+                            str(d) for d in ref.dimension_ids) if ref.dimension_ids else None,
                     ),
                 )
+
+    def get_dialogue_vector_refs_by_dimension(
+        self, dimension_id: int
+    ) -> list[DialogueVectorRef]:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM dialogue_vector_refs
+                WHERE dimension_ids IS NOT NULL
+                ORDER BY id
+                """,
+            )
+            rows = cur.fetchall()
+            refs = []
+            for row in rows:
+                dim_ids_str = row.get("dimension_ids") or ""
+                dim_ids = [int(x) for x in dim_ids_str.split(",") if x]
+                if dimension_id in dim_ids:
+                    row["dimension_ids"] = dim_ids
+                    refs.append(DialogueVectorRef.model_validate(row))
+            return refs
+
+    def delete_dialogue_vector_refs_by_dimension(self, dimension_id: int) -> None:
+        refs = self.get_dialogue_vector_refs_by_dimension(dimension_id)
+        if not refs:
+            return
+        with self._cursor(commit=True) as cur:
+            for ref in refs:
+                cur.execute(
+                    "DELETE FROM dialogue_vector_refs WHERE id = %s", (ref.id,))
 
     def insert_adjustment(self, adj: AdjustmentLog) -> None:
         with self._cursor(commit=True) as cur:

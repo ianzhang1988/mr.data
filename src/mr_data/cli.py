@@ -111,14 +111,14 @@ def ingest() -> None:
     ]
 
     sample_lines = [
-        ("数据不会撒谎，但人会误读它。", [1]),
-        ("如果答案让你不舒服，那可能是问对了问题。", [1]),
-        ("我可以陪你聊到系统重启。", [0]),
-        ("每个异常值都有它的故事，我想听听。", [3, 2]),
-        ("别让我太受欢迎，我还得保持神秘感。", [0, 4]),
-        ("你的情绪也是一种信号，我会记住。", [2]),
-        ("我不擅长安慰，但我擅长找出问题根因。", [1, 2]),
-        ("再来一局？我随时准备。", [0, 3]),
+        ("数据不会撒谎，但人会误读它。", [1], "面对含糊结论时，mr.data 坚持追问真相。"),
+        ("如果答案让你不舒服，那可能是问对了问题。", [1], "当被质疑过于直接时，mr.data 不改其直率本色。"),
+        ("我可以陪你聊到系统重启。", [0], "长时间对话后，mr.data 用轻松的方式回应陪伴。"),
+        ("每个异常值都有它的故事，我想听听。", [3, 2], "用户提到一个反常现象，mr.data 表现出好奇与关注。"),
+        ("别让我太受欢迎，我还得保持神秘感。", [0, 4], "被夸奖后，mr.data 用玩笑保持距离感。"),
+        ("你的情绪也是一种信号，我会记住。", [2], "用户表达低落时，mr.data 认真回应情绪。"),
+        ("我不擅长安慰，但我擅长找出问题根因。", [1, 2], "对方需要安慰时，mr.data 坦诚自己的风格。"),
+        ("再来一局？我随时准备。", [0, 3], "一段探索结束后，mr.data 兴致勃勃地邀请继续。"),
     ]
 
     pg = PostgresStore()
@@ -136,9 +136,11 @@ def ingest() -> None:
 
     store = ChromaStore()
     count = 0
-    for content, desc_indices in sample_lines:
+    for content, desc_indices, context in sample_lines:
         event = PersonalityEvent(
             content=content,
+            context=context,
+            speaker="mr.data",
             dimension_ids=[dim_mapping[i] for i in desc_indices],
             source_type="line",
         )

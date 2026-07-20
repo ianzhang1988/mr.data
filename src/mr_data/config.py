@@ -25,10 +25,23 @@ class Settings(BaseSettings):
     enable_web_search: bool = True
     web_search_max_results: int = 3
 
+    # 日志配置
+    log_dir: str = "./logs"
+    log_level: str = "INFO"
+    log_max_bytes: int = 10_000_000
+    log_backup_count: int = 5
+    log_to_stdout: bool = True
+
     # 离线任务参数
     offline_batch_size: int = 50
     offline_lookback_days: int = 7
+    offline_max_session_logs: int = 100
+    personality_retrieval_top_k: int = 5
     failure_threshold: int = 5
+
+    # 网页正文提取配置
+    web_extract_max_pages: int = 2
+    web_extract_max_length: int = 4000
 
 
 settings = Settings()

@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -8,8 +9,10 @@ os.environ.setdefault("MR_DATA_ENABLE_WEB_SEARCH", "false")
 
 import pytest
 
+from mr_data.config import settings
 from mr_data.db import PostgresStore, PgEmbedManager
 from mr_data.llm import LLMClient
+from mr_data.logging import reset_loggers
 
 
 class FakeLLMClient(LLMClient):
@@ -19,11 +22,21 @@ class FakeLLMClient(LLMClient):
         super().__init__(base_url="http://fake", api_key="fake", model="fake")
 
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
-        if "查询改写" in system_prompt:
-            return "用户查询改写"
-        if "归因分析器" in system_prompt:
-            # Return empty attribution to avoid creating dimensions in tests
-            return '{"deltas": []}'
+        if "检索查询" in system_prompt and "内心独白" in system_prompt:
+            return "检索查询：用户查询改写 内心独白：这是一个测试内心独白"
+        if "你是对话归因分析器" in system_prompt:
+            return json.dumps({
+                "deltas": [
+                    {
+                        "dimension_id": 1,
+                        "delta_success": 1,
+                        "delta_failure": 0,
+                        "reason": "测试归因原因",
+                        "evidence_snippets": ["user: 测试输入\nassistant: 测试回复"],
+                        "relation_to_personality": "体现",
+                    }
+                ]
+            })
         return "这是一个测试回复。"
 
     def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
@@ -72,3 +85,14 @@ def pg_available(pgembed_server):
 @pytest.fixture
 def test_session_id():
     return f"test-{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture
+def temp_log_dir(tmp_path, monkeypatch):
+    """Provide a temporary log directory and reset logger cache."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(settings, "log_dir", str(log_dir))
+    reset_loggers()
+    yield str(log_dir)
+    reset_loggers()

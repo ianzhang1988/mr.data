@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
-data/
+data/*
+!data/personalities/
+!data/personalities/**
 logs/
 *.egg-info/
 dist/

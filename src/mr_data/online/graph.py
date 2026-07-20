@@ -12,6 +12,7 @@ from mr_data.models import (
     DialogueLog,
     DialogueVectorRef,
     FixedIdentity,
+    UserIdentity,
     PersonalityDimension,
 )
 from mr_data.online.page_extract import PageExtractor
@@ -26,6 +27,7 @@ class DialogueState(TypedDict, total=False):
     session_id: str
     user_input: str
     identity: Optional[FixedIdentity]
+    user_identity: Optional[UserIdentity]
     dimensions: list[PersonalityDimension]
     selected_dimension_ids: list[int]
     retrieval_query: str
@@ -100,18 +102,24 @@ class DialogueGraph:
 
     def _load_personality(self, state: DialogueState) -> DialogueState:
         identity = self.pg.get_identity()
+        user_identity = self.pg.get_current_user_identity()
         dimensions = self.pg.list_dimensions(active_only=True)
         self.logger.info(
             "Loaded personality",
             extra={
                 "event": "personality.loaded",
                 "session_id": state["session_id"],
-                "details": {"identity": identity.name if identity else None, "dimension_count": len(dimensions)},
+                "details": {
+                    "identity": identity.name if identity else None,
+                    "user_identity": user_identity.name if user_identity else None,
+                    "dimension_count": len(dimensions),
+                },
             },
         )
         return {
             **state,
             "identity": identity,
+            "user_identity": user_identity,
             "dimensions": dimensions,
         }
 
@@ -344,8 +352,16 @@ class DialogueGraph:
         memory_text = "\n".join(f"- {d['page_content']}" for d in memory_docs)
         monologue_text = f"\n你当前的内心独白：{inner_monologue}\n" if inner_monologue else ""
 
+        user_identity = state.get("user_identity")
+        user_identity_text = ""
+        if user_identity:
+            user_identity_text = (
+                f"\n与你对话的用户身份：{user_identity.name}（{user_identity.role}）。"
+                f"{user_identity.description}\n"
+            )
+
         system = f"""你是 {identity.name if identity else 'mr.data'}，{identity.role if identity else '一个对话程序'}。
-{identity.base_prompt if identity else ''}
+{identity.base_prompt if identity else ''}{user_identity_text}
 
 你的基础性格自白：
 {dim_text}

@@ -22,8 +22,8 @@ def test_models_serialize():
     assert dim.success_count == 0
 
 
-def test_chroma_personality(tmp_path):
-    store = ChromaStore(persist_dir=str(tmp_path / "chroma"))
+def test_chroma_personality(chroma_store):
+    store = chroma_store
     event = PersonalityEvent(content="测试事件", dimension_ids=[1, 2], source_type="event")
     doc_id = store.add_personality_event(event)
     assert doc_id
@@ -33,8 +33,8 @@ def test_chroma_personality(tmp_path):
     assert any(1 in d["metadata"]["dimension_ids"] for d in docs)
 
 
-def test_chroma_personality_context(tmp_path):
-    store = ChromaStore(persist_dir=str(tmp_path / "chroma"))
+def test_chroma_personality_context(chroma_store):
+    store = chroma_store
     event = PersonalityEvent(
         content=" assistant: 这是 mr.data 的台词",
         context="user: 我们遇到了一个异常值\nassistant: 这是 mr.data 的台词",
@@ -51,8 +51,8 @@ def test_chroma_personality_context(tmp_path):
     assert docs[0]["metadata"].get("context")
 
 
-def test_chroma_memories(tmp_path):
-    store = ChromaStore(persist_dir=str(tmp_path / "chroma"))
+def test_chroma_memories(chroma_store):
+    store = chroma_store
     store.add_memory("s1", "用户：你好")
     store.add_memory("s1", "助手：你好呀")
 
@@ -70,13 +70,15 @@ def test_postgres_schema_and_seed(pg_available):
     store.seed()
     identity = store.get_identity()
     assert identity is not None
+    assert identity.name == "Data"
     dims = store.list_dimensions()
     assert len(dims) > 0
     assert dims[0].description
+    assert any(dim.core for dim in dims)
     assert not hasattr(dims[0], "current_value")
 
 
-def test_dialogue_graph(fake_llm, test_session_id, pg_available, tmp_path, temp_log_dir):
+def test_dialogue_graph(fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -84,8 +86,7 @@ def test_dialogue_graph(fake_llm, test_session_id, pg_available, tmp_path, temp_
     pg.init_schema()
     pg.seed()
     pg.create_session(test_session_id)
-    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
-    graph = DialogueGraph(pg_store=pg, chroma_store=chroma, llm=fake_llm, enable_web_search=False)
+    graph = DialogueGraph(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, enable_web_search=False)
 
     reply = graph.chat(test_session_id, "你好")
     assert reply
@@ -94,7 +95,7 @@ def test_dialogue_graph(fake_llm, test_session_id, pg_available, tmp_path, temp_
     assert len(logs) >= 2
 
 
-def test_offline_attribution(fake_llm, test_session_id, pg_available, tmp_path, temp_log_dir):
+def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -102,7 +103,6 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, tmp_path, 
     pg.init_schema()
     pg.seed()
     pg.create_session(test_session_id)
-    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
 
     # Insert a user-assistant pair
     user_id = pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="user", content="测试输入"))
@@ -132,7 +132,7 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, tmp_path, 
     }
     log_file.write_text(json.dumps(thought_entry, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma, llm=fake_llm, log_dir=temp_log_dir)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir)
     engine.run()
 
     # Both should be marked processed
@@ -140,14 +140,14 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, tmp_path, 
     assert len(unprocessed) == 0
 
     # Evidence should be written to the personality collection and linked via vector refs.
-    personality_docs = chroma.query_personality("测试回复", top_k=10)
+    personality_docs = chroma_store.query_personality("测试回复", top_k=10)
     assert any("测试回复" in doc["page_content"] for doc in personality_docs)
 
     refs = pg.get_dialogue_vector_refs_by_dimension(1)
     assert any(ref.dialogue_log_id == assistant_id for ref in refs)
 
 
-def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_available, tmp_path):
+def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_available, chroma_store):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -155,8 +155,7 @@ def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_availabl
     pg.init_schema()
     pg.seed()
     pg.create_session(test_session_id)
-    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
-    graph = DialogueGraph(pg_store=pg, chroma_store=chroma, llm=fake_llm, enable_web_search=False)
+    graph = DialogueGraph(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, enable_web_search=False)
 
     # Mark dimension 2 as core and run a chat turn.
     with pg._cursor(commit=True) as cur:
@@ -175,7 +174,7 @@ def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_availabl
         cur.execute("UPDATE personality_dimensions SET core = FALSE WHERE id = 2")
 
 
-def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, tmp_path, monkeypatch):
+def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chroma_store, monkeypatch):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -198,14 +197,13 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, tmp
     pg.init_schema()
     pg.seed()
     pg.create_session(test_session_id)
-    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
 
     monkeypatch.setattr(settings, "enable_web_page_extraction", False)
     monkeypatch.setattr(settings, "enable_web_relevance_filter", False)
 
     graph = DialogueGraph(
         pg_store=pg,
-        chroma_store=chroma,
+        chroma_store=chroma_store,
         llm=fake_llm,
         web_search=FakeWebSearch(),
         enable_web_search=True,
@@ -213,13 +211,13 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, tmp
     reply = graph.chat(test_session_id, "太阳系有几颗行星")
     assert reply
 
-    docs = chroma.query_memories("八大行星", session_id=test_session_id, top_k=10)
+    docs = chroma_store.query_memories("八大行星", session_id=test_session_id, top_k=10)
     assert any("八大行星" in d["page_content"] for d in docs)
     assert any(d["metadata"].get("source_type") == "web" for d in docs)
     assert any(d["metadata"].get("url") == "http://example.com/planets" for d in docs)
 
 
-def test_full_session_lifecycle(fake_llm, pg_available, tmp_path, temp_log_dir):
+def test_full_session_lifecycle(fake_llm, pg_available, chroma_store, temp_log_dir):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -227,8 +225,7 @@ def test_full_session_lifecycle(fake_llm, pg_available, tmp_path, temp_log_dir):
     pg = PostgresStore()
     pg.init_schema()
     pg.seed()
-    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
-    graph = DialogueGraph(pg_store=pg, chroma_store=chroma, llm=fake_llm, enable_web_search=False)
+    graph = DialogueGraph(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, enable_web_search=False)
 
     # First session
     session_a = pg.create_session()
@@ -243,7 +240,7 @@ def test_full_session_lifecycle(fake_llm, pg_available, tmp_path, temp_log_dir):
     pg.close_session(session_b)
 
     # Run offline attribution
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma, llm=fake_llm)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
     engine.run()
 
     # Both sessions should be fully processed
@@ -259,7 +256,7 @@ def test_full_session_lifecycle(fake_llm, pg_available, tmp_path, temp_log_dir):
     assert all(row["session_id"] in (session_a, session_b) for row in rows)
 
 
-def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, pg_available, tmp_path):
+def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, pg_available, chroma_store):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -268,7 +265,6 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
     pg.init_schema()
     pg.seed()
     pg.create_session(test_session_id)
-    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
 
     # Insert a dummy dialogue log to own the pre-seeded evidence ref (FK requirement).
     dummy_id = pg.insert_dialogue(
@@ -282,7 +278,7 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
         source_type="evidence",
         source_id="legacy",
     )
-    doc_id = chroma.add_personality_event(event)
+    doc_id = chroma_store.add_personality_event(event)
     pg.insert_dialogue_vector_refs(
         dummy_id,
         [DialogueVectorRef(
@@ -310,7 +306,7 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
     )
     pg.close_session(test_session_id)
 
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma, llm=fake_llm)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
     engine.run()
 
     # Dimension 1 should be deactivated.
@@ -323,5 +319,5 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
     assert len(refs) == 0
 
     # The pre-seeded evidence doc should also be gone from Chroma.
-    remaining = chroma.get_personality_event_ids_by_dimension(1)
+    remaining = chroma_store.get_personality_event_ids_by_dimension(1)
     assert doc_id not in remaining

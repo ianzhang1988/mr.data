@@ -12,6 +12,17 @@ class FixedIdentity(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class UserIdentity(BaseModel):
+    id: Optional[int] = None
+    name: str
+    role: str
+    description: str
+    is_default: bool = False
+    is_protected: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class PersonalityDimension(BaseModel):
     id: Optional[int] = None
     description: str
@@ -77,3 +88,16 @@ class PersonalityEvent(BaseModel):
     dimension_ids: list[int] = Field(default_factory=list)
     source_type: str = "line"  # 'line' | 'event' | 'evidence' | 'web'
     source_id: Optional[str] = None
+
+
+class PersonalitySampleLine(BaseModel):
+    content: str
+    context: Optional[str] = None
+    speaker: str = "assistant"
+    dimension_descriptions: list[str] = Field(default_factory=list)
+
+
+class PersonalityPack(BaseModel):
+    identity: FixedIdentity
+    dimensions: list[PersonalityDimension]
+    sample_lines: list[PersonalitySampleLine] = Field(default_factory=list)

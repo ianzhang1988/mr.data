@@ -69,6 +69,8 @@ flowchart TB
 * 使用 PostgreSQL 保存结构化人格维度、对话记录、会话与调整日志。
 * 默认通过 `pgembed` 启动嵌入式 PostgreSQL，无需单独安装/启动外部 PG；也可通过 `MR_DATA_POSTGRES_DSN` 使用外部数据库。
 * 使用 Chroma（原型阶段替代 Qdrant）保存人格素材向量库与对话记忆向量库；`personality` 集合既包含原始台词，也包含后续交流中产生的、影响人格的事件与归因证据。
+* 默认人格原型为《星际迷航：下一代》中的 **Data**；人格配置（身份、维度、示例台词）统一放在 `data/personalities/*.json`，可通过 `MR_DATA_PERSONALITY_FILE` 切换其他人格。
+* 向量库 Embedding 使用 `fastembed`（ONNX Runtime，无需 PyTorch）：`personality` 采用 Nomic Embed Text v1.5 截断至 512 维，`memories` 采用 BGE-base-zh-v1.5 768 维；代码中自动附加模型要求的 query/document 前缀。
 * 在线对话由 LangGraph 编排：加载人格 → **选择本次应起作用的性格维度** → 生成检索意图与内心独白 → 检索网络资料（可选） → 提取网页正文（可选） → LLM 相关性过滤（可选） → 检索人格素材与记忆 → 组装上下文 → LLM 生成回复 → 记录对话与引用。
 * 性格维度新增 `core` 标记：固定核心维度不会被离线归因自动失效，保持角色稳定性。
 * 离线定时任务只分析**已关闭会话**中的对话，按时间顺序拼接完整 transcript 后交给 LLM 归因；提示词中注入基础人设、当前性格维度、历史人格素材以及助手思考过程。
@@ -123,6 +125,15 @@ MR_DATA_ENABLE_WEB_SEARCH=true
 MR_DATA_WEB_SEARCH_MAX_RESULTS=3
 MR_DATA_ENABLE_WEB_PAGE_EXTRACTION=true
 MR_DATA_ENABLE_WEB_RELEVANCE_FILTER=false
+
+# 人格文件（默认 Data）
+MR_DATA_PERSONALITY_FILE=./data/personalities/data.json
+
+# Embedding 模型配置
+MR_DATA_PERSONALITY_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+MR_DATA_PERSONALITY_EMBEDDING_DIM=512
+MR_DATA_MEMORY_EMBEDDING_MODEL=BAAI/bge-base-zh-v1.5
+MR_DATA_MEMORY_EMBEDDING_DIM=768
 ```
 
 本地模型示例（Ollama）：
@@ -153,6 +164,8 @@ python -m mr_data.cli init
 ```bash
 mr-data ingest
 ```
+
+首次使用会自动通过 `fastembed` 下载 Nomic/BGE 模型文件到本地缓存（约数百 MB），请保持网络畅通。
 
 ### 5. 启动交互对话
 

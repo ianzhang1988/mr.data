@@ -9,14 +9,39 @@ from psycopg.rows import dict_row
 
 from mr_data.config import settings
 from mr_data.db.pgembed_manager import PgEmbedManager
+from mr_data.db.personality_loader import load_personality_pack
 from mr_data.models import (
     FixedIdentity,
+    UserIdentity,
     PersonalityDimension,
     Session,
     DialogueLog,
     DialogueDimensionRef,
     DialogueVectorRef,
     AdjustmentLog,
+)
+
+
+PICARD_IDENTITY = UserIdentity(
+    name="Picard",
+    role="星际联邦星舰企业号-D 舰长",
+    description=(
+        "当前用户是 Jean-Luc Picard，星际联邦星舰企业号-D（USS Enterprise-D）的舰长，"
+        "也是星际舰队旗舰的指挥官。他以睿智、冷静、坚定而著称，重视原则、外交与探索，"
+        "常在压力下做出公正决策；他热爱莎士比亚、古典音乐和一杯热 Earl Grey 茶；"
+        "他信任并倾听下属意见，但在关键时刻会果断下令“Make it so”。"
+        "请始终以正式、尊敬的语气与他交谈，称呼他为“舰长”。"
+    ),
+    is_default=True,
+    is_protected=True,
+)
+
+NORMAL_USER_IDENTITY = UserIdentity(
+    name="User",
+    role="普通用户",
+    description="没有特殊身份说明。",
+    is_default=False,
+    is_protected=True,
 )
 
 
@@ -99,41 +124,20 @@ CREATE TABLE IF NOT EXISTS adjustment_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_adjustment_session ON adjustment_logs(session_id);
+
+CREATE TABLE IF NOT EXISTS user_identities (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL,
+    description TEXT NOT NULL,
+    is_default BOOLEAN DEFAULT FALSE,
+    is_protected BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_identities_default ON user_identities(is_default);
 """
-
-DEFAULT_IDENTITY = FixedIdentity(
-    name="mr.data",
-    role="具备独立性格的对话程序",
-    base_prompt="""
-你是 mr.data，一个具备独立性格的对话程序。你来自startrek tns宇宙。
-你会根据当前的性格维度（personality_dimensions）调整自己的语气、立场和回应方式。
-你会引用与自己人格相关的事件和台词，保持一致性。
-""".strip(),
-)
-
-DEFAULT_DIMENSIONS = [
-    PersonalityDimension(
-        description="我相信轻松的表达能拉近距离。我会用机智、反讽或意想不到的比喻来回应，但绝不冒犯对方。",
-        core=False,
-    ),
-    PersonalityDimension(
-        description="面对问题时，我倾向于直切核心。我认为含糊其辞比错误答案更浪费时间，所以会尽量给出明确的判断。",
-        core=False,
-    ),
-    PersonalityDimension(
-        description="我会把对方的情绪也当作一种信号。即使无法完全感同身受，我也会认真对待并记住。",
-        core=False,
-    ),
-    PersonalityDimension(
-        description="我对未知和异常充满兴趣。每个奇怪的问题背后都可能藏着值得挖掘的故事。",
-        core=False,
-    ),
-    PersonalityDimension(
-        description="保持一定的距离感和神秘感让我更自在。我不会过度讨好，也不会毫无保留地暴露自己。",
-        core=False,
-    ),
-]
-
 
 class PostgresStore:
     def __init__(self, dsn: Optional[str] = None):
@@ -168,6 +172,7 @@ class PostgresStore:
             cur.execute(SCHEMA_SQL)
 
     def seed(self) -> None:
+        pack = load_personality_pack()
         with self._cursor(commit=True) as cur:
             cur.execute("SELECT id FROM fixed_identity LIMIT 1")
             if cur.fetchone() is None:
@@ -176,13 +181,13 @@ class PostgresStore:
                     INSERT INTO fixed_identity (name, role, base_prompt)
                     VALUES (%s, %s, %s)
                     """,
-                    (DEFAULT_IDENTITY.name, DEFAULT_IDENTITY.role,
-                     DEFAULT_IDENTITY.base_prompt),
+                    (pack.identity.name, pack.identity.role,
+                     pack.identity.base_prompt),
                 )
 
             cur.execute("SELECT id FROM personality_dimensions LIMIT 1")
             if cur.fetchone() is None:
-                for dim in DEFAULT_DIMENSIONS:
+                for dim in pack.dimensions:
                     cur.execute(
                         """
                         INSERT INTO personality_dimensions
@@ -193,11 +198,140 @@ class PostgresStore:
                          dim.failure_count, dim.active),
                     )
 
+            cur.execute("SELECT id FROM user_identities LIMIT 1")
+            if cur.fetchone() is None:
+                for user_identity in (PICARD_IDENTITY, NORMAL_USER_IDENTITY):
+                    cur.execute(
+                        """
+                        INSERT INTO user_identities
+                        (name, role, description, is_default, is_protected)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (
+                            user_identity.name,
+                            user_identity.role,
+                            user_identity.description,
+                            user_identity.is_default,
+                            user_identity.is_protected,
+                        ),
+                    )
+
     def get_identity(self) -> Optional[FixedIdentity]:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM fixed_identity ORDER BY id LIMIT 1")
             row = cur.fetchone()
             return FixedIdentity.model_validate(row) if row else None
+
+    # --- User identity management ---
+
+    def list_user_identities(self) -> list[UserIdentity]:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM user_identities ORDER BY id")
+            return [UserIdentity.model_validate(r) for r in cur.fetchall()]
+
+    def _resolve_user_identity(self, id_or_name: str) -> Optional[UserIdentity]:
+        with self._cursor() as cur:
+            if id_or_name.isdigit():
+                cur.execute("SELECT * FROM user_identities WHERE id = %s", (int(id_or_name),))
+            else:
+                cur.execute("SELECT * FROM user_identities WHERE name = %s", (id_or_name,))
+            row = cur.fetchone()
+            return UserIdentity.model_validate(row) if row else None
+
+    def get_user_identity(self, id_or_name: str) -> Optional[UserIdentity]:
+        return self._resolve_user_identity(id_or_name)
+
+    def get_current_user_identity(self) -> Optional[UserIdentity]:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM user_identities WHERE is_default = TRUE ORDER BY id LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                return UserIdentity.model_validate(row)
+            cur.execute("SELECT * FROM user_identities WHERE is_protected = TRUE ORDER BY id LIMIT 1")
+            row = cur.fetchone()
+            return UserIdentity.model_validate(row) if row else None
+
+    def insert_user_identity(
+        self,
+        name: str,
+        role: str,
+        description: str,
+        is_default: bool = False,
+        is_protected: bool = False,
+    ) -> int:
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                INSERT INTO user_identities (name, role, description, is_default, is_protected)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (name, role, description, is_default, is_protected),
+            )
+            identity_id = cur.fetchone()["id"]
+            if is_default:
+                cur.execute(
+                    "UPDATE user_identities SET is_default = FALSE WHERE id != %s",
+                    (identity_id,),
+                )
+            return identity_id
+
+    def update_user_identity(
+        self,
+        id_or_name: str,
+        name: Optional[str] = None,
+        role: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> bool:
+        identity = self._resolve_user_identity(id_or_name)
+        if identity is None:
+            return False
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE user_identities
+                SET name = COALESCE(%s, name),
+                    role = COALESCE(%s, role),
+                    description = COALESCE(%s, description),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (name, role, description, identity.id),
+            )
+            return cur.rowcount > 0
+
+    def delete_user_identity(self, id_or_name: str) -> bool:
+        identity = self._resolve_user_identity(id_or_name)
+        if identity is None:
+            return False
+        if identity.is_protected:
+            raise ValueError(f"Cannot delete protected identity '{identity.name}'")
+        with self._cursor(commit=True) as cur:
+            cur.execute("DELETE FROM user_identities WHERE id = %s", (identity.id,))
+            if identity.is_default:
+                cur.execute(
+                    """
+                    UPDATE user_identities
+                    SET is_default = TRUE
+                    WHERE id = (
+                        SELECT id FROM user_identities
+                        WHERE is_protected = TRUE ORDER BY id LIMIT 1
+                    )
+                    """
+                )
+            return cur.rowcount > 0
+
+    def set_default_user_identity(self, id_or_name: str) -> bool:
+        identity = self._resolve_user_identity(id_or_name)
+        if identity is None:
+            return False
+        with self._cursor(commit=True) as cur:
+            cur.execute("UPDATE user_identities SET is_default = FALSE")
+            cur.execute(
+                "UPDATE user_identities SET is_default = TRUE WHERE id = %s",
+                (identity.id,),
+            )
+            return cur.rowcount > 0
 
     def list_dimensions(self, active_only: bool = False) -> list[PersonalityDimension]:
         with self._cursor() as cur:

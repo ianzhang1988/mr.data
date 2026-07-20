@@ -21,6 +21,7 @@ dependencies = [
     "trafilatura>=1.12",
     "requests>=2.32",
     "beautifulsoup4>=4.12",
+    "fastembed>=0.4.0",
 ]
 
 [project.optional-dependencies]
@@ -48,3 +49,6 @@ packages = ["src/mr_data"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "slow: marks tests that download or run large models",
+]

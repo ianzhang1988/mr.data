@@ -23,6 +23,16 @@ class Settings(BaseSettings):
 
     chroma_persist_dir: str = "./data/chroma"
 
+    # 人格文件配置
+    personality_file: str = "./data/personalities/data.json"
+
+    # 向量库 embedding 配置
+    personality_embedding_model: str = "nomic-ai/nomic-embed-text-v1.5"
+    personality_embedding_dim: int = 512
+    memory_embedding_model: str = "BAAI/bge-base-zh-v1.5"
+    memory_embedding_dim: int = 768
+    chroma_recreate_on_mismatch: bool = True
+
     # 网络搜索 RAG 配置
     enable_web_search: bool = True
     web_search_max_results: int = 3

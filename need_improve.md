@@ -1,9 +1,9 @@
-# prompt
+# 在改进前，首先
 * 使用 scripts下的code_struct.py 获取src目录下的代码结构
 
 # 待改进
 
-（当前暂无待改进项）
+（暂无）
 
 # 已完成的改进项
 
@@ -22,6 +22,10 @@
 13. ✅ **Web 检索条件分支**：`retrieve_web`、`extract_web_pages` 改为 `conditional_edges`，根据配置和中间结果动态跳过。
 14. ✅ **网页资料 LLM 相关性过滤**：`extract_web_pages` 后可选通过 LLM 逐文档判断与用户输入的相关性，保留相关文档。
 15. ✅ **网络资料写入世界知识记忆**：`_log_dialogue` 把 `web_docs` 写入 `memories` 向量库，附带 `source_type=web`、URL、标题、检索时间、查询等 metadata。
+16. ✅ **默认人格改为 Data**：`PostgresStore.seed()` 默认人格原型改为《星际迷航：下一代》中的 Data；新增 `PersonalityPack`/`PersonalitySampleLine` 模型与 `personality_loader`，支持从 `data/personalities/*.json` 加载人格，代码常量作为兜底；`mr-data ingest` 从人格包读取示例台词。
+17. ✅ **Chroma 高级 Embedding**：`personality` 集合改用 `fastembed` + `nomic-ai/nomic-embed-text-v1.5` 并截断至 512 维，`memories` 集合改用 `BAAI/bge-base-zh-v1.5` 768 维；代码中自动添加 Nomic/BGE 所需的 query/document 前缀；旧集合维度不一致时自动重建。
+18. ✅ **用户身份设定**：新增 `user_identities` 表，支持保存多个用户身份；seed 时写入 Picard（默认、受保护）与普通用户（受保护）；`DialogueGraph._assemble_and_generate` 从数据库读取当前默认身份并注入 system prompt；CLI 新增 `mr-data identity list/add/edit/delete/select` 管理身份。
+19. ✅ **交互式帮助命令**：`mr-data chat` 中输入 `/help` 或 `/?` 可显示当前 slash 命令、启动选项及顶层 CLI 命令。
 
 # 未来可选增强
 

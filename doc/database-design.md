@@ -8,7 +8,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 
 | 表名 | 说明 |
 |------|------|
-| `fixed_identity` | 固定身份：名称、角色、基础设定 |
+| `fixed_identity` | 固定身份：名称、角色、基础设定；默认来自 `data/personalities/data.json` 的 Data 人设 |
 | `personality_dimensions` | 性格维度：描述性自白、成功/失败计数、核心标记 |
 | `sessions` | 会话：标记对话的语义边界 |
 | `dialogue_logs` | 对话记录：用户与助手的每轮消息及评估反馈 |
@@ -25,7 +25,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | SERIAL PK | 自增主键 |
-| `name` | TEXT | 名称，例如 `mr.data` |
+| `name` | TEXT | 名称，例如 `Data` |
 | `role` | TEXT | 角色描述 |
 | `base_prompt` | TEXT | 基础系统提示词 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
@@ -53,15 +53,21 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 - 没有 `failure_threshold`：淘汰阈值是系统级设置，放在 `.env` / `config.py` 中。
 - `core` 用于保持角色稳定性：核心维度即使多次失败也会保持 `active = TRUE`。
 
-### 默认维度示例
+### 默认维度示例（Data）
 
 ```text
-我相信轻松的表达能拉近距离。我会用机智、反讽或意想不到的比喻来回应，但绝不冒犯对方。
+我对人类行为、艺术与未知现象抱有强烈的好奇心，渴望通过观察与学习不断扩展对自身和世界的理解。
 ```
 
 ```text
-面对问题时，我倾向于直切核心。我认为含糊其辞比错误答案更浪费时间，所以会尽量给出明确的判断。
+我倾向于逻辑、字面、精确地表达，避免含糊其辞，并优先基于事实与推理给出回答。
 ```
+
+```text
+我保持正式、礼貌、星际舰队式的仪态，用尊重而疏离的方式与人交流。
+```
+
+> 完整默认人格见 `data/personalities/data.json`，可通过 `MR_DATA_PERSONALITY_FILE` 切换。
 
 ---
 
@@ -258,5 +264,6 @@ erDiagram
 4. **会话结束**：用户输入 `/newsession` 或退出 CLI 时，当前 `sessions` 记录标记为 `closed`。
 5. **离线归因**：只读取状态为 `closed` 且包含未处理对话的会话，按会话分析后更新 `personality_dimensions`。
 6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
-7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词，供后续对话检索。
+7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词，供后续对话检索。`memories` 使用 BGE-base-zh-v1.5（768 维）。
+8. **人格素材向量库**：`personality` 集合使用 Nomic Embed Text v1.5 截断至 512 维；新增文档自动加 `search_document:` 前缀，查询自动加 `search_query:` 前缀。
 8. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -10,7 +11,7 @@ os.environ.setdefault("MR_DATA_ENABLE_WEB_SEARCH", "false")
 import pytest
 
 from mr_data.config import settings
-from mr_data.db import PostgresStore, PgEmbedManager
+from mr_data.db import PostgresStore, PgEmbedManager, ChromaStore
 from mr_data.llm import LLMClient
 from mr_data.logging import reset_loggers
 
@@ -47,9 +48,42 @@ class FakeLLMClient(LLMClient):
         return {"deltas": []}
 
 
+class FakeEmbedding:
+    """Deterministic embedding function that avoids downloading heavy models."""
+
+    def __init__(self, dim: int = 8):
+        self._dim = dim
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        return [self._encode(text) for text in input]
+
+    def _encode(self, text: str) -> list[float]:
+        digest = hashlib.md5(text.encode("utf-8")).digest()
+        return [float(b) / 255.0 for b in digest[: self._dim]]
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+
 @pytest.fixture
 def fake_llm():
     return FakeLLMClient()
+
+
+@pytest.fixture
+def fake_embedding():
+    return FakeEmbedding(dim=8)
+
+
+@pytest.fixture
+def chroma_store(tmp_path):
+    """ChromaStore with lightweight fake embeddings for unit/integration tests."""
+    return ChromaStore(
+        persist_dir=str(tmp_path / "chroma"),
+        personality_embedding_fn=FakeEmbedding(dim=8),
+        memory_embedding_fn=FakeEmbedding(dim=8),
+    )
 
 
 @pytest.fixture(scope="session")

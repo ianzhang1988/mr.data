@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from typing import Annotated, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
@@ -25,6 +27,7 @@ class DialogueState(TypedDict, total=False):
     user_input: str
     identity: Optional[FixedIdentity]
     dimensions: list[PersonalityDimension]
+    selected_dimension_ids: list[int]
     retrieval_query: str
     inner_monologue: Optional[str]
     web_docs: Annotated[list[dict], _merge_docs]
@@ -59,19 +62,35 @@ class DialogueGraph:
         builder = StateGraph(DialogueState)
 
         builder.add_node("load_personality", self._load_personality)
+        builder.add_node("select_dimensions", self._select_dimensions)
         builder.add_node("think", self._think)
         builder.add_node("retrieve_web", self._retrieve_web)
         builder.add_node("extract_web_pages", self._extract_web_pages)
+        builder.add_node("filter_web_docs", self._filter_web_docs)
         builder.add_node("retrieve_personality", self._retrieve_personality)
         builder.add_node("retrieve_memories", self._retrieve_memories)
         builder.add_node("assemble_and_generate", self._assemble_and_generate)
         builder.add_node("log_dialogue", self._log_dialogue)
 
         builder.set_entry_point("load_personality")
-        builder.add_edge("load_personality", "think")
-        builder.add_edge("think", "retrieve_web")
-        builder.add_edge("retrieve_web", "extract_web_pages")
-        builder.add_edge("extract_web_pages", "retrieve_personality")
+        builder.add_edge("load_personality", "select_dimensions")
+        builder.add_edge("select_dimensions", "think")
+        builder.add_conditional_edges(
+            "think",
+            self._route_web,
+            {"web": "retrieve_web", "personality": "retrieve_personality"},
+        )
+        builder.add_conditional_edges(
+            "retrieve_web",
+            self._route_extract,
+            {"extract": "extract_web_pages", "personality": "retrieve_personality"},
+        )
+        builder.add_conditional_edges(
+            "extract_web_pages",
+            self._route_filter,
+            {"filter": "filter_web_docs", "personality": "retrieve_personality"},
+        )
+        builder.add_edge("filter_web_docs", "retrieve_personality")
         builder.add_edge("retrieve_personality", "retrieve_memories")
         builder.add_edge("retrieve_memories", "assemble_and_generate")
         builder.add_edge("assemble_and_generate", "log_dialogue")
@@ -96,10 +115,75 @@ class DialogueGraph:
             "dimensions": dimensions,
         }
 
+    def _select_dimensions(self, state: DialogueState) -> DialogueState:
+        dimensions = state.get("dimensions", [])
+        fallback_ids = [dim.id for dim in dimensions if dim.id is not None]
+        selected_ids = fallback_ids[:]
+
+        if dimensions:
+            dim_text = "\n".join(
+                f"- [{dim.id}] {dim.description}"
+                for dim in dimensions
+                if dim.id is not None
+            )
+            system = """你是一个性格维度选择助手。请根据用户输入，从下列维度中选出最应当起作用的一个或多个维度。
+请严格按以下 JSON 格式返回，不要输出其他内容：
+{"dimension_ids": [1, 3]}"""
+            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{dim_text}\n\n请返回 JSON："
+            try:
+                raw = self.llm.chat(system, prompt, temperature=0.3).strip()
+                cleaned = raw.removeprefix("```json").removesuffix("```").strip()
+                data = json.loads(cleaned)
+                ids = data.get("dimension_ids", [])
+                valid_ids = {dim.id for dim in dimensions if dim.id is not None}
+                if isinstance(ids, list) and all(isinstance(x, int) for x in ids):
+                    selected_ids = [x for x in ids if x in valid_ids]
+            except Exception:
+                pass
+
+        self.logger.info(
+            "Selected dimensions",
+            extra={
+                "event": "personality.dimensions_selected",
+                "session_id": state["session_id"],
+                "details": {
+                    "selected_ids": selected_ids,
+                    "available_count": len(dimensions),
+                },
+            },
+        )
+        return {**state, "selected_dimension_ids": selected_ids}
+
+    def _route_web(self, state: DialogueState) -> str:
+        return "web" if self.enable_web_search else "personality"
+
+    def _route_extract(self, state: DialogueState) -> str:
+        docs = state.get("web_docs", [])
+        if docs and settings.enable_web_page_extraction and settings.web_extract_max_pages > 0:
+            return "extract"
+        return "personality"
+
+    def _route_filter(self, state: DialogueState) -> str:
+        docs = state.get("web_docs", [])
+        if docs and settings.enable_web_relevance_filter:
+            return "filter"
+        return "personality"
+
     def _think(self, state: DialogueState) -> DialogueState:
-        system = """你是一个查询改写与内心独白生成助手。给定用户输入，请完成两件事：
+        dimensions = state.get("dimensions", [])
+        selected_ids = set(state.get("selected_dimension_ids", []))
+        selected_dimensions = [dim for dim in dimensions if dim.id in selected_ids]
+        selected_text = "\n".join(
+            f"- {dim.description}"
+            for dim in selected_dimensions
+        ) or "（未特别选中）"
+
+        system = f"""你是一个查询改写与内心独白生成助手。给定用户输入，请完成两件事：
 1. 生成一个用于检索人格素材、记忆和网络资料的简短语义查询。
 2. 用一句话描述你当前对用户意图的理解以及你打算如何回应（内心独白）。
+
+本次应重点参考的性格维度：
+{selected_text}
 
 请严格按以下格式输出：
 检索查询：<一句话查询>
@@ -179,6 +263,39 @@ class DialogueGraph:
             },
         )
         return {**state, "web_docs": extracted}
+
+    def _filter_web_docs(self, state: DialogueState) -> DialogueState:
+        docs = state.get("web_docs", [])
+        if not docs:
+            return {**state, "web_docs": []}
+
+        filtered = []
+        user_input = state["user_input"]
+        for doc in docs:
+            content = doc.get("page_content", "")[:1200]
+            system = "判断以下网络资料是否与用户输入相关。只回答 yes 或 no，不要解释。"
+            prompt = f"用户输入：{user_input}\n\n资料内容：\n{content}\n\n是否相关？"
+            try:
+                raw = self.llm.chat(system, prompt, temperature=0.0).strip().lower()
+                is_relevant = raw.startswith("yes") or raw.startswith("是") or "yes" in raw
+            except Exception:
+                is_relevant = True
+            if is_relevant:
+                filtered.append(doc)
+
+        # Fallback: if the LLM filtered out everything, keep the original docs.
+        if not filtered and docs:
+            filtered = docs
+
+        self.logger.info(
+            "Filtered web docs",
+            extra={
+                "event": "retrieve.web_filtered",
+                "session_id": state["session_id"],
+                "details": {"input_count": len(docs), "output_count": len(filtered)},
+            },
+        )
+        return {**state, "web_docs": filtered}
 
     def _retrieve_personality(self, state: DialogueState) -> DialogueState:
         docs = self.chroma.query_personality(state["retrieval_query"], top_k=5)
@@ -301,6 +418,28 @@ class DialogueGraph:
         # 写入记忆向量库
         self.chroma.add_memory(session_id, f"用户：{user_input}")
         self.chroma.add_memory(session_id, f"助手：{reply}")
+
+        # 把网络资料作为世界知识写入记忆向量库
+        retrieval_query = state.get("retrieval_query", user_input)
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        for doc in web_docs:
+            metadata = doc.get("metadata", {})
+            title = metadata.get("title", "")
+            url = metadata.get("url", "")
+            content = doc.get("page_content", "")
+            memory_content = f"[网络资料] {title}\n{url}\n{content[:800]}"
+            self.chroma.add_memory(
+                session_id,
+                memory_content,
+                metadata={
+                    "session_id": session_id,
+                    "source_type": "web",
+                    "url": url,
+                    "title": title,
+                    "retrieved_at": retrieved_at,
+                    "query": retrieval_query,
+                },
+            )
 
         self.logger.info(
             "Logged dialogue turn",

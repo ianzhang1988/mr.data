@@ -25,14 +25,18 @@ flowchart TB
     subgraph Online["LangGraph 对话编排层（在线请求）"]
         direction TB
         ON1["加载人格: 从 PostgreSQL 读取 current_personality"]
+        ON1b["选择维度: LLM 选出本次应起作用的核心/活跃性格"]
         ON2["Think: 生成语义解释 (用于向量检索)"]
         ON2b["检索网络资料: DuckDuckGo (可选)"]
+        ON2c["提取网页正文 (可选)"]
+        ON2d["LLM 相关性过滤 (可选)"]
         ON3["检索人格素材: 查询 personality 向量库"]
         ON4["检索记忆: 查询 memories 对话记忆向量库"]
         ON5["组装上下文: 合并人格参数 + 素材 + 记忆 + 网络资料"]
         ON6["LLM生成: 调用模型，返回回复"]
-        ON7["记录日志: 写入对话记录表 + 引用"]
-        ON1 --> ON2 --> ON2b --> ON3 --> ON4 --> ON5 --> ON6 --> ON7
+        ON7["记录日志: 写入对话记录表 + 引用 + 世界知识记忆"]
+        ON1 --> ON1b --> ON2
+        ON2 --> ON2b --> ON2c --> ON2d --> ON3 --> ON4 --> ON5 --> ON6 --> ON7
     end
 
     subgraph Data["数据层"]
@@ -65,11 +69,13 @@ flowchart TB
 * 使用 PostgreSQL 保存结构化人格维度、对话记录、会话与调整日志。
 * 默认通过 `pgembed` 启动嵌入式 PostgreSQL，无需单独安装/启动外部 PG；也可通过 `MR_DATA_POSTGRES_DSN` 使用外部数据库。
 * 使用 Chroma（原型阶段替代 Qdrant）保存人格素材向量库与对话记忆向量库；`personality` 集合既包含原始台词，也包含后续交流中产生的、影响人格的事件与归因证据。
-* 在线对话由 LangGraph 编排：加载人格 → 生成检索意图与内心独白 → 检索网络资料（可选） → 提取网页正文 → 检索人格素材与记忆 → 组装上下文 → LLM 生成回复 → 记录对话与引用。
+* 在线对话由 LangGraph 编排：加载人格 → **选择本次应起作用的性格维度** → 生成检索意图与内心独白 → 检索网络资料（可选） → 提取网页正文（可选） → LLM 相关性过滤（可选） → 检索人格素材与记忆 → 组装上下文 → LLM 生成回复 → 记录对话与引用。
+* 性格维度新增 `core` 标记：固定核心维度不会被离线归因自动失效，保持角色稳定性。
 * 离线定时任务只分析**已关闭会话**中的对话，按时间顺序拼接完整 transcript 后交给 LLM 归因；提示词中注入基础人设、当前性格维度、历史人格素材以及助手思考过程。
 * 归因结果不仅更新维度计数，还会把关键证据片段写回 `personality` 向量库（`source_type="evidence"`），并标记证据与基础性格的关系；同时在 `dialogue_vector_refs` 记录反向引用。
 * `personality` 向量库采用"场景上下文 embedding + agent 台词 utterance"的存储方式：检索时按完整场景匹配，注入 prompt 时只返回 agent 相关台词。
-* 当某个维度的失败次数达到阈值（`MR_DATA_FAILURE_THRESHOLD`）时，自动将该维度标记为失效，并清理 `personality` 向量库中对应的相关证据文档。
+* 当某个非核心维度的失败次数达到阈值（`MR_DATA_FAILURE_THRESHOLD`）时，自动将该维度标记为失效，并清理 `personality` 向量库中对应的相关证据文档。
+* 网络资料不仅用于当前回复，还会作为世界知识写入 `memories` 向量库，附带 URL、标题、检索时间等 metadata。
 * 结构化日志：所有关键操作（对话、检索、归因、维度失效）以 JSONL 写入 `./logs/mr-data.log`，默认滚动保留，可用 [logdy](https://logdy.dev/) 等工具查看。
 * CLI `chat` 支持 `/newsession` 切换会话；退出时自动关闭当前会话。
 
@@ -115,6 +121,8 @@ MR_DATA_CHROMA_PERSIST_DIR=./data/chroma
 # 网络搜索 RAG（默认开启）
 MR_DATA_ENABLE_WEB_SEARCH=true
 MR_DATA_WEB_SEARCH_MAX_RESULTS=3
+MR_DATA_ENABLE_WEB_PAGE_EXTRACTION=true
+MR_DATA_ENABLE_WEB_RELEVANCE_FILTER=false
 ```
 
 本地模型示例（Ollama）：

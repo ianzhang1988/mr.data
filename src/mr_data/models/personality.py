@@ -15,6 +15,7 @@ class FixedIdentity(BaseModel):
 class PersonalityDimension(BaseModel):
     id: Optional[int] = None
     description: str
+    core: bool = False
     success_count: int = 0
     failure_count: int = 0
     active: bool = True

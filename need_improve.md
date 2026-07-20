@@ -1,12 +1,6 @@
 # 待改进
 
-1. personality_dimensions中增加一个列，标记是否是固定核心性格。需要这种固核心定性格来保持角色的稳定性。
-2. src/mr_data/online/graph.py 中
-  - 在_think前增加一步，根据当前用户input，让llm选出应当起作用的多个核心性格（personality_dimensions）
-  - _think时，考虑在prompt中，增加上一步选出的核心性格作为查询的参考。
-  - retrieve_web extract_web_pages 应该是可选的分支，增加conditional_edges
-  - extract_web_pages 后应该用llm挑选出和用户输入相关的文档，并更新web_docs, 例如可以对每个文档调用llm，结合用户input，让llm判断是否保留
-  - _log_dialogue 写入记忆向量库部分，增加web_docs内容，作为新的世界知识，增加时间等metadata，以便后续做其他功能
+（当前暂无待改进项）
 
 # 已完成的改进项
 
@@ -20,6 +14,11 @@
 8. ✅ 性格向量库改为**场景上下文 embedding + agent 台词 utterance**：`PersonalityEvent` 新增 `context` 与 `speaker`；Chroma 存储时嵌入完整场景，检索返回时只取 `metadata.utterance`。
 9. ✅ **结构化日志系统**：新增 `src/mr_data/logging.py`，JSONL 输出到 `./logs/mr-data.log`，支持滚动；在线对话记录检索查询与内心独白，离线归因读取思考过程并纳入提示词。
 10. ✅ **网页正文提取工具**：新增 `PageExtractor`（`trafilatura` + `requests/BeautifulSoup` fallback），接入 LangGraph，在 web search 后提取页面正文。
+11. ✅ **固定核心性格标记**：`personality_dimensions` 增加 `core` 列；核心维度不会被离线归因自动失效，保持角色稳定性。
+12. ✅ **在线核心性格选择**：`DialogueGraph` 在 `_think` 前增加 `_select_dimensions` 节点，由 LLM 根据用户输入选出最应起作用的性格维度，并注入 `_think` 提示词。
+13. ✅ **Web 检索条件分支**：`retrieve_web`、`extract_web_pages` 改为 `conditional_edges`，根据配置和中间结果动态跳过。
+14. ✅ **网页资料 LLM 相关性过滤**：`extract_web_pages` 后可选通过 LLM 逐文档判断与用户输入的相关性，保留相关文档。
+15. ✅ **网络资料写入世界知识记忆**：`_log_dialogue` 把 `web_docs` 写入 `memories` 向量库，附带 `source_type=web`、URL、标题、检索时间、查询等 metadata。
 
 # 未来可选增强
 

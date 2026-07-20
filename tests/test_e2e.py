@@ -16,8 +16,9 @@ from mr_data.offline import AttributionEngine
 
 
 def test_models_serialize():
-    dim = PersonalityDimension(description="我相信轻松的表达能拉近距离。")
+    dim = PersonalityDimension(description="我相信轻松的表达能拉近距离。", core=True)
     assert dim.description
+    assert dim.core is True
     assert dim.success_count == 0
 
 
@@ -146,6 +147,78 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, tmp_path, 
     assert any(ref.dialogue_log_id == assistant_id for ref in refs)
 
 
+def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_available, tmp_path):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
+    graph = DialogueGraph(pg_store=pg, chroma_store=chroma, llm=fake_llm, enable_web_search=False)
+
+    # Mark dimension 2 as core and run a chat turn.
+    with pg._cursor(commit=True) as cur:
+        cur.execute("UPDATE personality_dimensions SET core = TRUE WHERE id = 2")
+
+    reply = graph.chat(test_session_id, "你好")
+    assert reply
+
+    # Dimension 2 should keep its core flag.
+    dim = pg.get_dimension(2)
+    assert dim is not None
+    assert dim.core is True
+
+    # Reset to avoid leaking core=True into other tests that share the embedded PG.
+    with pg._cursor(commit=True) as cur:
+        cur.execute("UPDATE personality_dimensions SET core = FALSE WHERE id = 2")
+
+
+def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, tmp_path, monkeypatch):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    class FakeWebSearch:
+        def search(self, query: str) -> list[dict]:
+            return [
+                {
+                    "id": "web:0",
+                    "page_content": "太阳系有八大行星",
+                    "metadata": {
+                        "source_type": "web",
+                        "url": "http://example.com/planets",
+                        "title": "行星",
+                    },
+                }
+            ]
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+    chroma = ChromaStore(persist_dir=str(tmp_path / "chroma"))
+
+    monkeypatch.setattr(settings, "enable_web_page_extraction", False)
+    monkeypatch.setattr(settings, "enable_web_relevance_filter", False)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma,
+        llm=fake_llm,
+        web_search=FakeWebSearch(),
+        enable_web_search=True,
+    )
+    reply = graph.chat(test_session_id, "太阳系有几颗行星")
+    assert reply
+
+    docs = chroma.query_memories("八大行星", session_id=test_session_id, top_k=10)
+    assert any("八大行星" in d["page_content"] for d in docs)
+    assert any(d["metadata"].get("source_type") == "web" for d in docs)
+    assert any(d["metadata"].get("url") == "http://example.com/planets" for d in docs)
+
+
 def test_full_session_lifecycle(fake_llm, pg_available, tmp_path, temp_log_dir):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
@@ -221,11 +294,12 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
         )],
     )
 
-    # Set dimension 1 to exactly the threshold so the incoming attribution triggers pruning.
+    # Ensure dimension 1 is not core and set it to exactly the threshold so the
+    # incoming attribution triggers pruning.
     threshold = settings.failure_threshold
     with pg._cursor(commit=True) as cur:
         cur.execute(
-            "UPDATE personality_dimensions SET failure_count = %s WHERE id = 1",
+            "UPDATE personality_dimensions SET core = FALSE, failure_count = %s WHERE id = 1",
             (threshold,),
         )
 

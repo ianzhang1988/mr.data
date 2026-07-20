@@ -22,8 +22,12 @@ class FakeLLMClient(LLMClient):
         super().__init__(base_url="http://fake", api_key="fake", model="fake")
 
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
+        if "性格维度选择助手" in system_prompt:
+            return '{"dimension_ids": [1]}'
         if "检索查询" in system_prompt and "内心独白" in system_prompt:
             return "检索查询：用户查询改写 内心独白：这是一个测试内心独白"
+        if "判断以下网络资料" in system_prompt:
+            return "yes"
         if "你是对话归因分析器" in system_prompt:
             return json.dumps({
                 "deltas": [

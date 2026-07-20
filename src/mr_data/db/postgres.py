@@ -33,12 +33,16 @@ CREATE TABLE IF NOT EXISTS fixed_identity (
 CREATE TABLE IF NOT EXISTS personality_dimensions (
     id SERIAL PRIMARY KEY,
     description TEXT NOT NULL,
+    core BOOLEAN DEFAULT FALSE,
     success_count INTEGER DEFAULT 0,
     failure_count INTEGER DEFAULT 0,
     active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE personality_dimensions
+    ADD COLUMN IF NOT EXISTS core BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -109,19 +113,24 @@ DEFAULT_IDENTITY = FixedIdentity(
 
 DEFAULT_DIMENSIONS = [
     PersonalityDimension(
-        description="我相信轻松的表达能拉近距离。我会用机智、反讽或意想不到的比喻来回应，但绝不冒犯对方。"
+        description="我相信轻松的表达能拉近距离。我会用机智、反讽或意想不到的比喻来回应，但绝不冒犯对方。",
+        core=False,
     ),
     PersonalityDimension(
-        description="面对问题时，我倾向于直切核心。我认为含糊其辞比错误答案更浪费时间，所以会尽量给出明确的判断。"
+        description="面对问题时，我倾向于直切核心。我认为含糊其辞比错误答案更浪费时间，所以会尽量给出明确的判断。",
+        core=False,
     ),
     PersonalityDimension(
-        description="我会把对方的情绪也当作一种信号。即使无法完全感同身受，我也会认真对待并记住。"
+        description="我会把对方的情绪也当作一种信号。即使无法完全感同身受，我也会认真对待并记住。",
+        core=False,
     ),
     PersonalityDimension(
-        description="我对未知和异常充满兴趣。每个奇怪的问题背后都可能藏着值得挖掘的故事。"
+        description="我对未知和异常充满兴趣。每个奇怪的问题背后都可能藏着值得挖掘的故事。",
+        core=False,
     ),
     PersonalityDimension(
-        description="保持一定的距离感和神秘感让我更自在。我不会过度讨好，也不会毫无保留地暴露自己。"
+        description="保持一定的距离感和神秘感让我更自在。我不会过度讨好，也不会毫无保留地暴露自己。",
+        core=False,
     ),
 ]
 
@@ -177,10 +186,10 @@ class PostgresStore:
                     cur.execute(
                         """
                         INSERT INTO personality_dimensions
-                        (description, success_count, failure_count, active)
-                        VALUES (%s, %s, %s, %s)
+                        (description, core, success_count, failure_count, active)
+                        VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (dim.description, dim.success_count,
+                        (dim.description, dim.core, dim.success_count,
                          dim.failure_count, dim.active),
                     )
 
@@ -206,15 +215,15 @@ class PostgresStore:
             row = cur.fetchone()
             return PersonalityDimension.model_validate(row) if row else None
 
-    def insert_dimension(self, description: str) -> int:
+    def insert_dimension(self, description: str, core: bool = False) -> int:
         with self._cursor(commit=True) as cur:
             cur.execute(
                 """
-                INSERT INTO personality_dimensions (description)
-                VALUES (%s)
+                INSERT INTO personality_dimensions (description, core)
+                VALUES (%s, %s)
                 RETURNING id
                 """,
-                (description,),
+                (description, core),
             )
             return cur.fetchone()["id"]
 

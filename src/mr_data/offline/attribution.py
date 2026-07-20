@@ -247,9 +247,9 @@ class AttributionEngine:
                 )
                 self.chroma.add_personality_event(event)
 
-            # Check pruning threshold.
+            # Check pruning threshold. Core dimensions stay active for stability.
             dim = self.pg.get_dimension(dim_id)
-            if dim and dim.failure_count >= settings.failure_threshold:
+            if dim and not dim.core and dim.failure_count >= settings.failure_threshold:
                 self.pg.deactivate_dimension(dim_id)
                 self._purge_dimension_vectors(dim_id)
                 self.logger.info(

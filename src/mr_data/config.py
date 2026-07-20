@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,9 +41,12 @@ class Settings(BaseSettings):
     personality_retrieval_top_k: int = 5
     failure_threshold: int = 5
 
-    # 网页正文提取配置
+    # 网页正文提取与相关性过滤配置
+    enable_web_page_extraction: bool = True
+    enable_web_relevance_filter: bool = False
     web_extract_max_pages: int = 2
     web_extract_max_length: int = 4000
+    web_filter_model: Optional[str] = None
 
 
 settings = Settings()

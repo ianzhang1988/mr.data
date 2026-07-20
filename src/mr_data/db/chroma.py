@@ -87,12 +87,21 @@ class ChromaStore:
             })
         return docs
 
-    def add_memory(self, session_id: str, content: str, memory_id: Optional[str] = None) -> str:
+    def add_memory(
+        self,
+        session_id: str,
+        content: str,
+        memory_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> str:
         doc_id = memory_id or str(uuid.uuid4())
+        meta = {"session_id": session_id}
+        if metadata:
+            meta.update(metadata)
         self.memories.add(
             ids=[doc_id],
             documents=[content],
-            metadatas=[{"session_id": session_id}],
+            metadatas=[meta],
         )
         return doc_id
 

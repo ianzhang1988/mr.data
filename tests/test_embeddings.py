@@ -2,9 +2,63 @@ import hashlib
 
 import pytest
 
+import fastembed
+
 from mr_data.db import ChromaStore
 from mr_data.embeddings import NomicPersonalityEmbedding, BGEMemoryEmbedding
 from mr_data.models import PersonalityEvent
+
+
+class _FakeVector:
+    def __init__(self, values: list[float]):
+        self._values = values
+
+    def __getitem__(self, item):
+        return _FakeVector(self._values[item])
+
+    def tolist(self):
+        return list(self._values)
+
+
+class _FakeTextEmbedding:
+    def __init__(self, *, output_dim: int = 8, **kwargs):
+        self._output_dim = output_dim
+
+    def embed(self, texts: list[str]):
+        for _ in texts:
+            yield _FakeVector([float(i) for i in range(self._output_dim)])
+
+
+@pytest.fixture
+def fake_fastembed(monkeypatch):
+    monkeypatch.setattr(fastembed, "TextEmbedding", _FakeTextEmbedding)
+
+
+def test_nomic_truncates_to_dim(fake_fastembed):
+    embedding = NomicPersonalityEmbedding(dim=4)
+    result = embedding(["test"])
+    assert len(result) == 1
+    assert len(result[0]) == 4
+    assert result[0] == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_bge_returns_full_model_output(fake_fastembed):
+    # BGE should NOT truncate, even if the model returns more dims than configured.
+    embedding = BGEMemoryEmbedding(dim=8)
+    result = embedding(["test"])
+    assert len(result) == 1
+    # _FakeTextEmbedding default output_dim is 8, so base class returns all 8.
+    assert len(result[0]) == 8
+    assert result[0] == [float(i) for i in range(8)]
+
+
+def test_bge_does_not_truncate_when_model_output_exceeds_dim(fake_fastembed):
+    embedding = BGEMemoryEmbedding(dim=4)
+    # Override the fake model to produce 6 dims, proving BGE keeps them all.
+    embedding._model = _FakeTextEmbedding(output_dim=6)
+    result = embedding(["test"])
+    assert len(result[0]) == 6
+    assert result[0] == [float(i) for i in range(6)]
 
 
 class _RecordingEmbedding:

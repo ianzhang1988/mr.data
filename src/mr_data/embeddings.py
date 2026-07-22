@@ -7,6 +7,10 @@ class FastembedEmbedding:
     This avoids pulling in PyTorch while still supporting high-quality local
     models such as Nomic and BGE.
 
+    The base class returns the full model output unchanged. Subclasses that
+    rely on matryoshka truncation (e.g. Nomic) should override ``__call__`` to
+    slice the vectors to the desired dimension.
+
     Callers are responsible for adding model-specific prefixes:
 
     - Nomic documents: ``search_document: <text>``
@@ -43,7 +47,7 @@ class FastembedEmbedding:
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         embeddings = list(self._model.embed(input))
-        return [emb[: self._dim].tolist() for emb in embeddings]
+        return [emb.tolist() for emb in embeddings]
 
     @property
     def dim(self) -> int:
@@ -64,6 +68,10 @@ class NomicPersonalityEmbedding(FastembedEmbedding):
         **kwargs: Any,
     ):
         super().__init__(model_name=model_name, dim=dim, **kwargs)
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        embeddings = list(self._model.embed(input))
+        return [emb[: self._dim].tolist() for emb in embeddings]
 
 
 class BGEMemoryEmbedding(FastembedEmbedding):

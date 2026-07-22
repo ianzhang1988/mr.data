@@ -198,8 +198,17 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
     pg.seed()
     pg.create_session(test_session_id)
 
-    monkeypatch.setattr(settings, "enable_web_page_extraction", False)
-    monkeypatch.setattr(settings, "enable_web_relevance_filter", False)
+    # Force the think node to decide web search is needed for this turn.
+    def _force_web_search(system_prompt, user_prompt, response_format, temperature=0.2):
+        return {
+            "inner_monologue": "需要搜索",
+            "personality_query": user_prompt,
+            "memory_query": user_prompt,
+            "needs_web_search": True,
+            "search_query": user_prompt,
+        }
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _force_web_search)
 
     graph = DialogueGraph(
         pg_store=pg,
@@ -321,3 +330,127 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
     # The pre-seeded evidence doc should also be gone from Chroma.
     remaining = chroma_store.get_personality_event_ids_by_dimension(1)
     assert doc_id not in remaining
+
+
+def test_think_structured_decision(fake_llm, test_session_id, pg_available, chroma_store):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=True,
+    )
+    state = graph._think(
+        {
+            "session_id": test_session_id,
+            "user_input": "你好",
+            "dimensions": pg.list_dimensions(active_only=True),
+            "selected_dimension_ids": [1],
+        }
+    )
+    assert state["inner_monologue"]
+    assert state["personality_query"]
+    assert state["memory_query"]
+    assert state["needs_web_search"] is False
+    assert state["search_query"] is not None
+
+
+def test_web_branch_skips_pipeline_when_disabled(
+    fake_llm, test_session_id, pg_available, chroma_store
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+    assert graph._route_web({"needs_web_search": True}) == "personality"
+
+
+def test_dialogue_memories_recall_count(
+    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="user", content="测试输入"))
+    pg.insert_dialogue(
+        DialogueLog(session_id=test_session_id, role="assistant", content="测试回复")
+    )
+    pg.close_session(test_session_id)
+
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
+    engine.run()
+
+    # A new chat turn should retrieve the stored dialogue memories and increment recall.
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+    reply = graph.chat(test_session_id, "测试输入")
+    assert reply
+
+    docs = chroma_store.query_memories("测试输入", session_id=test_session_id, top_k=10)
+    dialogue_docs = [d for d in docs if d["metadata"].get("source_type") == "dialogue"]
+    assert dialogue_docs
+    assert any(d["metadata"].get("recall_count", 0) >= 1 for d in dialogue_docs)
+
+
+def test_prune_stale_dialogue_memories(chroma_store):
+    from datetime import datetime, timedelta, timezone
+
+    session_id = "prune-session"
+    old_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    chroma_store.add_memory(
+        session_id,
+        "user: old stale dialogue",
+        metadata={
+            "source_type": "dialogue",
+            "session_id": session_id,
+            "recall_count": 0,
+            "added_at": old_time,
+            "last_recalled_at": old_time,
+        },
+    )
+    chroma_store.add_memory(
+        session_id,
+        "user: recent dialogue",
+        metadata={
+            "source_type": "dialogue",
+            "session_id": session_id,
+            "recall_count": 0,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "last_recalled_at": "",
+        },
+    )
+
+    pruned = chroma_store.prune_stale_dialogue_memories(
+        cutoff_days=90,
+        min_recall_count=1,
+    )
+    assert pruned == 1
+
+    remaining = chroma_store.query_memories("dialogue", session_id=session_id, top_k=10)
+    assert all("old stale" not in d["page_content"] for d in remaining)

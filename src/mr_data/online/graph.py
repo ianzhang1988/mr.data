@@ -14,6 +14,7 @@ from mr_data.models import (
     FixedIdentity,
     UserIdentity,
     PersonalityDimension,
+    ThinkDecision,
 )
 from mr_data.online.page_extract import PageExtractor
 from mr_data.online.web_search import WebSearchTool
@@ -32,6 +33,10 @@ class DialogueState(TypedDict, total=False):
     selected_dimension_ids: list[int]
     retrieval_query: str
     inner_monologue: Optional[str]
+    personality_query: str
+    memory_query: str
+    needs_web_search: bool
+    search_query: Optional[str]
     web_docs: Annotated[list[dict], _merge_docs]
     personality_docs: Annotated[list[dict], _merge_docs]
     memory_docs: Annotated[list[dict], _merge_docs]
@@ -82,16 +87,8 @@ class DialogueGraph:
             self._route_web,
             {"web": "retrieve_web", "personality": "retrieve_personality"},
         )
-        builder.add_conditional_edges(
-            "retrieve_web",
-            self._route_extract,
-            {"extract": "extract_web_pages", "personality": "retrieve_personality"},
-        )
-        builder.add_conditional_edges(
-            "extract_web_pages",
-            self._route_filter,
-            {"filter": "filter_web_docs", "personality": "retrieve_personality"},
-        )
+        builder.add_edge("retrieve_web", "extract_web_pages")
+        builder.add_edge("extract_web_pages", "filter_web_docs")
         builder.add_edge("filter_web_docs", "retrieve_personality")
         builder.add_edge("retrieve_personality", "retrieve_memories")
         builder.add_edge("retrieve_memories", "assemble_and_generate")
@@ -137,13 +134,16 @@ class DialogueGraph:
             system = """你是一个性格维度选择助手。请根据用户输入，从下列维度中选出最应当起作用的一个或多个维度。
 请严格按以下 JSON 格式返回，不要输出其他内容：
 {"dimension_ids": [1, 3]}"""
-            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{dim_text}\n\n请返回 JSON："
+            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{
+                dim_text}\n\n请返回 JSON："
             try:
                 raw = self.llm.chat(system, prompt, temperature=0.3).strip()
-                cleaned = raw.removeprefix("```json").removesuffix("```").strip()
+                cleaned = raw.removeprefix(
+                    "```json").removesuffix("```").strip()
                 data = json.loads(cleaned)
                 ids = data.get("dimension_ids", [])
-                valid_ids = {dim.id for dim in dimensions if dim.id is not None}
+                valid_ids = {
+                    dim.id for dim in dimensions if dim.id is not None}
                 if isinstance(ids, list) and all(isinstance(x, int) for x in ids):
                     selected_ids = [x for x in ids if x in valid_ids]
             except Exception:
@@ -163,69 +163,79 @@ class DialogueGraph:
         return {**state, "selected_dimension_ids": selected_ids}
 
     def _route_web(self, state: DialogueState) -> str:
-        return "web" if self.enable_web_search else "personality"
-
-    def _route_extract(self, state: DialogueState) -> str:
-        docs = state.get("web_docs", [])
-        if docs and settings.enable_web_page_extraction and settings.web_extract_max_pages > 0:
-            return "extract"
-        return "personality"
-
-    def _route_filter(self, state: DialogueState) -> str:
-        docs = state.get("web_docs", [])
-        if docs and settings.enable_web_relevance_filter:
-            return "filter"
-        return "personality"
+        if not self.enable_web_search:
+            return "personality"
+        return "web" if state.get("needs_web_search") else "personality"
 
     def _think(self, state: DialogueState) -> DialogueState:
         dimensions = state.get("dimensions", [])
         selected_ids = set(state.get("selected_dimension_ids", []))
-        selected_dimensions = [dim for dim in dimensions if dim.id in selected_ids]
+        selected_dimensions = [
+            dim for dim in dimensions if dim.id in selected_ids]
         selected_text = "\n".join(
             f"- {dim.description}"
             for dim in selected_dimensions
         ) or "（未特别选中）"
 
-        system = f"""你是一个查询改写与内心独白生成助手。给定用户输入，请完成两件事：
-1. 生成一个用于检索人格素材、记忆和网络资料的简短语义查询。
-2. 用一句话描述你当前对用户意图的理解以及你打算如何回应（内心独白）。
+        system = f"""你是一个查询改写与内心独白生成助手。请根据用户输入和本次应重点参考的性格维度，生成以下结构化字段：
+1. inner_monologue：用一句话描述你当前对用户意图的理解以及你打算如何回应（内心独白）。
+2. personality_query：用于检索性格向量库的简短语义查询（性格向量库中有你之前的思路、决定、内心独白、对话等），推荐用例如概念、理论、高层次抽象的用语。
+3. memory_query：用于检索记忆向量库的简短语义查询（记忆向量库中有过往对话、其他方式获取的信息，如文档、网页等）。
+4. needs_web_search：是否需要联网搜索来获取最新信息或事实验证。
+5. search_query：如需要搜索，提炼出的精准搜索关键词；否则留空。
 
 本次应重点参考的性格维度：
 {selected_text}
-
-请严格按以下格式输出：
-检索查询：<一句话查询>
-内心独白：<一句话内心独白>
 """
-        prompt = f"用户输入：{state['user_input']}\n请输出检索查询和内心独白："
-        raw = self.llm.chat(system, prompt, temperature=0.3).strip().replace("\n", " ")
+        prompt = f"用户输入：{state['user_input']}\n请输出结构化决策："
 
-        query = state["user_input"]
-        inner_monologue: Optional[str] = None
-        if "检索查询：" in raw:
-            parts = raw.split("内心独白：")
-            query_part = parts[0].split("检索查询：")[-1].strip()
-            if query_part:
-                query = query_part
-            if len(parts) > 1:
-                inner_monologue = parts[1].strip()
-        elif raw:
-            query = raw
+        try:
+            raw = self.llm.chat_structured(
+                system, prompt, response_format=ThinkDecision, temperature=0.3
+            )
+            decision = ThinkDecision.model_validate(raw)
+        except Exception:
+            decision = ThinkDecision(
+                inner_monologue="",
+                personality_query=state["user_input"],
+                memory_query=state["user_input"],
+                needs_web_search=False,
+                search_query=state["user_input"],
+            )
+
+        if not self.enable_web_search:
+            decision.needs_web_search = False
 
         self.logger.info(
-            "Generated retrieval query",
+            "Generated think decision",
             extra={
-                "event": "think.query_generated",
+                "event": "think.decision_generated",
                 "session_id": state["session_id"],
-                "details": {"query": query, "inner_monologue": inner_monologue},
+                "details": {
+                    "personality_query": decision.personality_query,
+                    "memory_query": decision.memory_query,
+                    "needs_web_search": decision.needs_web_search,
+                    "search_query": decision.search_query,
+                    "inner_monologue": decision.inner_monologue,
+                },
             },
         )
-        return {**state, "retrieval_query": query, "inner_monologue": inner_monologue}
+        return {
+            **state,
+            "retrieval_query": decision.memory_query,
+            "inner_monologue": decision.inner_monologue,
+            "personality_query": decision.personality_query,
+            "memory_query": decision.memory_query,
+            "needs_web_search": decision.needs_web_search,
+            "search_query": decision.search_query,
+        }
 
     def _retrieve_web(self, state: DialogueState) -> DialogueState:
         if not self.enable_web_search:
             return {**state, "web_docs": []}
-        docs = self.web_search.search(state["retrieval_query"])
+        query = state.get("search_query") or state.get(
+            "retrieval_query") or state["user_input"]
+        docs = self.web_search.search(query)
         self.logger.info(
             "Retrieved web results",
             extra={
@@ -242,6 +252,8 @@ class DialogueGraph:
             return {**state, "web_docs": []}
 
         max_pages = settings.web_extract_max_pages
+        if max_pages <= 0:
+            return {**state, "web_docs": docs}
         extracted = []
         for doc in docs[:max_pages]:
             url = doc.get("metadata", {}).get("url")
@@ -284,8 +296,10 @@ class DialogueGraph:
             system = "判断以下网络资料是否与用户输入相关。只回答 yes 或 no，不要解释。"
             prompt = f"用户输入：{user_input}\n\n资料内容：\n{content}\n\n是否相关？"
             try:
-                raw = self.llm.chat(system, prompt, temperature=0.0).strip().lower()
-                is_relevant = raw.startswith("yes") or raw.startswith("是") or "yes" in raw
+                raw = self.llm.chat(
+                    system, prompt, temperature=0.0).strip().lower()
+                is_relevant = raw.startswith(
+                    "yes") or raw.startswith("是") or "yes" in raw
             except Exception:
                 is_relevant = True
             if is_relevant:
@@ -306,7 +320,8 @@ class DialogueGraph:
         return {**state, "web_docs": filtered}
 
     def _retrieve_personality(self, state: DialogueState) -> DialogueState:
-        docs = self.chroma.query_personality(state["retrieval_query"], top_k=5)
+        query = state.get("personality_query") or state["user_input"]
+        docs = self.chroma.query_personality(query, top_k=5)
         self.logger.info(
             "Retrieved personality docs",
             extra={
@@ -318,7 +333,16 @@ class DialogueGraph:
         return {**state, "personality_docs": docs}
 
     def _retrieve_memories(self, state: DialogueState) -> DialogueState:
-        docs = self.chroma.query_memories(state["retrieval_query"], session_id=state["session_id"], top_k=5)
+        query = state.get("memory_query") or state["user_input"]
+        docs = self.chroma.query_memories(
+            query, session_id=state["session_id"], top_k=5)
+
+        dialogue_doc_ids = [
+            doc["id"] for doc in docs
+            if doc.get("metadata", {}).get("source_type") == "dialogue"
+        ]
+        if dialogue_doc_ids:
+            self.chroma.increment_memory_recall(dialogue_doc_ids)
         self.logger.info(
             "Retrieved memories",
             extra={
@@ -346,11 +370,13 @@ class DialogueGraph:
             for d in web_docs
         )
         personality_text = "\n".join(
-            f"- [{d['metadata'].get('source_type', 'line')}] {d['page_content']}"
+            f"- [{d['metadata'].get('source_type', 'line')
+                  }] {d['page_content']}"
             for d in personality_docs
         )
         memory_text = "\n".join(f"- {d['page_content']}" for d in memory_docs)
-        monologue_text = f"\n你当前的内心独白：{inner_monologue}\n" if inner_monologue else ""
+        monologue_text = f"\n你当前的内心独白：{
+            inner_monologue}\n" if inner_monologue else ""
 
         user_identity = state.get("user_identity")
         user_identity_text = ""
@@ -406,7 +432,8 @@ class DialogueGraph:
         )
 
         # 记录加载的基础维度
-        self.pg.insert_dialogue_dimension_refs(assistant_log_id, [dim.id for dim in dimensions if dim.id])
+        self.pg.insert_dialogue_dimension_refs(
+            assistant_log_id, [dim.id for dim in dimensions if dim.id])
 
         # 记录检索到的向量素材（人格素材 + 网络资料）
         vector_refs = [
@@ -476,7 +503,8 @@ class DialogueGraph:
     def chat(self, session_id: str, user_input: str) -> str:
         self.logger.info(
             "Chat turn started",
-            extra={"event": "chat.start", "session_id": session_id, "details": {"user_input": user_input}},
+            extra={"event": "chat.start", "session_id": session_id,
+                   "details": {"user_input": user_input}},
         )
         state: DialogueState = {
             "session_id": session_id,
@@ -488,6 +516,7 @@ class DialogueGraph:
         except Exception as exc:
             self.logger.exception(
                 "Chat turn failed",
-                extra={"event": "chat.error", "session_id": session_id, "details": {"error": str(exc)}},
+                extra={"event": "chat.error", "session_id": session_id,
+                       "details": {"error": str(exc)}},
             )
             raise

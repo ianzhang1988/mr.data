@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -70,11 +71,20 @@ class AttributionEngine:
             total_sessions += 1
             total_deltas += applied
 
+        pruned_count = self.chroma.prune_stale_dialogue_memories(
+            settings.memory_dialogue_retention_days,
+            settings.memory_min_recall_count,
+        )
+
         self.logger.info(
             "Offline attribution completed",
             extra={
                 "event": "offline.completed",
-                "details": {"session_count": total_sessions, "delta_count": total_deltas},
+                "details": {
+                    "session_count": total_sessions,
+                    "delta_count": total_deltas,
+                    "pruned_memories": pruned_count,
+                },
             },
         )
         print(f"Processed {total_sessions} closed sessions.")
@@ -260,6 +270,24 @@ class AttributionEngine:
                         "details": {"dimension_id": dim_id, "failure_count": dim.failure_count},
                     },
                 )
+
+        # Persist session dialogue turns to the memory vector store for future recall.
+        now = datetime.now(timezone.utc).isoformat()
+        for log in sorted_logs:
+            content = f"{log.role}: {log.content}"
+            self.chroma.add_memory(
+                session_id,
+                content,
+                metadata={
+                    "source_type": "dialogue",
+                    "session_id": session_id,
+                    "dialogue_log_id": log.id,
+                    "role": log.role,
+                    "recall_count": 0,
+                    "added_at": now,
+                    "last_recalled_at": "",
+                },
+            )
 
         self.logger.info(
             "Session attribution applied",

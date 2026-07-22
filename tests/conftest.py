@@ -45,6 +45,14 @@ class FakeLLMClient(LLMClient):
         return "这是一个测试回复。"
 
     def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
+        if response_format.__name__ == "ThinkDecision":
+            return {
+                "inner_monologue": "这是一个测试内心独白",
+                "personality_query": "测试性格查询",
+                "memory_query": "测试记忆查询",
+                "needs_web_search": False,
+                "search_query": "测试搜索查询",
+            }
         return {"deltas": []}
 
 

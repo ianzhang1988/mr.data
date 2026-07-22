@@ -52,11 +52,12 @@ class Settings(BaseSettings):
     failure_threshold: int = 5
 
     # 网页正文提取与相关性过滤配置
-    enable_web_page_extraction: bool = True
-    enable_web_relevance_filter: bool = False
     web_extract_max_pages: int = 2
     web_extract_max_length: int = 4000
-    web_filter_model: Optional[str] = None
+
+    # 对话记忆保留策略
+    memory_dialogue_retention_days: int = 90
+    memory_min_recall_count: int = 1
 
 
 settings = Settings()

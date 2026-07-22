@@ -10,6 +10,7 @@ from .personality import (
     DialogueVectorRef,
     AdjustmentLog,
     PersonalityEvent,
+    ThinkDecision,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "DialogueVectorRef",
     "AdjustmentLog",
     "PersonalityEvent",
+    "ThinkDecision",
 ]

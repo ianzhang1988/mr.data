@@ -3,7 +3,7 @@
 
 # 待改进
 
-1. 离线分析时，从sql读出对话内容加入知识向量库，用metadata区分，记录recall 次数，这样可以删除长时间没有用过的对话。
+1. （当前暂无待办项）
 
 # 已完成的改进项
 
@@ -26,6 +26,8 @@
 17. ✅ **Chroma 高级 Embedding**：`personality` 集合改用 `fastembed` + `nomic-ai/nomic-embed-text-v1.5` 并截断至 512 维，`memories` 集合改用 `BAAI/bge-base-zh-v1.5` 768 维；代码中自动添加 Nomic/BGE 所需的 query/document 前缀；旧集合维度不一致时自动重建。
 18. ✅ **用户身份设定**：新增 `user_identities` 表，支持保存多个用户身份；seed 时写入 Picard（默认、受保护）与普通用户（受保护）；`DialogueGraph._assemble_and_generate` 从数据库读取当前默认身份并注入 system prompt；CLI 新增 `mr-data identity list/add/edit/delete/select` 管理身份。
 19. ✅ **交互式帮助命令**：`mr-data chat` 中输入 `/help` 或 `/?` 可显示当前 slash 命令、启动选项及顶层 CLI 命令。
+20. ✅ **think 节点结构化决策**：`DialogueGraph._think` 使用 `ThinkDecision` 结构化输出，生成 `personality_query`、`memory_query`、`needs_web_search`、`search_query` 与 `inner_monologue`；web 分支仅由 think 决策和 `enable_web_search` 单一开关控制，`retrieve_web` / `extract_web_pages` / `filter_web_docs` 作为整体流水线依次执行。
+21. ✅ **离线对话记忆与 recall 计数**：离线归因后将对话日志写入 `memories` 向量库（`source_type=dialogue`），记录 `recall_count`；在线检索命中对话记忆时递增计数；新增 `prune_stale_dialogue_memories` 清理长期未召回的旧对话记忆。
 
 # 未来可选增强
 

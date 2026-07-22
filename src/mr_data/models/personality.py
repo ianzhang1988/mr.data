@@ -3,6 +3,27 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class ThinkDecision(BaseModel):
+    """LLM 在 think 节点中做出的结构化决策。"""
+
+    inner_monologue: str = Field(
+        description="用一句话描述你当前对用户意图的理解以及你打算如何回应（内心独白）"
+    )
+    personality_query: str = Field(
+        description="根据用户输入，生成一个用于检索性格向量库的简短语义查询（例如概念、理论、高层次抽象）"
+    )
+    memory_query: str = Field(
+        description="生成一个用于检索记忆向量库的简短语义查询，记忆向量库中有过往对话、其他方式获取的信息（如文档、网页等）"
+    )
+    needs_web_search: bool = Field(
+        description="是否需要联网搜索来获取最新信息或事实验证"
+    )
+    search_query: Optional[str] = Field(
+        default=None,
+        description="如需要搜索，提炼出的精准搜索关键词；否则留空",
+    )
+
+
 class FixedIdentity(BaseModel):
     id: Optional[int] = None
     name: str

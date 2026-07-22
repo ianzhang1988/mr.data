@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -191,3 +192,60 @@ class ChromaStore:
                 "metadata": result["metadatas"][0][i],
             })
         return docs
+
+    def increment_memory_recall(self, doc_ids: list[str]) -> None:
+        """Increment recall_count and update last_recalled_at for dialogue memories."""
+        if not doc_ids:
+            return
+        result = self.memories.get(ids=doc_ids, include=["metadatas"])
+        now = datetime.now(timezone.utc).isoformat()
+        new_metadatas = []
+        for metadata in result.get("metadatas", []):
+            if metadata is None:
+                metadata = {}
+            count = metadata.get("recall_count", 0)
+            try:
+                count = int(count) + 1
+            except (TypeError, ValueError):
+                count = 1
+            metadata["recall_count"] = count
+            metadata["last_recalled_at"] = now
+            new_metadatas.append(metadata)
+        if new_metadatas:
+            self.memories.update(ids=doc_ids, metadatas=new_metadatas)
+
+    def prune_stale_dialogue_memories(
+        self, cutoff_days: int, min_recall_count: int
+    ) -> int:
+        """Remove dialogue memories that are older than cutoff_days and recalled fewer than min_recall_count times."""
+        try:
+            result = self.memories.get(where={"source_type": "dialogue"}, include=["metadatas"])
+        except Exception:
+            return 0
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=cutoff_days)
+        ids_to_delete = []
+        for doc_id, metadata in zip(result.get("ids", []), result.get("metadatas", [])):
+            if metadata is None:
+                continue
+            count = metadata.get("recall_count", 0)
+            try:
+                count = int(count)
+            except (TypeError, ValueError):
+                count = 0
+            last_recalled = metadata.get("last_recalled_at", "")
+            if not last_recalled:
+                # Never recalled; use added_at as fallback if available.
+                last_recalled = metadata.get("added_at", "")
+            try:
+                last_dt = datetime.fromisoformat(last_recalled)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+            if last_dt < cutoff and count < min_recall_count:
+                ids_to_delete.append(doc_id)
+
+        if ids_to_delete:
+            self.memories.delete(ids=ids_to_delete)
+        return len(ids_to_delete)

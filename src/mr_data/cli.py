@@ -32,7 +32,7 @@ def _print_chat_help(pg: PostgresStore) -> None:
 [bold]mr.data chat 交互命令[/bold]
   /help, /?      显示本帮助信息
   /newsession    结束当前会话并开始新会话
-  exit, quit, bye  退出对话
+  /exit, /quit, /bye  退出对话
 
 [bold]启动选项[/bold]
   --session-id TEXT    指定会话 ID
@@ -69,7 +69,7 @@ def chat(
 
     current_session_id = _ensure_session(pg, session_id)
     rprint(f"[dim]Session: {current_session_id}[/dim]")
-    rprint("[dim]Type '/newsession' to start a new session, 'exit' or Ctrl+C to quit.[/dim]\n")
+    rprint("[dim]Type '/newsession' to start a new session, '/exit' or Ctrl+C to quit.[/dim]\n")
 
     try:
         while True:
@@ -79,7 +79,7 @@ def chat(
                 break
 
             user_input = user_input.strip()
-            if user_input.lower() in ("exit", "quit", "bye"):
+            if user_input.lower() in ("/exit", "/quit", "/bye"):
                 break
 
             if user_input.lower() in ("/help", "/?"):

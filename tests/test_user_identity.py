@@ -157,5 +157,8 @@ def test_chat_help_output(pg_available, capsys):
     output = captured.out
     assert "/help" in output
     assert "/newsession" in output
+    assert "/exit" in output
+    assert "/quit" in output
+    assert "/bye" in output
     assert "identity list" in output
     assert "当前用户身份" in output

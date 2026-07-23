@@ -500,3 +500,50 @@ def test_global_memory_recall(
     ]
     assert dialogue_docs
     assert all(d["metadata"].get("recall_count", 0) >= 1 for d in dialogue_docs)
+
+
+def test_memory_relevance_filter(fake_llm, test_session_id, pg_available, chroma_store, monkeypatch):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    chroma_store.add_memory(test_session_id, "我喜欢蓝色", metadata={"source_type": "dialogue"})
+    chroma_store.add_memory(test_session_id, "今天天气很好", metadata={"source_type": "dialogue"})
+
+    original_chat_structured = fake_llm.chat_structured
+
+    def _patched_chat_structured(system_prompt, user_prompt, response_format, temperature=0.2):
+        if response_format.__name__ == "MemoryRelevanceFilterResult":
+            return {
+                "results": [
+                    {"index": 0, "is_relevant": True},
+                    {"index": 1, "is_relevant": False},
+                ]
+            }
+        return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
+    monkeypatch.setattr(settings, "enable_memory_relevance_filter", True)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+
+    state = graph._filter_memory_docs(
+        {
+            "session_id": test_session_id,
+            "user_input": "你喜欢什么颜色",
+            "memory_docs": chroma_store.query_memories("颜色", session_id=test_session_id, top_k=10),
+        }
+    )
+
+    assert len(state["memory_docs"]) == 1
+    assert "蓝色" in state["memory_docs"][0]["page_content"]

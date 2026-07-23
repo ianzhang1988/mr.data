@@ -54,3 +54,25 @@ class LLMClient:
         content = resp.choices[0].message.content or "{}"
         return json.loads(content)
 
+    def structured_chat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type,
+        temperature: float = 0.2,
+    ) -> dict:
+        """Unified structured output with automatic fallback for non-parse endpoints."""
+        try:
+            return self.chat_structured(system_prompt, user_prompt, response_format, temperature)
+        except Exception:
+            schema = response_format.model_json_schema()
+            fallback_system = (
+                f"{system_prompt}\n\n"
+                "请严格按照以下 JSON Schema 输出，不要包含任何解释或 markdown 代码块标记，只输出纯 JSON：\n"
+                f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+            )
+            raw = self.chat(fallback_system, user_prompt, temperature).strip()
+            cleaned = raw.removeprefix("```json").removesuffix("```").strip()
+            data = json.loads(cleaned)
+            return response_format.model_validate(data).model_dump()
+

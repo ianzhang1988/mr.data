@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # 网络搜索 RAG 配置
     enable_web_search: bool = True
     web_search_max_results: int = 3
+    web_search_providers: list[str] = ["duckduckgo"]
+    searxng_base_url: str = ""
+    brave_api_key: str = ""
+    bing_api_key: str = ""
+    google_api_key: str = ""
+    google_cse_id: str = ""
 
     # 日志配置
     log_dir: str = "./logs"
@@ -59,6 +65,7 @@ class Settings(BaseSettings):
     memory_dialogue_retention_days: int = 90
     memory_min_recall_count: int = 1
     memory_retrieval_top_k: int = 5
+    enable_memory_relevance_filter: bool = False
 
 
 settings = Settings()

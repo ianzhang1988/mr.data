@@ -45,7 +45,8 @@ class FakeLLMClient(LLMClient):
         return "这是一个测试回复。"
 
     def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
-        if response_format.__name__ == "ThinkDecision":
+        name = response_format.__name__
+        if name == "ThinkDecision":
             return {
                 "inner_monologue": "这是一个测试内心独白",
                 "personality_query": "测试性格查询",
@@ -53,6 +54,24 @@ class FakeLLMClient(LLMClient):
                 "needs_web_search": False,
                 "search_query": "测试搜索查询",
             }
+        if name == "DimensionSelection":
+            return {"dimension_ids": [1]}
+        if name == "AttributionResult":
+            return {
+                "deltas": [
+                    {
+                        "dimension_id": 1,
+                        "delta_success": 1,
+                        "delta_failure": 0,
+                        "reason": "测试归因原因",
+                        "evidence_snippets": ["user: 测试输入\nassistant: 测试回复"],
+                        "relation_to_personality": "体现",
+                    }
+                ]
+            }
+        if name in ("WebRelevanceFilterResult", "MemoryRelevanceFilterResult"):
+            # Returning empty results causes the node to fall back to keeping all docs.
+            return {"results": []}
         return {"deltas": []}
 
 

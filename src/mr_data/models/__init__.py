@@ -11,6 +11,9 @@ from .personality import (
     AdjustmentLog,
     PersonalityEvent,
     ThinkDecision,
+    DimensionSelection,
+    WebRelevanceFilterResult,
+    MemoryRelevanceFilterResult,
 )
 
 __all__ = [
@@ -26,4 +29,7 @@ __all__ = [
     "AdjustmentLog",
     "PersonalityEvent",
     "ThinkDecision",
+    "DimensionSelection",
+    "WebRelevanceFilterResult",
+    "MemoryRelevanceFilterResult",
 ]

@@ -15,6 +15,9 @@ from mr_data.models import (
     UserIdentity,
     PersonalityDimension,
     ThinkDecision,
+    DimensionSelection,
+    WebRelevanceFilterResult,
+    MemoryRelevanceFilterResult,
 )
 from mr_data.online.page_extract import PageExtractor
 from mr_data.online.web_search import WebSearchTool
@@ -84,6 +87,7 @@ class DialogueGraph:
         builder.add_node("filter_web_docs", self._filter_web_docs)
         builder.add_node("retrieve_personality", self._retrieve_personality)
         builder.add_node("retrieve_memories", self._retrieve_memories)
+        builder.add_node("filter_memory_docs", self._filter_memory_docs)
         builder.add_node("assemble_and_generate", self._assemble_and_generate)
         builder.add_node("log_dialogue", self._log_dialogue)
 
@@ -99,7 +103,8 @@ class DialogueGraph:
         builder.add_edge("extract_web_pages", "filter_web_docs")
         builder.add_edge("filter_web_docs", "retrieve_personality")
         builder.add_edge("retrieve_personality", "retrieve_memories")
-        builder.add_edge("retrieve_memories", "assemble_and_generate")
+        builder.add_edge("retrieve_memories", "filter_memory_docs")
+        builder.add_edge("filter_memory_docs", "assemble_and_generate")
         builder.add_edge("assemble_and_generate", "log_dialogue")
         builder.add_edge("log_dialogue", END)
 
@@ -139,21 +144,15 @@ class DialogueGraph:
                 for dim in dimensions
                 if dim.id is not None
             )
-            system = """你是一个性格维度选择助手。请根据用户输入，从下列维度中选出最应当起作用的一个或多个维度。
-请严格按以下 JSON 格式返回，不要输出其他内容：
-{"dimension_ids": [1, 3]}"""
-            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{
-                dim_text}\n\n请返回 JSON："
+            system = "你是一个性格维度选择助手。请根据用户输入，从下列维度中选出最应当起作用的一个或多个维度。"
+            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{dim_text}\n\n请返回维度 ID 列表。"
             try:
-                raw = self.llm.chat(system, prompt, temperature=0.3).strip()
-                cleaned = raw.removeprefix(
-                    "```json").removesuffix("```").strip()
-                data = json.loads(cleaned)
-                ids = data.get("dimension_ids", [])
-                valid_ids = {
-                    dim.id for dim in dimensions if dim.id is not None}
-                if isinstance(ids, list) and all(isinstance(x, int) for x in ids):
-                    selected_ids = [x for x in ids if x in valid_ids]
+                result = self.llm.structured_chat(
+                    system, prompt, response_format=DimensionSelection, temperature=0.3
+                )
+                selection = DimensionSelection.model_validate(result)
+                valid_ids = {dim.id for dim in dimensions if dim.id is not None}
+                selected_ids = [x for x in selection.dimension_ids if x in valid_ids]
             except Exception:
                 pass
 
@@ -297,21 +296,25 @@ class DialogueGraph:
         if not docs:
             return {**state, "web_docs": []}
 
-        filtered = []
         user_input = state["user_input"]
-        for doc in docs:
-            content = doc.get("page_content", "")[:5000]
-            system = "判断以下网络资料是否与用户输入相关。只回答 yes 或 no，不要解释。"
-            prompt = f"用户输入：{user_input}\n\n资料内容：\n{content}\n\n是否相关？"
-            try:
-                raw = self.llm.chat(
-                    system, prompt, temperature=0.0).strip().lower()
-                is_relevant = raw.startswith(
-                    "yes") or raw.startswith("是") or "yes" in raw
-            except Exception:
-                is_relevant = True
-            if is_relevant:
-                filtered.append(doc)
+        indexed_docs = [
+            (i, doc.get("page_content", "")[:2000]) for i, doc in enumerate(docs)
+        ]
+        items_text = "\n\n".join(
+            f"[{idx}] {content}" for idx, content in indexed_docs
+        )
+        system = "判断下列网络资料是否与用户输入相关。请为每条资料返回是否相关。"
+        prompt = f"用户输入：{user_input}\n\n资料列表：\n{items_text}\n\n请返回每条资料的相关性判断。"
+
+        try:
+            result = self.llm.structured_chat(
+                system, prompt, response_format=WebRelevanceFilterResult, temperature=0.0
+            )
+            decision = WebRelevanceFilterResult.model_validate(result)
+            relevant_indices = {item.index for item in decision.results if item.is_relevant}
+            filtered = [doc for i, doc in enumerate(docs) if i in relevant_indices]
+        except Exception:
+            filtered = docs
 
         # Fallback: if the LLM filtered out everything, keep the original docs.
         if not filtered and docs:
@@ -355,7 +358,8 @@ class DialogueGraph:
             # Reflect the updated recall_count in the state docs passed downstream.
             for doc in docs:
                 if doc.get("id") in dialogue_doc_ids:
-                    doc["metadata"]["recall_count"] = doc["metadata"].get("recall_count", 0) + 1
+                    doc["metadata"]["recall_count"] = doc["metadata"].get(
+                        "recall_count", 0) + 1
                     doc["metadata"]["last_recalled_at"] = now
         self.logger.info(
             "Retrieved memories",
@@ -366,6 +370,44 @@ class DialogueGraph:
             },
         )
         return {**state, "memory_docs": docs}
+
+    def _filter_memory_docs(self, state: DialogueState) -> DialogueState:
+        docs = state.get("memory_docs", [])
+        if not docs or not settings.enable_memory_relevance_filter:
+            return {**state, "memory_docs": docs}
+
+        user_input = state["user_input"]
+        indexed_docs = [
+            (i, doc.get("page_content", "")[:1500]) for i, doc in enumerate(docs)
+        ]
+        items_text = "\n\n".join(
+            f"[{idx}] {content}" for idx, content in indexed_docs
+        )
+        system = "判断下列记忆内容是否与用户输入相关。请为每条记忆返回是否相关。"
+        prompt = f"用户输入：{user_input}\n\n记忆列表：\n{items_text}\n\n请返回每条记忆的相关性判断。"
+
+        try:
+            result = self.llm.structured_chat(
+                system, prompt, response_format=MemoryRelevanceFilterResult, temperature=0.0
+            )
+            decision = MemoryRelevanceFilterResult.model_validate(result)
+            relevant_indices = {item.index for item in decision.results if item.is_relevant}
+            filtered = [doc for i, doc in enumerate(docs) if i in relevant_indices]
+        except Exception:
+            filtered = docs
+
+        if not filtered and docs:
+            filtered = docs
+
+        self.logger.info(
+            "Filtered memory docs",
+            extra={
+                "event": "retrieve.memory_filtered",
+                "session_id": state["session_id"],
+                "details": {"input_count": len(docs), "output_count": len(filtered)},
+            },
+        )
+        return {**state, "memory_docs": filtered}
 
     def _assemble_and_generate(self, state: DialogueState) -> DialogueState:
         identity = state.get("identity")

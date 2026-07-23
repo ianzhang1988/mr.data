@@ -3,10 +3,7 @@
 
 # 待改进
 
-1. graph.py 中 llm.chat 相关的调用，统一使用结构化输出的形式。（考虑这个问题是，判断一下是否对适配不同的llm有帮助）
-2. 在 DialogueState 里加 messages, 保留最近 5~10 轮对话。考虑下保留啥，插入记忆库的就不需要了。
-3. 在web_search.py中增加更多搜索工具，可以增加搜索引擎的爬虫代码，如bing，google，百度，360等等。可配置是否使用，并按照配置的顺序作为优先级，搜索失败就退一级搜索。
-4. graph.py 中，在_retrieve_memories后增加一个通过配置可选的节点，用llm去筛选记忆库返回的内容中，与用户输入相关的内容。这让当扩大记忆库的top_k后，可以用llm来精简内容，提升后面回答的质量
+1. （当前暂无待办项）
 
 # 已完成的改进项
 
@@ -31,9 +28,14 @@
 19. ✅ **交互式帮助命令**：`mr-data chat` 中输入 `/help` 或 `/?` 可显示当前 slash 命令、启动选项及顶层 CLI 命令。
 20. ✅ **think 节点结构化决策**：`DialogueGraph._think` 使用 `ThinkDecision` 结构化输出，生成 `personality_query`、`memory_query`、`needs_web_search`、`search_query` 与 `inner_monologue`；web 分支仅由 think 决策和 `enable_web_search` 单一开关控制，`retrieve_web` / `extract_web_pages` / `filter_web_docs` 作为整体流水线依次执行。
 21. ✅ **离线对话记忆与 recall 计数**：离线归因后将对话日志写入 `memories` 向量库（`source_type=dialogue`），记录 `recall_count`；在线检索命中对话记忆时递增计数；新增 `prune_stale_dialogue_memories` 清理长期未召回的旧对话记忆。
+22. ✅ **统一结构化输出与 LLM 适配降级**：`LLMClient` 新增 `structured_chat`，先尝试 OpenAI `parse` API，失败时自动降级为普通 chat + JSON Schema prompt + 解析；`_select_dimensions`、`_filter_web_docs`、离线归因统一改为结构化输出，提升不同 LLM 端点的适配性。
+23. ✅ **多源 Web 搜索与失败降级**：新增 `SearchProvider` 协议与 `search_providers.py`，支持 DuckDuckGo、SearXNG、Brave、Bing、Google CSE、百度、360；`WebSearchTool` 改为按配置顺序调用，失败自动降级；新增 `web_search_providers` 等配置项。
+24. ✅ **记忆相关性过滤节点**：`_retrieve_memories` 后增加可选 `_filter_memory_docs` 节点，由 LLM 批量判断记忆与用户输入的相关性，扩大 `memory_retrieval_top_k` 后自动精简记忆内容；新增 `enable_memory_relevance_filter` 配置。
 
-# 未来可选增强
+# 未来可选增强(计划中)
 
 - 自动关闭长期未活动的会话（session timeout policy）。
 - 超长会话分片处理，避免超出 LLM 上下文窗口。
 - 更完善的日志查看/搜索 UI 或 CLI 命令。
+2. 在 DialogueState 里加 messages, 保留最近 5~10 轮对话。考虑下保留啥，插入记忆库的就不需要了。可以考虑保留入库的id和内容概括在对话messages中，让agent后续可以自己去取
+2. 最后对话组装和生成的部分，是不是考虑做个独立codeagent？给他获取相关内容的能力

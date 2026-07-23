@@ -24,6 +24,47 @@ class ThinkDecision(BaseModel):
     )
 
 
+class DimensionSelection(BaseModel):
+    """性格维度选择结果。"""
+
+    dimension_ids: list[int] = Field(
+        default_factory=list,
+        description="从可选维度中选出最应当起作用的一个或多个维度 ID",
+    )
+
+
+class WebRelevanceItem(BaseModel):
+    """单条网络资料的相关性判断。"""
+
+    index: int = Field(description="文档在输入列表中的序号（从 0 开始）")
+    is_relevant: bool = Field(description="该资料是否与用户输入相关")
+
+
+class WebRelevanceFilterResult(BaseModel):
+    """批量网络资料相关性过滤结果。"""
+
+    results: list[WebRelevanceItem] = Field(
+        default_factory=list,
+        description="每条网络资料的相关性判断结果",
+    )
+
+
+class MemoryRelevanceItem(BaseModel):
+    """单条记忆的相关性判断。"""
+
+    index: int = Field(description="文档在输入列表中的序号（从 0 开始）")
+    is_relevant: bool = Field(description="该记忆是否与用户输入相关")
+
+
+class MemoryRelevanceFilterResult(BaseModel):
+    """批量记忆相关性过滤结果。"""
+
+    results: list[MemoryRelevanceItem] = Field(
+        default_factory=list,
+        description="每条记忆的相关性判断结果",
+    )
+
+
 class FixedIdentity(BaseModel):
     id: Optional[int] = None
     name: str

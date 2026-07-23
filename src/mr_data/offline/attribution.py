@@ -167,18 +167,17 @@ class AttributionEngine:
 
 请按 JSON 格式返回归因结果。"""
 
-        raw = self.llm.chat(system, prompt, temperature=0.2)
         try:
-            cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
-            data = json.loads(cleaned)
-            return AttributionResult(**data)
+            result = self.llm.structured_chat(
+                system, prompt, response_format=AttributionResult, temperature=0.2
+            )
+            return AttributionResult.model_validate(result)
         except Exception:
             self.logger.warning(
                 "Failed to parse attribution response",
                 extra={
                     "event": "offline.parse_error",
                     "session_id": session_id,
-                    "details": {"raw": raw},
                 },
             )
             return AttributionResult()

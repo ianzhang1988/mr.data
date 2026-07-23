@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # 对话记忆保留策略
     memory_dialogue_retention_days: int = 90
     memory_min_recall_count: int = 1
+    memory_retrieval_top_k: int = 5
 
 
 settings = Settings()

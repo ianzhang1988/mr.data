@@ -197,7 +197,9 @@ class ChromaStore:
         """Increment recall_count and update last_recalled_at for dialogue memories."""
         if not doc_ids:
             return
-        result = self.memories.get(ids=doc_ids, include=["metadatas"])
+        # Deduplicate while preserving order; Chroma update expects unique ids.
+        unique_ids = list(dict.fromkeys(doc_ids))
+        result = self.memories.get(ids=unique_ids, include=["metadatas"])
         now = datetime.now(timezone.utc).isoformat()
         new_metadatas = []
         for metadata in result.get("metadatas", []):
@@ -212,7 +214,7 @@ class ChromaStore:
             metadata["last_recalled_at"] = now
             new_metadatas.append(metadata)
         if new_metadatas:
-            self.memories.update(ids=doc_ids, metadatas=new_metadatas)
+            self.memories.update(ids=unique_ids, metadatas=new_metadatas)
 
     def prune_stale_dialogue_memories(
         self, cutoff_days: int, min_recall_count: int

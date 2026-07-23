@@ -454,3 +454,49 @@ def test_prune_stale_dialogue_memories(chroma_store):
 
     remaining = chroma_store.query_memories("dialogue", session_id=session_id, top_k=10)
     assert all("old stale" not in d["page_content"] for d in remaining)
+
+
+def test_global_memory_recall(
+    fake_llm, pg_available, chroma_store, temp_log_dir
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+
+    session_a = pg.create_session()
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+    graph.chat(session_a, "我最喜欢的颜色是蓝色")
+    pg.close_session(session_a)
+
+    # Run offline attribution to persist session A dialogue to memories.
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
+    engine.run()
+
+    session_b = pg.create_session()
+    final_state = graph.graph.invoke(
+        {"session_id": session_b, "user_input": "你还记得我喜欢什么颜色吗"}
+    )
+
+    memory_docs = final_state.get("memory_docs", [])
+    assert any(
+        d.get("metadata", {}).get("session_id") == session_a
+        for d in memory_docs
+    ), "Session B should retrieve memory from session A"
+
+    # The recalled session A dialogue memory should have its recall_count incremented.
+    dialogue_docs = [
+        d for d in memory_docs
+        if d.get("metadata", {}).get("session_id") == session_a
+        and d.get("metadata", {}).get("source_type") == "dialogue"
+    ]
+    assert dialogue_docs
+    assert all(d["metadata"].get("recall_count", 0) >= 1 for d in dialogue_docs)

@@ -21,7 +21,15 @@ from mr_data.online.web_search import WebSearchTool
 
 
 def _merge_docs(old: list[dict], new: list[dict]) -> list[dict]:
-    return old + new
+    seen = set()
+    merged = []
+    for doc in old + new:
+        doc_id = doc.get("id")
+        if doc_id is None or doc_id not in seen:
+            merged.append(doc)
+            if doc_id is not None:
+                seen.add(doc_id)
+    return merged
 
 
 class DialogueState(TypedDict, total=False):
@@ -292,7 +300,7 @@ class DialogueGraph:
         filtered = []
         user_input = state["user_input"]
         for doc in docs:
-            content = doc.get("page_content", "")[:1200]
+            content = doc.get("page_content", "")[:5000]
             system = "判断以下网络资料是否与用户输入相关。只回答 yes 或 no，不要解释。"
             prompt = f"用户输入：{user_input}\n\n资料内容：\n{content}\n\n是否相关？"
             try:
@@ -335,14 +343,20 @@ class DialogueGraph:
     def _retrieve_memories(self, state: DialogueState) -> DialogueState:
         query = state.get("memory_query") or state["user_input"]
         docs = self.chroma.query_memories(
-            query, session_id=state["session_id"], top_k=5)
+            query, top_k=settings.memory_retrieval_top_k)
 
         dialogue_doc_ids = [
             doc["id"] for doc in docs
             if doc.get("metadata", {}).get("source_type") == "dialogue"
         ]
         if dialogue_doc_ids:
+            now = datetime.now(timezone.utc).isoformat()
             self.chroma.increment_memory_recall(dialogue_doc_ids)
+            # Reflect the updated recall_count in the state docs passed downstream.
+            for doc in docs:
+                if doc.get("id") in dialogue_doc_ids:
+                    doc["metadata"]["recall_count"] = doc["metadata"].get("recall_count", 0) + 1
+                    doc["metadata"]["last_recalled_at"] = now
         self.logger.info(
             "Retrieved memories",
             extra={

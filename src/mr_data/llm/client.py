@@ -35,6 +35,15 @@ class LLMClient:
         )
         return resp.choices[0].message.content or ""
 
+    def chat_with_messages(self, messages: list[dict], temperature: float = 0.7) -> str:
+        """Chat with an explicit list of messages."""
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+        )
+        return resp.choices[0].message.content or ""
+
     def chat_structured(
         self,
         system_prompt: str,
@@ -48,6 +57,22 @@ class LLMClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            response_format=response_format,
+            temperature=temperature,
+        )
+        content = resp.choices[0].message.content or "{}"
+        return json.loads(content)
+
+    def structured_chat_with_messages(
+        self,
+        messages: list[dict],
+        response_format: type,
+        temperature: float = 0.2,
+    ) -> dict:
+        """Structured output with an explicit list of messages."""
+        resp = self.client.beta.chat.completions.parse(
+            model=self.model,
+            messages=messages,
             response_format=response_format,
             temperature=temperature,
         )

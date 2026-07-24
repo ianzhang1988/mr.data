@@ -69,6 +69,7 @@ class PromptSection:
     name: str
     text: str
     priority: int
+    role: str  # "system" | "assistant" | "user"
 
 
 class DialogueState(TypedDict, total=False):
@@ -521,22 +522,23 @@ class DialogueGraph:
             known_refs[d.get("id", "")] = d["metadata"].get("source_type", "memory")
 
         sections = [
-            PromptSection("system", "你是助手，请结合后续信息回复用户。", 100),
-            PromptSection("identity", identity_text, 90),
-            PromptSection("user_input", user_input_text, 80),
-            PromptSection("personality", personality_text or "（无人格素材）", 70),
-            PromptSection("memory", memory_text or "（无记忆素材）", 60),
-            PromptSection("messages", messages_text or "（无近期对话）", 50),
-            PromptSection("web", web_text or "（无网络资料）", 40),
-            PromptSection("format", format_instruction, 100),
+            PromptSection("system", "你是助手，请结合后续信息回复用户。", 100, "system"),
+            PromptSection("identity", identity_text, 90, "system"),
+            PromptSection("personality", personality_text or "（无人格素材）", 70, "assistant"),
+            PromptSection("memory", memory_text or "（无记忆素材）", 60, "assistant"),
+            PromptSection("messages", messages_text or "（无近期对话）", 50, "assistant"),
+            PromptSection("web", web_text or "（无网络资料）", 40, "assistant"),
+            PromptSection("user_input", user_input_text, 80, "user"),
+            PromptSection("format", format_instruction, 100, "system"),
         ]
 
-        final_system = self._fit_sections(sections, settings.llm_context_token_limit)
-        prompt = "请按上述要求输出回复："
+        fitted = self._fit_sections(sections, settings.llm_context_token_limit)
+        llm_messages = self._build_messages(fitted)
+
         reply = ""
         references: list[ReplyReference] = []
         try:
-            raw = self.llm.structured_chat(final_system, prompt, AssistantReply, temperature=0.8)
+            raw = self.llm.structured_chat_with_messages(llm_messages, AssistantReply, temperature=0.8)
             decision = AssistantReply.model_validate(raw)
             reply = decision.text
             references = [
@@ -549,7 +551,7 @@ class DialogueGraph:
                 if ref.id in known_refs
             ]
         except Exception:
-            reply = self.llm.chat(final_system, prompt, temperature=0.8)
+            reply = self.llm.chat_with_messages(llm_messages, temperature=0.8)
 
         self.logger.info(
             "Generated reply",
@@ -561,31 +563,33 @@ class DialogueGraph:
         )
         return {**state, "reply": reply, "reply_references": references}
 
-    def _fit_sections(self, sections: list[PromptSection], limit: int) -> str:
+    def _fit_sections(
+        self, sections: list[PromptSection], limit: int
+    ) -> list[tuple[PromptSection, str]]:
         """Assemble prompt sections, compressing lower-priority ones if over token budget."""
         counter = TokenCounter()
         section_tokens = [(s, counter.count(s.text)) for s in sections]
         total = sum(t for _, t in section_tokens)
         if total <= limit:
-            return self._join_sections(sections, {s.name: s.text for s, _ in section_tokens})
+            return [(s, s.text) for s, _ in section_tokens]
 
         must_keep = [(s, t) for s, t in section_tokens if s.priority >= 80]
         adjustable = [(s, t) for s, t in section_tokens if s.priority < 80]
         must_total = sum(t for _, t in must_keep)
 
-        fitted: dict[str, str] = {}
+        fitted_map: dict[str, str] = {}
         if must_total >= limit:
             # Even high-priority sections exceed the budget; compress them proportionally.
-            fitted = self._compress_to_budget(must_keep, limit)
+            fitted_map = self._compress_to_budget(must_keep, limit)
             for s, _ in adjustable:
-                fitted[s.name] = f"（{s.name} 因上下文限制已省略）"
-            return self._join_sections(sections, fitted)
+                fitted_map[s.name] = f"（{s.name} 因上下文限制已省略）"
+        else:
+            remaining = limit - must_total
+            fitted_map = self._compress_to_budget(adjustable, remaining)
+            for s, _ in must_keep:
+                fitted_map[s.name] = s.text
 
-        remaining = limit - must_total
-        fitted = self._compress_to_budget(adjustable, remaining)
-        for s, _ in must_keep:
-            fitted[s.name] = s.text
-        return self._join_sections(sections, fitted)
+        return [(s, fitted_map.get(s.name, s.text)) for s, _ in section_tokens]
 
     def _compress_to_budget(
         self, section_tokens: list[tuple[PromptSection, int]], budget: int
@@ -624,14 +628,20 @@ class DialogueGraph:
             compressed = compressed[:max_chars]
         return compressed
 
-    def _join_sections(self, sections: list[PromptSection], fitted: dict[str, str]) -> str:
-        """Join sections in their original order, using fitted texts where provided."""
-        parts = []
-        for s in sections:
-            text = fitted.get(s.name, s.text)
-            if text:
-                parts.append(text)
-        return "\n\n".join(parts)
+    def _build_messages(
+        self, fitted: list[tuple[PromptSection, str]]
+    ) -> list[dict]:
+        """Group fitted sections into OpenAI-style messages by role."""
+        role_texts: dict[str, list[str]] = {}
+        for section, text in fitted:
+            if not text:
+                continue
+            role_texts.setdefault(section.role, []).append(text)
+        messages = []
+        for role in ("system", "assistant", "user"):
+            if role in role_texts:
+                messages.append({"role": role, "content": "\n\n".join(role_texts[role])})
+        return messages
 
     def _log_dialogue(self, state: DialogueState) -> DialogueState:
         session_id = state["session_id"]

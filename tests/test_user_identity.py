@@ -15,6 +15,12 @@ class RecordingFakeLLM(LLMClient):
         self.last_system: str = ""
         self.last_prompt: str = ""
 
+    def _record_messages(self, messages: list[dict]) -> None:
+        system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+        user_parts = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        self.last_system = "\n\n".join(system_parts)
+        self.last_prompt = "\n\n".join(user_parts)
+
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
         self.last_system = system_prompt
         self.last_prompt = user_prompt
@@ -24,7 +30,18 @@ class RecordingFakeLLM(LLMClient):
             return "检索查询：用户查询改写 内心独白：这是一个测试内心独白"
         return "这是一个测试回复。"
 
+    def chat_with_messages(self, messages: list[dict], temperature: float = 0.7) -> str:
+        self._record_messages(messages)
+        return "这是一个测试回复。"
+
     def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
+        return {"deltas": []}
+
+    def structured_chat_with_messages(self, messages: list[dict], response_format, temperature=0.2):
+        self._record_messages(messages)
+        name = response_format.__name__
+        if name == "AssistantReply":
+            return {"text": "这是一个测试回复。", "references": []}
         return {"deltas": []}
 
 

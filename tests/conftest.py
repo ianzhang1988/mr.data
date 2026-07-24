@@ -44,6 +44,14 @@ class FakeLLMClient(LLMClient):
             })
         return "这是一个测试回复。"
 
+    def chat_with_messages(self, messages: list[dict], temperature: float = 0.7) -> str:
+        joined = "\n".join(m.get("content", "") for m in messages)
+        return self.chat("", joined, temperature)
+
+    def structured_chat_with_messages(self, messages: list[dict], response_format, temperature=0.2):
+        joined = "\n".join(m.get("content", "") for m in messages)
+        return self.chat_structured("", joined, response_format, temperature)
+
     def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
         name = response_format.__name__
         if name == "ThinkDecision":

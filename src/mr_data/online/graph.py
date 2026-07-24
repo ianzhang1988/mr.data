@@ -521,13 +521,22 @@ class DialogueGraph:
         for d in memory_docs:
             known_refs[d.get("id", "")] = d["metadata"].get("source_type", "memory")
 
+        guidance_text = (
+            "你是助手，后续会出现多条 assistant 消息，其中包含给你参考的素材。"
+            "请按以下规则使用这些素材生成回复：\n"
+            "1. 人格素材：作为你的性格设定和语言风格参考，组织回复时要符合这些设定。\n"
+            "2. 记忆素材：作为你和用户的过往对话或已知事实，用于保持上下文连贯。\n"
+            "3. 近期对话：当前会话的上下文，用于理解用户当前问题的背景。\n"
+            "4. 网络资料：来自网络的事实参考，仅作为回答依据，不要违背你的人格设定。"
+        )
+
         sections = [
-            PromptSection("system", "你是助手，请结合后续信息回复用户。", 100, "system"),
+            PromptSection("system", guidance_text, 100, "system"),
             PromptSection("identity", identity_text, 90, "system"),
-            PromptSection("personality", personality_text or "（无人格素材）", 70, "assistant"),
-            PromptSection("memory", memory_text or "（无记忆素材）", 60, "assistant"),
-            PromptSection("messages", messages_text or "（无近期对话）", 50, "assistant"),
-            PromptSection("web", web_text or "（无网络资料）", 40, "assistant"),
+            PromptSection("personality", self._wrap_section("personality", personality_text), 70, "assistant"),
+            PromptSection("memory", self._wrap_section("memory", memory_text), 60, "assistant"),
+            PromptSection("messages", self._wrap_section("messages", messages_text), 50, "assistant"),
+            PromptSection("web", self._wrap_section("web", web_text), 40, "assistant"),
             PromptSection("user_input", user_input_text, 80, "user"),
             PromptSection("format", format_instruction, 100, "system"),
         ]
@@ -627,6 +636,11 @@ class DialogueGraph:
         if len(compressed) > max_chars:
             compressed = compressed[:max_chars]
         return compressed
+
+    def _wrap_section(self, tag: str, text: str) -> str:
+        """Wrap a section of context materials in XML-style tags for clarity."""
+        body = text if text else "（无）"
+        return f"<{tag}>\n{body}\n</{tag}>"
 
     def _build_messages(
         self, fitted: list[tuple[PromptSection, str]]

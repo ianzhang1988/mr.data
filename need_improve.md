@@ -36,7 +36,7 @@
 25. ✅ **`_assemble_and_generate` 结构化输出与参考来源**：`AssistantReply`/`ReplyReference` 模型定义回复文本与参考列表；生成时要求 LLM 输出每条参考的 id、source_type 和一句话 summary；CLI 新增 `--show-references`/`show_references` 配置控制是否显示参考来源。
 26. ✅ **Web 搜索结果长期稳定 id**：`_to_doc_format` 改用 URL SHA256 哈希作为 doc id；新增 `ChromaStore.upsert_memory`，`_log_dialogue` 写入网络资料时使用稳定 id 并作为全局知识（`session_id=""`），避免 `web:0/web:1` 每轮重置导致的冲突。
 27. ✅ **DialogueState 保留最近 N 轮 messages**：`dialogue_logs` 新增 `metadata` JSONB 字段，用于保存 assistant 回复的 `inner_monologue` 和 `reply_references`；每轮启动时从 Postgres 加载最近对话构造 `DialogueMessage` 列表；`DialogueState` 新增 `messages` 字段与 reducer；配置项 `dialogue_state_message_turns` 默认 10。
-28. ✅ **`_assemble_and_generate` Token 预算与提示词顺序**：引入 `tiktoken` 实现 `TokenCounter`；新增 `llm_context_token_limit`（默认 30K）与 `tokenizer_model` 配置；按优先级组织 prompt section：system / identity+核心性格 / 用户输入 / personality / memory / messages / web / format；超限时按优先级从低到高压缩，低优先级内容调用 LLM 摘要或硬性截断。
+28. ✅ **`_assemble_and_generate` Token 预算与提示词结构**：引入 `tiktoken` 实现 `TokenCounter`；新增 `llm_context_token_limit`（默认 30K）与 `tokenizer_model` 配置；按优先级组织 prompt section：system / identity+核心性格 / 用户输入 / personality / memory / messages / web / format；超限时按优先级从低到高压缩，低优先级内容调用 LLM 摘要或硬性截断。进一步将上下文材料从 system prompt 拆分到 `assistant` role 消息中，system 首段明确指引 LLM 如何使用人格/记忆/对话/web 素材；assistant 消息中每类素材使用 XML 标签（`<personality>`/`<memory>`/`<messages>`/`<web>`）包裹，便于模型识别分类。
 
 # 未来可选增强(计划中)
 

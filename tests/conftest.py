@@ -8,6 +8,9 @@ import uuid
 # Disable web search by default in tests to avoid external network calls.
 os.environ.setdefault("MR_DATA_ENABLE_WEB_SEARCH", "false")
 
+# Skip live web page extraction in tests: fake search results already include page_content.
+os.environ.setdefault("MR_DATA_WEB_EXTRACT_MAX_PAGES", "0")
+
 import pytest
 
 from mr_data.config import settings

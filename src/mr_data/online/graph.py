@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Annotated, Optional, TypedDict
 
@@ -7,13 +8,17 @@ from langgraph.graph import StateGraph, END
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.llm import LLMClient
+from mr_data.llm.tokenizer import TokenCounter
 from mr_data.logging import get_logger
 from mr_data.models import (
+    AssistantReply,
     DialogueLog,
+    DialogueMessage,
     DialogueVectorRef,
     FixedIdentity,
     UserIdentity,
     PersonalityDimension,
+    ReplyReference,
     ThinkDecision,
     DimensionSelection,
     WebRelevanceFilterResult,
@@ -35,6 +40,37 @@ def _merge_docs(old: list[dict], new: list[dict]) -> list[dict]:
     return merged
 
 
+def _merge_messages(
+    old: list[DialogueMessage], new: list[DialogueMessage]
+) -> list[DialogueMessage]:
+    merged = old + new
+    max_turns = settings.dialogue_state_message_turns
+    max_messages = max_turns * 2
+    if len(merged) > max_messages:
+        return merged[-max_messages:]
+    return merged
+
+
+@dataclass
+class ChatResult:
+    """在线对话的单轮返回结果。"""
+
+    text: str
+    references: list[ReplyReference] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        return self.text
+
+
+@dataclass
+class PromptSection:
+    """Prompt 组装中的一个分块。"""
+
+    name: str
+    text: str
+    priority: int
+
+
 class DialogueState(TypedDict, total=False):
     session_id: str
     user_input: str
@@ -51,7 +87,9 @@ class DialogueState(TypedDict, total=False):
     web_docs: Annotated[list[dict], _merge_docs]
     personality_docs: Annotated[list[dict], _merge_docs]
     memory_docs: Annotated[list[dict], _merge_docs]
+    messages: Annotated[list[DialogueMessage], _merge_messages]
     reply: str
+    reply_references: list[ReplyReference]
     assistant_log_id: Optional[int]
 
 
@@ -415,61 +453,185 @@ class DialogueGraph:
         web_docs = state.get("web_docs", [])
         personality_docs = state.get("personality_docs", [])
         memory_docs = state.get("memory_docs", [])
+        messages = state.get("messages", [])
         inner_monologue = state.get("inner_monologue")
+        user_identity = state.get("user_identity")
 
         dim_text = "\n".join(
             f"- {dim.description} (成功{dim.success_count} / 失败{dim.failure_count})"
             for dim in dimensions
         )
-        web_text = "\n".join(
-            f"- [{d['metadata'].get('title', 'web')}] {d['page_content']}"
-            for d in web_docs
-        )
-        personality_text = "\n".join(
-            f"- [{d['metadata'].get('source_type', 'line')
-                  }] {d['page_content']}"
-            for d in personality_docs
-        )
-        memory_text = "\n".join(f"- {d['page_content']}" for d in memory_docs)
-        monologue_text = f"\n你当前的内心独白：{
-            inner_monologue}\n" if inner_monologue else ""
-
-        user_identity = state.get("user_identity")
         user_identity_text = ""
         if user_identity:
             user_identity_text = (
-                f"\n与你对话的用户身份：{user_identity.name}（{user_identity.role}）。"
-                f"{user_identity.description}\n"
+                f"与你对话的用户身份：{user_identity.name}（{user_identity.role}）。"
+                f"{user_identity.description}"
             )
 
-        system = f"""你是 {identity.name if identity else 'mr.data'}，{identity.role if identity else '一个对话程序'}。
-{identity.base_prompt if identity else ''}{user_identity_text}
+        identity_text = "\n".join(
+            part for part in [
+                f"你是 {identity.name if identity else 'mr.data'}，{identity.role if identity else '一个对话程序'}。",
+                identity.base_prompt if identity else "",
+                user_identity_text,
+                "你的基础性格自白：",
+                dim_text,
+                f"你当前的内心独白：{inner_monologue}" if inner_monologue else "",
+            ] if part
+        )
 
-你的基础性格自白：
-{dim_text}
+        user_input_text = f"用户说：{state['user_input']}"
 
-与你人格相关的素材：
-{personality_text}
+        personality_text = "\n".join(
+            f"- [id: {d.get('id', 'unknown')}] [{d['metadata'].get('source_type', 'line')}] {d['page_content']}"
+            for d in personality_docs
+        )
+        memory_text = "\n".join(
+            f"- [id: {d.get('id', 'unknown')}] {d['page_content']}"
+            for d in memory_docs
+        )
+        messages_text = "\n".join(
+            f"{'user' if m.role == 'user' else 'assistant'}: {m.content}"
+            + (f"\n  内心独白：{m.inner_monologue}" if m.inner_monologue else "")
+            + (f"\n  参考来源：{', '.join(r.summary for r in m.references)}" if m.references else "")
+            for m in messages
+        )
+        web_text = "\n".join(
+            f"- [id: {d.get('id', 'unknown')}] [{d['metadata'].get('title', 'web')}] {d['page_content']}"
+            for d in web_docs
+        )
 
-与当前会话相关的记忆：
-{memory_text}
-{monologue_text}
-来自网络的资料（仅供参考，不要违背你的人格设定）：
-{web_text}
+        format_instruction = (
+            "请根据以上内容生成回复，保持性格一致性。\n\n"
+            "输出必须是 JSON，格式如下：\n"
+            '{\n'
+            '  "text": "给用户的最终回复文本",\n'
+            '  "references": [\n'
+            '    {"id": "素材id", "source_type": "web|personality|memory", "summary": "该素材的一句话总结"}\n'
+            '  ]\n'
+            '}\n'
+            "references 只能从上面列出的素材中选择；如果某个素材没有被实际参考，不要出现在 references 中。"
+        )
 
-请根据以上性格自白、人格素材、记忆、内心独白和网络资料生成回复，保持性格一致性。
-"""
-        prompt = f"用户说：{state['user_input']}\n请回复："
-        reply = self.llm.chat(system, prompt, temperature=0.8)
+        known_refs: dict[str, str] = {}
+        for d in web_docs:
+            known_refs[d.get("id", "")] = "web"
+        for d in personality_docs:
+            known_refs[d.get("id", "")] = d["metadata"].get("source_type", "personality")
+        for d in memory_docs:
+            known_refs[d.get("id", "")] = d["metadata"].get("source_type", "memory")
+
+        sections = [
+            PromptSection("system", "你是助手，请结合后续信息回复用户。", 100),
+            PromptSection("identity", identity_text, 90),
+            PromptSection("user_input", user_input_text, 80),
+            PromptSection("personality", personality_text or "（无人格素材）", 70),
+            PromptSection("memory", memory_text or "（无记忆素材）", 60),
+            PromptSection("messages", messages_text or "（无近期对话）", 50),
+            PromptSection("web", web_text or "（无网络资料）", 40),
+            PromptSection("format", format_instruction, 100),
+        ]
+
+        final_system = self._fit_sections(sections, settings.llm_context_token_limit)
+        prompt = "请按上述要求输出回复："
+        reply = ""
+        references: list[ReplyReference] = []
+        try:
+            raw = self.llm.structured_chat(final_system, prompt, AssistantReply, temperature=0.8)
+            decision = AssistantReply.model_validate(raw)
+            reply = decision.text
+            references = [
+                ReplyReference(
+                    id=ref.id,
+                    source_type=known_refs.get(ref.id, ref.source_type),
+                    summary=ref.summary,
+                )
+                for ref in decision.references
+                if ref.id in known_refs
+            ]
+        except Exception:
+            reply = self.llm.chat(final_system, prompt, temperature=0.8)
+
         self.logger.info(
             "Generated reply",
             extra={
                 "event": "chat.reply",
                 "session_id": state["session_id"],
-                "details": {"reply_length": len(reply)},
+                "details": {"reply_length": len(reply), "reference_count": len(references)},
             },
         )
-        return {**state, "reply": reply}
+        return {**state, "reply": reply, "reply_references": references}
+
+    def _fit_sections(self, sections: list[PromptSection], limit: int) -> str:
+        """Assemble prompt sections, compressing lower-priority ones if over token budget."""
+        counter = TokenCounter()
+        section_tokens = [(s, counter.count(s.text)) for s in sections]
+        total = sum(t for _, t in section_tokens)
+        if total <= limit:
+            return self._join_sections(sections, {s.name: s.text for s, _ in section_tokens})
+
+        must_keep = [(s, t) for s, t in section_tokens if s.priority >= 80]
+        adjustable = [(s, t) for s, t in section_tokens if s.priority < 80]
+        must_total = sum(t for _, t in must_keep)
+
+        fitted: dict[str, str] = {}
+        if must_total >= limit:
+            # Even high-priority sections exceed the budget; compress them proportionally.
+            fitted = self._compress_to_budget(must_keep, limit)
+            for s, _ in adjustable:
+                fitted[s.name] = f"（{s.name} 因上下文限制已省略）"
+            return self._join_sections(sections, fitted)
+
+        remaining = limit - must_total
+        fitted = self._compress_to_budget(adjustable, remaining)
+        for s, _ in must_keep:
+            fitted[s.name] = s.text
+        return self._join_sections(sections, fitted)
+
+    def _compress_to_budget(
+        self, section_tokens: list[tuple[PromptSection, int]], budget: int
+    ) -> dict[str, str]:
+        """Compress a list of sections so their total token count fits within budget."""
+        total = sum(t for _, t in section_tokens)
+        fitted: dict[str, str] = {}
+        if total <= budget:
+            for s, _ in section_tokens:
+                fitted[s.name] = s.text
+            return fitted
+        for s, t in section_tokens:
+            target = max(int(budget * (t / total)), 1)
+            if t <= target:
+                fitted[s.name] = s.text
+            else:
+                fitted[s.name] = self._compress_text(s.text, target)
+        return fitted
+
+    def _compress_text(self, text: str, target_tokens: int) -> str:
+        """Use LLM to compress text to roughly target_tokens; fallback to hard truncation."""
+        counter = TokenCounter()
+        if counter.count(text) <= target_tokens:
+            return text
+        system = f"请将以下内容压缩到大约 {target_tokens} token 以内，保留关键事实和语义，不要输出解释："
+        try:
+            # Pre-truncate input so the compression prompt itself stays reasonable.
+            max_input_chars = max(target_tokens * 8, 500)
+            input_text = text[:max_input_chars]
+            compressed = self.llm.chat(system, input_text, temperature=0.3)
+        except Exception:
+            compressed = text
+        # Ensure the result does not exceed the target by too much.
+        max_chars = max(target_tokens * 4, 100)
+        if len(compressed) > max_chars:
+            compressed = compressed[:max_chars]
+        return compressed
+
+    def _join_sections(self, sections: list[PromptSection], fitted: dict[str, str]) -> str:
+        """Join sections in their original order, using fitted texts where provided."""
+        parts = []
+        for s in sections:
+            text = fitted.get(s.name, s.text)
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
 
     def _log_dialogue(self, state: DialogueState) -> DialogueState:
         session_id = state["session_id"]
@@ -483,8 +645,17 @@ class DialogueGraph:
         self.pg.insert_dialogue(
             DialogueLog(session_id=session_id, role="user", content=user_input)
         )
+        assistant_metadata = {
+            "inner_monologue": inner_monologue,
+            "references": [ref.model_dump() for ref in state.get("reply_references", [])],
+        }
         assistant_log_id = self.pg.insert_dialogue(
-            DialogueLog(session_id=session_id, role="assistant", content=reply)
+            DialogueLog(
+                session_id=session_id,
+                role="assistant",
+                content=reply,
+                metadata=assistant_metadata,
+            )
         )
 
         # 记录加载的基础维度
@@ -518,7 +689,7 @@ class DialogueGraph:
         self.chroma.add_memory(session_id, f"用户：{user_input}")
         self.chroma.add_memory(session_id, f"助手：{reply}")
 
-        # 把网络资料作为世界知识写入记忆向量库
+        # 把网络资料作为世界知识写入记忆向量库（使用 URL 哈希作为全局稳定 id）
         retrieval_query = state.get("retrieval_query", user_input)
         retrieved_at = datetime.now(timezone.utc).isoformat()
         for doc in web_docs:
@@ -527,15 +698,16 @@ class DialogueGraph:
             url = metadata.get("url", "")
             content = doc.get("page_content", "")
             memory_content = f"[网络资料] {title}\n{url}\n{content[:800]}"
-            self.chroma.add_memory(
-                session_id,
-                memory_content,
+            self.chroma.upsert_memory(
+                session_id="",
+                content=memory_content,
+                memory_id=doc["id"],
                 metadata={
-                    "session_id": session_id,
                     "source_type": "web",
                     "url": url,
                     "title": title,
                     "retrieved_at": retrieved_at,
+                    "retrieval_session_id": session_id,
                     "query": retrieval_query,
                 },
             )
@@ -550,25 +722,52 @@ class DialogueGraph:
                     "inner_monologue": inner_monologue,
                     "personality_doc_count": len(personality_docs),
                     "web_doc_count": len(web_docs),
+                    "reference_count": len(state.get("reply_references", [])),
                 },
             },
         )
 
         return {**state, "assistant_log_id": assistant_log_id}
 
-    def chat(self, session_id: str, user_input: str) -> str:
+    def _load_recent_messages(self, session_id: str) -> list[DialogueMessage]:
+        """Load the most recent dialogue turns from Postgres into DialogueState messages."""
+        limit = settings.dialogue_state_message_turns * 2
+        logs = self.pg.get_recent_dialogues(session_id=session_id, limit=limit)
+        messages: list[DialogueMessage] = []
+        for log in sorted(logs, key=lambda x: x.created_at or 0):
+            meta = log.metadata or {}
+            if log.role == "user":
+                messages.append(DialogueMessage(role="user", content=log.content))
+            else:
+                refs = [ReplyReference(**r) for r in meta.get("references", [])]
+                messages.append(
+                    DialogueMessage(
+                        role="assistant",
+                        content=log.content,
+                        inner_monologue=meta.get("inner_monologue"),
+                        references=refs,
+                    )
+                )
+        return messages
+
+    def chat(self, session_id: str, user_input: str) -> ChatResult:
         self.logger.info(
             "Chat turn started",
             extra={"event": "chat.start", "session_id": session_id,
                    "details": {"user_input": user_input}},
         )
+        messages = self._load_recent_messages(session_id)
         state: DialogueState = {
             "session_id": session_id,
             "user_input": user_input,
+            "messages": messages,
         }
         try:
             final_state = self.graph.invoke(state)
-            return final_state["reply"]
+            return ChatResult(
+                text=final_state["reply"],
+                references=final_state.get("reply_references", []),
+            )
         except Exception as exc:
             self.logger.exception(
                 "Chat turn failed",

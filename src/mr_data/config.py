@@ -67,5 +67,15 @@ class Settings(BaseSettings):
     memory_retrieval_top_k: int = 5
     enable_memory_relevance_filter: bool = False
 
+    # 是否在 CLI 回复后显示参考来源
+    show_references: bool = False
+
+    # DialogueState 中保留的最近对话轮数
+    dialogue_state_message_turns: int = 10
+
+    # LLM 上下文 tokenizer 与 token 预算
+    tokenizer_model: str = "cl100k_base"
+    llm_context_token_limit: int = 30000
+
 
 settings = Settings()

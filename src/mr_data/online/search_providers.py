@@ -1,4 +1,6 @@
+import hashlib
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
 from urllib.parse import urlencode, urljoin
@@ -11,15 +13,24 @@ from mr_data.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _stable_web_id(url: str, body: str = "") -> str:
+    """Generate a long-term stable id for a web result based on its URL."""
+    if url:
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()
+    if body:
+        return f"web:{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}"
+    return f"web:{uuid.uuid4().hex}"
+
+
 def _to_doc_format(results: list[dict]) -> list[dict]:
     """Normalize provider-specific rows into the standard web-search doc format."""
     docs = []
-    for idx, r in enumerate(results):
+    for r in results:
         title = r.get("title", "")
         body = r.get("body", "")
         url = r.get("url", "")
         docs.append({
-            "id": f"web:{idx}",
+            "id": _stable_web_id(url, body),
             "page_content": f"{title}\n{body}",
             "metadata": {
                 "source_type": "web",

@@ -179,6 +179,26 @@ class ChromaStore:
         )
         return doc_id
 
+    def upsert_memory(
+        self,
+        session_id: str,
+        content: str,
+        memory_id: str,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Upsert a memory document. Use this when the caller already has a stable id."""
+        meta = {"session_id": session_id}
+        if metadata:
+            meta.update(metadata)
+        embedding = self._memory_embedding_fn([content])[0]
+        self.memories.upsert(
+            ids=[memory_id],
+            documents=[content],
+            embeddings=[embedding],
+            metadatas=[meta],
+        )
+        return memory_id
+
     def query_memories(self, query: str, session_id: Optional[str] = None, top_k: int = 5) -> list[dict]:
         where = {"session_id": session_id} if session_id else None
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"

@@ -38,6 +38,7 @@ def _print_chat_help(pg: PostgresStore) -> None:
   --session-id TEXT    指定会话 ID
   --eval               每轮回复后请求评价
   --web-search / --no-web-search  是否启用网络搜索 RAG
+  --show-references / --hide-references  是否在回复后显示参考来源
 
 [bold]其他 CLI 命令[/bold]
   chat             启动交互对话
@@ -58,6 +59,7 @@ def chat(
     session_id: str = typer.Option(None, "--session-id", help="Session ID for the conversation"),
     eval_mode: bool = typer.Option(False, "--eval", help="Ask for evaluation feedback after each assistant reply"),
     web_search: bool = typer.Option(settings.enable_web_search, "--web-search/--no-web-search", help="Enable web search RAG"),
+    show_references: bool = typer.Option(settings.show_references, "--show-references/--hide-references", help="Show reference sources after each reply"),
 ) -> None:
     """Start an interactive chat with mr.data."""
     import os
@@ -92,8 +94,13 @@ def chat(
                 rprint(f"[dim]New session: {current_session_id}[/dim]\n")
                 continue
 
-            reply = graph.chat(current_session_id, user_input)
-            rprint(f"[bold cyan]mr.data:[/bold cyan] {reply}\n")
+            result = graph.chat(current_session_id, user_input)
+            rprint(f"[bold cyan]mr.data:[/bold cyan] {result.text}\n")
+            if show_references and result.references:
+                rprint("[dim]参考来源：[/dim]")
+                for ref in result.references:
+                    rprint(f"  [{ref.source_type}] {ref.id}: {ref.summary}")
+                rprint()
 
             if eval_mode:
                 score_str = Prompt.ask("Evaluate reply: -1 (bad) / 0 / 1 (good)", default="0")

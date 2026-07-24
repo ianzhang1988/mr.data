@@ -24,6 +24,33 @@ class ThinkDecision(BaseModel):
     )
 
 
+class ReplyReference(BaseModel):
+    """助手回复中引用的一条参考来源。"""
+
+    id: str = Field(description="被引用素材的唯一标识，例如 Chroma doc id 或数据库记录 id")
+    source_type: str = Field(description="素材来源类型：web / personality / memory / dialogue")
+    summary: str = Field(description="对该素材内容的一句话总结")
+
+
+class AssistantReply(BaseModel):
+    """`assemble_and_generate` 节点的结构化输出。"""
+
+    text: str = Field(description="给用户的最终回复文本")
+    references: list[ReplyReference] = Field(
+        default_factory=list,
+        description="生成回复时实际参考的素材列表",
+    )
+
+
+class DialogueMessage(BaseModel):
+    """DialogueState 中保留的单轮对话记录。"""
+
+    role: str = Field(description="说话者角色：user / assistant")
+    content: str = Field(description="对话内容")
+    inner_monologue: Optional[str] = Field(default=None, description="助手在该轮产生的内心独白")
+    references: list[ReplyReference] = Field(default_factory=list, description="助手回复中引用的参考来源")
+
+
 class DimensionSelection(BaseModel):
     """性格维度选择结果。"""
 
@@ -111,6 +138,7 @@ class DialogueLog(BaseModel):
     evaluation_score: Optional[int] = None  # -1, 0, 1
     evaluation_feedback: Optional[str] = None
     processed_for_attribution: bool = False
+    metadata: Optional[dict] = None
     created_at: Optional[datetime] = None
 
 

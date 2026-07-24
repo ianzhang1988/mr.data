@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from contextlib import contextmanager
@@ -86,8 +87,11 @@ CREATE TABLE IF NOT EXISTS dialogue_logs (
     evaluation_score INTEGER,
     evaluation_feedback TEXT,
     processed_for_attribution BOOLEAN DEFAULT FALSE,
+    metadata JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE dialogue_logs ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_dialogue_session ON dialogue_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
@@ -444,12 +448,13 @@ class PostgresStore:
             cur.execute(
                 """
                 INSERT INTO dialogue_logs
-                (session_id, role, content, evaluation_score, evaluation_feedback, processed_for_attribution)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (session_id, role, content, evaluation_score, evaluation_feedback, processed_for_attribution, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (log.session_id, log.role, log.content, log.evaluation_score,
-                 log.evaluation_feedback, log.processed_for_attribution),
+                 log.evaluation_feedback, log.processed_for_attribution,
+                 json.dumps(log.metadata) if log.metadata is not None else None),
             )
             return cur.fetchone()["id"]
 

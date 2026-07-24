@@ -179,11 +179,14 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
+    import hashlib
+    expected_web_id = hashlib.sha256("http://example.com/planets".encode("utf-8")).hexdigest()
+
     class FakeWebSearch:
         def search(self, query: str) -> list[dict]:
             return [
                 {
-                    "id": "web:0",
+                    "id": expected_web_id,
                     "page_content": "太阳系有八大行星",
                     "metadata": {
                         "source_type": "web",
@@ -220,10 +223,12 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
     reply = graph.chat(test_session_id, "太阳系有几颗行星")
     assert reply
 
-    docs = chroma_store.query_memories("八大行星", session_id=test_session_id, top_k=10)
+    # Web memories are global knowledge, not scoped to a single session.
+    docs = chroma_store.query_memories("八大行星", top_k=10)
     assert any("八大行星" in d["page_content"] for d in docs)
     assert any(d["metadata"].get("source_type") == "web" for d in docs)
     assert any(d["metadata"].get("url") == "http://example.com/planets" for d in docs)
+    assert any(d["id"] == expected_web_id for d in docs)
 
 
 def test_full_session_lifecycle(fake_llm, pg_available, chroma_store, temp_log_dir):
@@ -547,3 +552,257 @@ def test_memory_relevance_filter(fake_llm, test_session_id, pg_available, chroma
 
     assert len(state["memory_docs"]) == 1
     assert "蓝色" in state["memory_docs"][0]["page_content"]
+
+
+def test_assemble_and_generate_returns_references(
+    fake_llm, test_session_id, pg_available, chroma_store, monkeypatch
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    original_chat_structured = fake_llm.chat_structured
+
+    def _patched_chat_structured(system_prompt, user_prompt, response_format, temperature=0.2):
+        name = response_format.__name__
+        if name == "ThinkDecision":
+            return {
+                "inner_monologue": "需要搜索",
+                "personality_query": user_prompt,
+                "memory_query": user_prompt,
+                "needs_web_search": True,
+                "search_query": user_prompt,
+            }
+        if name == "AssistantReply":
+            return {
+                "text": "根据参考资料，太阳系有八大行星。",
+                "references": [
+                    {"id": "web:0", "source_type": "web", "summary": "太阳系有八大行星"},
+                    {"id": "fake-id", "source_type": "memory", "summary": "不存在的素材"},
+                ],
+            }
+        return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
+
+    class FakeWebSearch:
+        def search(self, query: str) -> list[dict]:
+            return [
+                {
+                    "id": "web:0",
+                    "page_content": "太阳系有八大行星",
+                    "metadata": {
+                        "source_type": "web",
+                        "url": "http://example.com/planets",
+                        "title": "行星",
+                    },
+                }
+            ]
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        web_search=FakeWebSearch(),
+        enable_web_search=True,
+    )
+
+    result = graph.chat(test_session_id, "太阳系有几颗行星")
+    assert result.text
+    assert any(ref.id == "web:0" and ref.source_type == "web" for ref in result.references)
+    assert not any(ref.id == "fake-id" for ref in result.references)
+
+
+def test_web_memory_uses_stable_id(fake_llm, pg_available, chroma_store, monkeypatch):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    import hashlib
+    from mr_data.online.search_providers import _stable_web_id
+
+    url = "http://example.com/planets"
+    expected_id = _stable_web_id(url)
+
+    class FakeWebSearch:
+        def search(self, query: str) -> list[dict]:
+            return [
+                {
+                    "id": expected_id,
+                    "page_content": "太阳系有八大行星",
+                    "metadata": {
+                        "source_type": "web",
+                        "url": url,
+                        "title": "行星",
+                    },
+                }
+            ]
+
+    original_chat_structured = fake_llm.chat_structured
+
+    def _patched_chat_structured(system_prompt, user_prompt, response_format, temperature=0.2):
+        name = response_format.__name__
+        if name == "ThinkDecision":
+            return {
+                "inner_monologue": "需要搜索",
+                "personality_query": user_prompt,
+                "memory_query": user_prompt,
+                "needs_web_search": True,
+                "search_query": user_prompt,
+            }
+        if name == "AssistantReply":
+            return {
+                "text": "太阳系有八大行星。",
+                "references": [
+                    {"id": expected_id, "source_type": "web", "summary": "太阳系有八大行星"},
+                ],
+            }
+        return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        web_search=FakeWebSearch(),
+        enable_web_search=True,
+    )
+
+    session_a = pg.create_session()
+    graph.chat(session_a, "太阳系有几颗行星")
+    pg.close_session(session_a)
+
+    session_b = pg.create_session()
+    graph.chat(session_b, "太阳系有几颗行星")
+    pg.close_session(session_b)
+
+    # The same URL should produce exactly one memory document with the stable id.
+    result = chroma_store.memories.get(ids=[expected_id], include=["metadatas"])
+    assert len(result["ids"]) == 1
+    assert result["metadatas"][0].get("url") == url
+
+
+def test_dialogue_log_metadata_roundtrip(pg_available):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    session_id = pg.create_session()
+
+    metadata = {
+        "inner_monologue": "我在思考",
+        "references": [
+            {"id": "web:abc", "source_type": "web", "summary": "参考摘要"}
+        ],
+    }
+    log_id = pg.insert_dialogue(
+        DialogueLog(
+            session_id=session_id,
+            role="assistant",
+            content="测试回复",
+            metadata=metadata,
+        )
+    )
+
+    logs = pg.get_recent_dialogues(session_id=session_id)
+    found = next((log for log in logs if log.id == log_id), None)
+    assert found is not None
+    assert found.metadata is not None
+    assert found.metadata.get("inner_monologue") == "我在思考"
+    assert found.metadata.get("references")[0]["id"] == "web:abc"
+
+
+def test_chat_loads_messages_from_postgres(
+    fake_llm, test_session_id, pg_available, chroma_store
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+
+    graph.chat(test_session_id, "第一问")
+    messages = graph._load_recent_messages(test_session_id)
+
+    assert any(m.role == "user" and m.content == "第一问" for m in messages)
+    assert any(m.role == "assistant" for m in messages)
+
+
+def test_token_counter_counts_text():
+    from mr_data.llm.tokenizer import TokenCounter
+
+    counter = TokenCounter()
+    assert counter.count("hello world") > 0
+    assert counter.count("你好世界") > 0
+
+
+def test_assemble_respects_token_limit(
+    fake_llm, test_session_id, pg_available, chroma_store, monkeypatch
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    monkeypatch.setattr(settings, "llm_context_token_limit", 50)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+
+    compress_calls = []
+
+    def fake_compress(text, target):
+        compress_calls.append((text, target))
+        return "[compressed]"
+
+    monkeypatch.setattr(graph, "_compress_text", fake_compress)
+
+    state = {
+        "session_id": test_session_id,
+        "user_input": "short question",
+        "identity": pg.get_identity(),
+        "user_identity": None,
+        "dimensions": pg.list_dimensions(active_only=True),
+        "selected_dimension_ids": [],
+        "personality_docs": [],
+        "memory_docs": [
+            {"id": "m1", "page_content": "a" * 300, "metadata": {"source_type": "memory"}}
+        ],
+        "messages": [],
+        "web_docs": [],
+        "inner_monologue": None,
+    }
+
+    graph._assemble_and_generate(state)
+    assert len(compress_calls) > 0

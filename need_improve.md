@@ -1,41 +1,47 @@
 # 在改进前，首先
 * 使用 scripts下的code_struct.py 获取src目录下的代码结构
 
+# 加入以下prompt，这是我对你的要求
+- 从待改进部分，去读当前的任务，做必要的分析
+  - 首先分析是否合理，有没有重大的脱离当前项目结构的问题，如果有与我交流确认。没有就继续。
+  - 计划要做的事情，分成具体的步骤内容。
+  - 如果可以并行完成，则使用子agent来加速生产速度。
+- 完成修改后，更新本文档
+
 # 待改进
 
-1. （当前暂无待办项）
+1. 在 DialogueState 里加 messages, 保留最近 10 轮对话(默认值，配置中增加配置项)。
+  - 保留用户输入, agent助手的输出, inner_monologue
+  - 保留已完成修改中的id和内容概括在到messages中（agent后续可以自己去取，后续计划，先保留数据，不做对应功能）。
+  - 入库的不需要保留。
+2. graph.py 中_assemble_and_generate 考虑到模型的ctx的上下文大小, 需要有一定的处理方法。
+  - 增加一个本地Tokenizer，找个常用有代表性的。用于估算目前整体给llm的数据的大小
+  - 再配置中增加一个token的限制（默认30K），如果组装的内容经过toenizer计算超过了配置，调用llm去提取后面的内容，把数据压缩到限制内
+  - 另外原来的 代码中 记忆内容和web内容，放到system prompt本事似乎就不合适。你判断下是不是我上面提到的顺序更好
+  - 组装组装顺序我认为应该大致如下
+    - 系统提示
+    - 核心性格，身份
+    - 用户输入
+    - 性格向量库内容
+    - 记忆向量库内容
+    - DialogueState 里 messages
+    - web 内容
+  - 超限制时，从可以从最后面的项目开始往前，调用llm压缩，注意这里调用也要保证在token限制内
+  - 你考虑下，是保持每个项目中的列表，然后一个一个调用llm压缩，然后计算限制好。还是组装完成后，读取后面的数据让llm去压缩好。
+    - 我觉得组装完成后可能简单，但是截断处的语义可能有问题。也许需要一些辅助，例如让llm先做语义的截断，再去压缩。
 
 # 已完成的改进项
+(保留最近项目，完成项目放到finished_improvement.md中)
 
-1. ✅ 增加 `sessions` 表；CLI 支持 `/newsession` 切换会话；`dialogue_logs` 与 `adjustment_logs` 增加 `session_id`；离线归因按已关闭会话处理。
-2. ✅ LangGraph 在线流水线增加 Web Search RAG 节点（默认开启，基于 DuckDuckGo）。
-3. ✅ 引入 `pgembed` 作为默认数据库（测试使用临时目录，日常使用持久化目录），并基于它完成功能测试。
-4. ✅ 离线归因改为**会话级 transcript**：按时间顺序拼接 `user` / `assistant` 对话，避免顺序混乱。
-5. ✅ 离线归因提示词注入**基础人设、当前性格维度、历史人格向量库素材**作为上下文。
-6. ✅ 归因时同步提取**关键证据片段**写入性格向量库（`source_type="evidence"`），并标记与基础性格的关系（`relation_to_personality`）；同时在 `dialogue_vector_refs` 记录反向引用。
-7. ✅ 维度失败次数达到 `MR_DATA_FAILURE_THRESHOLD` 时自动**标记失效**，并清理 `personality` 向量库中对应的证据文档与 Postgres 引用记录。
-8. ✅ 性格向量库改为**场景上下文 embedding + agent 台词 utterance**：`PersonalityEvent` 新增 `context` 与 `speaker`；Chroma 存储时嵌入完整场景，检索返回时只取 `metadata.utterance`。
-9. ✅ **结构化日志系统**：新增 `src/mr_data/logging.py`，JSONL 输出到 `./logs/mr-data.log`，支持滚动；在线对话记录检索查询与内心独白，离线归因读取思考过程并纳入提示词。
-10. ✅ **网页正文提取工具**：新增 `PageExtractor`（`trafilatura` + `requests/BeautifulSoup` fallback），接入 LangGraph，在 web search 后提取页面正文。
-11. ✅ **固定核心性格标记**：`personality_dimensions` 增加 `core` 列；核心维度不会被离线归因自动失效，保持角色稳定性。
-12. ✅ **在线核心性格选择**：`DialogueGraph` 在 `_think` 前增加 `_select_dimensions` 节点，由 LLM 根据用户输入选出最应起作用的性格维度，并注入 `_think` 提示词。
-13. ✅ **Web 检索条件分支**：`retrieve_web`、`extract_web_pages` 改为 `conditional_edges`，根据配置和中间结果动态跳过。
-14. ✅ **网页资料 LLM 相关性过滤**：`extract_web_pages` 后可选通过 LLM 逐文档判断与用户输入的相关性，保留相关文档。
-15. ✅ **网络资料写入世界知识记忆**：`_log_dialogue` 把 `web_docs` 写入 `memories` 向量库，附带 `source_type=web`、URL、标题、检索时间、查询等 metadata。
-16. ✅ **默认人格改为 Data**：`PostgresStore.seed()` 默认人格原型改为《星际迷航：下一代》中的 Data；新增 `PersonalityPack`/`PersonalitySampleLine` 模型与 `personality_loader`，支持从 `data/personalities/*.json` 加载人格，代码常量作为兜底；`mr-data ingest` 从人格包读取示例台词。
-17. ✅ **Chroma 高级 Embedding**：`personality` 集合改用 `fastembed` + `nomic-ai/nomic-embed-text-v1.5` 并截断至 512 维，`memories` 集合改用 `BAAI/bge-base-zh-v1.5` 768 维；代码中自动添加 Nomic/BGE 所需的 query/document 前缀；旧集合维度不一致时自动重建。
-18. ✅ **用户身份设定**：新增 `user_identities` 表，支持保存多个用户身份；seed 时写入 Picard（默认、受保护）与普通用户（受保护）；`DialogueGraph._assemble_and_generate` 从数据库读取当前默认身份并注入 system prompt；CLI 新增 `mr-data identity list/add/edit/delete/select` 管理身份。
-19. ✅ **交互式帮助命令**：`mr-data chat` 中输入 `/help` 或 `/?` 可显示当前 slash 命令、启动选项及顶层 CLI 命令。
-20. ✅ **think 节点结构化决策**：`DialogueGraph._think` 使用 `ThinkDecision` 结构化输出，生成 `personality_query`、`memory_query`、`needs_web_search`、`search_query` 与 `inner_monologue`；web 分支仅由 think 决策和 `enable_web_search` 单一开关控制，`retrieve_web` / `extract_web_pages` / `filter_web_docs` 作为整体流水线依次执行。
-21. ✅ **离线对话记忆与 recall 计数**：离线归因后将对话日志写入 `memories` 向量库（`source_type=dialogue`），记录 `recall_count`；在线检索命中对话记忆时递增计数；新增 `prune_stale_dialogue_memories` 清理长期未召回的旧对话记忆。
-22. ✅ **统一结构化输出与 LLM 适配降级**：`LLMClient` 新增 `structured_chat`，先尝试 OpenAI `parse` API，失败时自动降级为普通 chat + JSON Schema prompt + 解析；`_select_dimensions`、`_filter_web_docs`、离线归因统一改为结构化输出，提升不同 LLM 端点的适配性。
-23. ✅ **多源 Web 搜索与失败降级**：新增 `SearchProvider` 协议与 `search_providers.py`，支持 DuckDuckGo、SearXNG、Brave、Bing、Google CSE、百度、360；`WebSearchTool` 改为按配置顺序调用，失败自动降级；新增 `web_search_providers` 等配置项。
-24. ✅ **记忆相关性过滤节点**：`_retrieve_memories` 后增加可选 `_filter_memory_docs` 节点，由 LLM 批量判断记忆与用户输入的相关性，扩大 `memory_retrieval_top_k` 后自动精简记忆内容；新增 `enable_memory_relevance_filter` 配置。
+25. ✅ **`_assemble_and_generate` 结构化输出与参考来源**：`AssistantReply`/`ReplyReference` 模型定义回复文本与参考列表；生成时要求 LLM 输出每条参考的 id、source_type 和一句话 summary；CLI 新增 `--show-references`/`show_references` 配置控制是否显示参考来源。
+26. ✅ **Web 搜索结果长期稳定 id**：`_to_doc_format` 改用 URL SHA256 哈希作为 doc id；新增 `ChromaStore.upsert_memory`，`_log_dialogue` 写入网络资料时使用稳定 id 并作为全局知识（`session_id=""`），避免 `web:0/web:1` 每轮重置导致的冲突。
+27. ✅ **DialogueState 保留最近 N 轮 messages**：`dialogue_logs` 新增 `metadata` JSONB 字段，用于保存 assistant 回复的 `inner_monologue` 和 `reply_references`；每轮启动时从 Postgres 加载最近对话构造 `DialogueMessage` 列表；`DialogueState` 新增 `messages` 字段与 reducer；配置项 `dialogue_state_message_turns` 默认 10。
+28. ✅ **`_assemble_and_generate` Token 预算与提示词顺序**：引入 `tiktoken` 实现 `TokenCounter`；新增 `llm_context_token_limit`（默认 30K）与 `tokenizer_model` 配置；按优先级组织 prompt section：system / identity+核心性格 / 用户输入 / personality / memory / messages / web / format；超限时按优先级从低到高压缩，低优先级内容调用 LLM 摘要或硬性截断。
 
 # 未来可选增强(计划中)
 
 - 自动关闭长期未活动的会话（session timeout policy）。
-- 超长会话分片处理，避免超出 LLM 上下文窗口。
 - 更完善的日志查看/搜索 UI 或 CLI 命令。
-2. 在 DialogueState 里加 messages, 保留最近 5~10 轮对话。考虑下保留啥，插入记忆库的就不需要了。可以考虑保留入库的id和内容概括在对话messages中，让agent后续可以自己去取
+2. WebRelevanceItem 当内容整体与用户输入相关时，中增加对用户输入相关内容的摘取。减少token使用
 2. 最后对话组装和生成的部分，是不是考虑做个独立codeagent？给他获取相关内容的能力
+1. 考虑 _log_dialogue 中对话加入记忆向量库的部分，做成再cli命令/newsession时，加入整个session的对话。是不是对保留上下文，和取回都更好。

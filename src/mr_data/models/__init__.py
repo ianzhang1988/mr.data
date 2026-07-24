@@ -1,9 +1,12 @@
 from .personality import (
+    AssistantReply,
+    DialogueMessage,
     FixedIdentity,
     UserIdentity,
     PersonalityDimension,
     PersonalitySampleLine,
     PersonalityPack,
+    ReplyReference,
     Session,
     DialogueLog,
     DialogueDimensionRef,
@@ -32,4 +35,7 @@ __all__ = [
     "DimensionSelection",
     "WebRelevanceFilterResult",
     "MemoryRelevanceFilterResult",
+    "AssistantReply",
+    "ReplyReference",
+    "DialogueMessage",
 ]

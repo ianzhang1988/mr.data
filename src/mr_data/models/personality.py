@@ -32,13 +32,23 @@ class ReplyReference(BaseModel):
     summary: str = Field(description="对该素材内容的一句话总结")
 
 
+class ReplyBlock(BaseModel):
+    """助手回复中的一个内容块及其引用的来源。"""
+
+    text: str = Field(description="该内容块的文本")
+    references: list[ReplyReference] = Field(
+        default_factory=list,
+        description="该块引用的素材列表；空列表表示无人格/记忆/网络依据的纯人格表达",
+    )
+
+
 class AssistantReply(BaseModel):
     """`assemble_and_generate` 节点的结构化输出。"""
 
     text: str = Field(description="给用户的最终回复文本")
-    references: list[ReplyReference] = Field(
-        default_factory=list,
-        description="生成回复时实际参考的素材列表",
+    blocks: list[ReplyBlock] = Field(
+        ...,
+        description="回复的内容块列表，每个块携带其引用的素材",
     )
 
 
@@ -48,7 +58,7 @@ class DialogueMessage(BaseModel):
     role: str = Field(description="说话者角色：user / assistant")
     content: str = Field(description="对话内容")
     inner_monologue: Optional[str] = Field(default=None, description="助手在该轮产生的内心独白")
-    references: list[ReplyReference] = Field(default_factory=list, description="助手回复中引用的参考来源")
+    blocks: list[ReplyBlock] = Field(default_factory=list, description="助手回复中各内容块及其引用来源")
 
 
 class DimensionSelection(BaseModel):

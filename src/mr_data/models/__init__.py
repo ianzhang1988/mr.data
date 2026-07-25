@@ -7,6 +7,7 @@ from .personality import (
     PersonalitySampleLine,
     PersonalityPack,
     ReplyReference,
+    ReplyBlock,
     Session,
     DialogueLog,
     DialogueDimensionRef,
@@ -37,5 +38,6 @@ __all__ = [
     "MemoryRelevanceFilterResult",
     "AssistantReply",
     "ReplyReference",
+    "ReplyBlock",
     "DialogueMessage",
 ]

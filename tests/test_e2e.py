@@ -581,9 +581,14 @@ def test_assemble_and_generate_returns_references(
         if name == "AssistantReply":
             return {
                 "text": "根据参考资料，太阳系有八大行星。",
-                "references": [
-                    {"id": "web:0", "source_type": "web", "summary": "太阳系有八大行星"},
-                    {"id": "fake-id", "source_type": "memory", "summary": "不存在的素材"},
+                "blocks": [
+                    {
+                        "text": "根据参考资料，太阳系有八大行星。",
+                        "references": [
+                            {"id": "web:0", "source_type": "web", "summary": "太阳系有八大行星"},
+                            {"id": "fake-id", "source_type": "memory", "summary": "不存在的素材"},
+                        ],
+                    }
                 ],
             }
         return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
@@ -614,8 +619,11 @@ def test_assemble_and_generate_returns_references(
 
     result = graph.chat(test_session_id, "太阳系有几颗行星")
     assert result.text
-    assert any(ref.id == "web:0" and ref.source_type == "web" for ref in result.references)
-    assert not any(ref.id == "fake-id" for ref in result.references)
+    all_refs = [
+        ref for block in result.blocks for ref in block.references
+    ]
+    assert any(ref.id == "web:0" and ref.source_type == "web" for ref in all_refs)
+    assert not any(ref.id == "fake-id" for ref in all_refs)
 
 
 def test_web_memory_uses_stable_id(fake_llm, pg_available, chroma_store, monkeypatch):

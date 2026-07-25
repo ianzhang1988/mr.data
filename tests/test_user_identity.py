@@ -41,7 +41,12 @@ class RecordingFakeLLM(LLMClient):
         self._record_messages(messages)
         name = response_format.__name__
         if name == "AssistantReply":
-            return {"text": "这是一个测试回复。", "references": []}
+            return {
+                "text": "这是一个测试回复。",
+                "blocks": [
+                    {"text": "这是一个测试回复。", "references": []}
+                ],
+            }
         return {"deltas": []}
 
 

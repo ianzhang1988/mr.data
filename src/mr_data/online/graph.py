@@ -18,6 +18,7 @@ from mr_data.models import (
     FixedIdentity,
     UserIdentity,
     PersonalityDimension,
+    ReplyBlock,
     ReplyReference,
     ThinkDecision,
     DimensionSelection,
@@ -56,7 +57,19 @@ class ChatResult:
     """在线对话的单轮返回结果。"""
 
     text: str
-    references: list[ReplyReference] = field(default_factory=list)
+    blocks: list[ReplyBlock] = field(default_factory=list)
+
+    @property
+    def references(self) -> list[ReplyReference]:
+        """返回所有块中引用的去重并集（兼容旧的平铺引用访问）。"""
+        seen: set[str] = set()
+        refs: list[ReplyReference] = []
+        for block in self.blocks:
+            for ref in block.references:
+                if ref.id and ref.id not in seen:
+                    refs.append(ref)
+                    seen.add(ref.id)
+        return refs
 
     def __str__(self) -> str:
         return self.text
@@ -90,7 +103,7 @@ class DialogueState(TypedDict, total=False):
     memory_docs: Annotated[list[dict], _merge_docs]
     messages: Annotated[list[DialogueMessage], _merge_messages]
     reply: str
-    reply_references: list[ReplyReference]
+    reply_blocks: list[ReplyBlock]
     assistant_log_id: Optional[int]
 
 
@@ -493,7 +506,11 @@ class DialogueGraph:
         messages_text = "\n".join(
             f"{'user' if m.role == 'user' else 'assistant'}: {m.content}"
             + (f"\n  内心独白：{m.inner_monologue}" if m.inner_monologue else "")
-            + (f"\n  参考来源：{', '.join(r.summary for r in m.references)}" if m.references else "")
+            + (
+                f"\n  参考来源：{', '.join(r.summary for block in m.blocks for r in block.references)}"
+                if any(block.references for block in m.blocks)
+                else ""
+            )
             for m in messages
         )
         web_text = "\n".join(
@@ -503,14 +520,22 @@ class DialogueGraph:
 
         format_instruction = (
             "请根据以上内容生成回复，保持性格一致性。\n\n"
+            "把回复划分为若干内容块（段落、句子或任意独立观点均可），每个块必须包含：\n"
+            "- text：该块的文本内容。\n"
+            "- references：该块引用的素材列表；如果该块没有对应素材（纯人格表达），则传空数组 []。\n\n"
             "输出必须是 JSON，格式如下：\n"
             '{\n'
-            '  "text": "给用户的最终回复文本",\n'
-            '  "references": [\n'
-            '    {"id": "素材id", "source_type": "web|personality|memory", "summary": "该素材的一句话总结"}\n'
+            '  "text": "给用户的完整回复文本",\n'
+            '  "blocks": [\n'
+            '    {\n'
+            '      "text": "内容块文本",\n'
+            '      "references": [\n'
+            '        {"id": "素材id", "source_type": "web|personality|memory", "summary": "该素材的一句话总结"}\n'
+            '      ]\n'
+            '    }\n'
             '  ]\n'
             '}\n'
-            "references 只能从上面列出的素材中选择；如果某个素材没有被实际参考，不要出现在 references 中。"
+            "引用 id 必须来自上面列出的素材；未出现的素材不要引用。"
         )
 
         known_refs: dict[str, str] = {}
@@ -545,32 +570,48 @@ class DialogueGraph:
         llm_messages = self._build_messages(fitted)
 
         reply = ""
-        references: list[ReplyReference] = []
+        blocks: list[ReplyBlock] = []
         try:
             raw = self.llm.structured_chat_with_messages(llm_messages, AssistantReply, temperature=0.8)
             decision = AssistantReply.model_validate(raw)
             reply = decision.text
-            references = [
-                ReplyReference(
-                    id=ref.id,
-                    source_type=known_refs.get(ref.id, ref.source_type),
-                    summary=ref.summary,
+            blocks = [
+                ReplyBlock(
+                    text=block.text,
+                    references=[
+                        ReplyReference(
+                            id=ref.id,
+                            source_type=known_refs.get(ref.id, ref.source_type),
+                            summary=ref.summary,
+                        )
+                        for ref in block.references
+                        if ref.id in known_refs
+                    ],
                 )
-                for ref in decision.references
-                if ref.id in known_refs
+                for block in decision.blocks
             ]
         except Exception:
-            reply = self.llm.chat_with_messages(llm_messages, temperature=0.8)
+            fallback_text = self.llm.chat_with_messages(llm_messages, temperature=0.8)
+            reply = fallback_text
+            blocks = [ReplyBlock(text=fallback_text, references=[])]
+
+        all_refs = []
+        seen_ids: set[str] = set()
+        for block in blocks:
+            for ref in block.references:
+                if ref.id and ref.id not in seen_ids:
+                    all_refs.append(ref)
+                    seen_ids.add(ref.id)
 
         self.logger.info(
             "Generated reply",
             extra={
                 "event": "chat.reply",
                 "session_id": state["session_id"],
-                "details": {"reply_length": len(reply), "reference_count": len(references)},
+                "details": {"reply_length": len(reply), "block_count": len(blocks), "reference_count": len(all_refs)},
             },
         )
-        return {**state, "reply": reply, "reply_references": references}
+        return {**state, "reply": reply, "reply_blocks": blocks}
 
     def _fit_sections(
         self, sections: list[PromptSection], limit: int
@@ -671,7 +712,7 @@ class DialogueGraph:
         )
         assistant_metadata = {
             "inner_monologue": inner_monologue,
-            "references": [ref.model_dump() for ref in state.get("reply_references", [])],
+            "blocks": [block.model_dump() for block in state.get("reply_blocks", [])],
         }
         assistant_log_id = self.pg.insert_dialogue(
             DialogueLog(
@@ -746,7 +787,10 @@ class DialogueGraph:
                     "inner_monologue": inner_monologue,
                     "personality_doc_count": len(personality_docs),
                     "web_doc_count": len(web_docs),
-                    "reference_count": len(state.get("reply_references", [])),
+                    "block_count": len(state.get("reply_blocks", [])),
+                    "reference_count": sum(
+                        len(block.references) for block in state.get("reply_blocks", [])
+                    ),
                 },
             },
         )
@@ -763,13 +807,19 @@ class DialogueGraph:
             if log.role == "user":
                 messages.append(DialogueMessage(role="user", content=log.content))
             else:
-                refs = [ReplyReference(**r) for r in meta.get("references", [])]
+                blocks = [
+                    ReplyBlock(
+                        text=b.get("text", ""),
+                        references=[ReplyReference(**r) for r in b.get("references", [])],
+                    )
+                    for b in meta.get("blocks", [])
+                ]
                 messages.append(
                     DialogueMessage(
                         role="assistant",
                         content=log.content,
                         inner_monologue=meta.get("inner_monologue"),
-                        references=refs,
+                        blocks=blocks,
                     )
                 )
         return messages
@@ -790,7 +840,7 @@ class DialogueGraph:
             final_state = self.graph.invoke(state)
             return ChatResult(
                 text=final_state["reply"],
-                references=final_state.get("reply_references", []),
+                blocks=final_state.get("reply_blocks", []),
             )
         except Exception as exc:
             self.logger.exception(

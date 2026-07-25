@@ -81,7 +81,12 @@ class FakeLLMClient(LLMClient):
                 ]
             }
         if name == "AssistantReply":
-            return {"text": "这是一个测试回复。", "references": []}
+            return {
+                "text": "这是一个测试回复。",
+                "blocks": [
+                    {"text": "这是一个测试回复。", "references": []}
+                ],
+            }
         if name in ("WebRelevanceFilterResult", "MemoryRelevanceFilterResult"):
             # Returning empty results causes the node to fall back to keeping all docs.
             return {"results": []}

@@ -96,10 +96,17 @@ def chat(
 
             result = graph.chat(current_session_id, user_input)
             rprint(f"[bold cyan]mr.data:[/bold cyan] {result.text}\n")
-            if show_references and result.references:
-                rprint("[dim]参考来源：[/dim]")
-                for ref in result.references:
-                    rprint(f"  [{ref.source_type}] {ref.id}: {ref.summary}")
+            if show_references and result.blocks:
+                import json
+
+                rprint("[dim]回复块与引用：[/dim]")
+                rprint(
+                    json.dumps(
+                        [block.model_dump() for block in result.blocks],
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
                 rprint()
 
             if eval_mode:

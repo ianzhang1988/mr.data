@@ -27,6 +27,53 @@ class AttributionResult(BaseModel):
     deltas: list[DimensionDelta] = Field(default_factory=list)
 
 
+def chunk_dialogue_logs(
+    logs: list[DialogueLog], max_chars: int, overlap_lines: int
+) -> list[dict]:
+    """把会话日志按字符预算分段，段间保留 overlap_lines 行重叠。
+    返回 [{"content", "chunk_index", "first_log_id", "last_log_id"}]。"""
+    sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
+    lines = [
+        (f"{'user' if log.role == 'user' else 'assistant'}: {log.content}", log.id)
+        for log in sorted_logs
+    ]
+
+    chunks: list[dict] = []
+    cur_lines: list[str] = []  # 当前段的全部行（含 overlap 前缀）
+    cur_ids: list[Any] = []  # 当前段实际覆盖的 log id（不含 overlap 行）
+    cur_chars = 0  # 实际覆盖行的字符预算（不含 overlap 行）
+
+    for line, log_id in lines:
+        # 当前段已有覆盖行且加入下一行会超预算时关闭当前段；
+        # 当前段为空（或仅剩 overlap 行）时该行直接成段，不截断内容。
+        if cur_ids and cur_chars + len(line) > max_chars:
+            chunks.append(
+                {
+                    "content": "\n".join(cur_lines),
+                    "chunk_index": len(chunks),
+                    "first_log_id": cur_ids[0],
+                    "last_log_id": cur_ids[-1],
+                }
+            )
+            cur_lines = cur_lines[-overlap_lines:] if overlap_lines > 0 else []
+            cur_ids = []
+            cur_chars = 0
+        cur_lines.append(line)
+        cur_ids.append(log_id)
+        cur_chars += len(line)
+
+    if cur_ids:
+        chunks.append(
+            {
+                "content": "\n".join(cur_lines),
+                "chunk_index": len(chunks),
+                "first_log_id": cur_ids[0],
+                "last_log_id": cur_ids[-1],
+            }
+        )
+    return chunks
+
+
 class AttributionEngine:
     def __init__(
         self,
@@ -270,23 +317,8 @@ class AttributionEngine:
                     },
                 )
 
-        # Persist session dialogue turns to the memory vector store for future recall.
-        now = datetime.now(timezone.utc).isoformat()
-        for log in sorted_logs:
-            content = f"{log.role}: {log.content}"
-            self.chroma.add_memory(
-                session_id,
-                content,
-                metadata={
-                    "source_type": "dialogue",
-                    "session_id": session_id,
-                    "dialogue_log_id": log.id,
-                    "role": log.role,
-                    "recall_count": 0,
-                    "added_at": now,
-                    "last_recalled_at": "",
-                },
-            )
+        # Persist session dialogue chunks to the memory vector store for future recall.
+        self._persist_session_memories(session_id, sorted_logs)
 
         self.logger.info(
             "Session attribution applied",
@@ -297,6 +329,32 @@ class AttributionEngine:
             },
         )
         return applied
+
+    def _persist_session_memories(self, session_id: str, logs: list[DialogueLog]) -> None:
+        """Chunk session dialogue logs and persist them to the memory vector store."""
+        if not logs:
+            return
+        chunks = chunk_dialogue_logs(
+            logs,
+            settings.memory_dialogue_chunk_chars,
+            settings.memory_dialogue_chunk_overlap_lines,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        for chunk in chunks:
+            self.chroma.add_memory(
+                session_id,
+                chunk["content"],
+                metadata={
+                    "source_type": "dialogue",
+                    "session_id": session_id,
+                    "chunk_index": chunk["chunk_index"],
+                    "first_dialogue_log_id": chunk["first_log_id"],
+                    "last_dialogue_log_id": chunk["last_log_id"],
+                    "recall_count": 0,
+                    "added_at": now,
+                    "last_recalled_at": "",
+                },
+            )
 
     def _build_evidence_context(self, logs: list[DialogueLog], target_log_id: Optional[int]) -> str:
         """Build a short transcript context around the target dialogue log."""

@@ -60,12 +60,17 @@ class Settings(BaseSettings):
     # 网页正文提取与相关性过滤配置
     web_extract_max_pages: int = 2
     web_extract_max_length: int = 4000
+    enable_web_doc_extraction: bool = True
 
     # 对话记忆保留策略
     memory_dialogue_retention_days: int = 90
     memory_min_recall_count: int = 1
     memory_retrieval_top_k: int = 5
     enable_memory_relevance_filter: bool = False
+
+    # 对话记忆分段（离线写入记忆向量库）
+    memory_dialogue_chunk_chars: int = 1200        # 每段字符预算
+    memory_dialogue_chunk_overlap_lines: int = 2   # 段间重叠行数（约一轮对话）
 
     # 是否在 CLI 回复后显示参考来源
     show_references: bool = False

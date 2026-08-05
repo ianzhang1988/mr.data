@@ -70,19 +70,13 @@ class DimensionSelection(BaseModel):
     )
 
 
-class WebRelevanceItem(BaseModel):
-    """单条网络资料的相关性判断。"""
+class WebDocExtraction(BaseModel):
+    """单条网络资料的相关性判断与内容摘取。"""
 
-    index: int = Field(description="文档在输入列表中的序号（从 0 开始）")
     is_relevant: bool = Field(description="该资料是否与用户输入相关")
-
-
-class WebRelevanceFilterResult(BaseModel):
-    """批量网络资料相关性过滤结果。"""
-
-    results: list[WebRelevanceItem] = Field(
-        default_factory=list,
-        description="每条网络资料的相关性判断结果",
+    extracted_text: str = Field(
+        default="",
+        description="相关时从资料中摘取并简化的、与用户输入相关的内容；不相关时留空",
     )
 
 

@@ -794,7 +794,8 @@ def test_assemble_respects_token_limit(
         compress_calls.append((text, target))
         return "[compressed]"
 
-    monkeypatch.setattr(graph, "_compress_text", fake_compress)
+    monkeypatch.setattr(
+        graph.prompt_assembler, "_compress_text", fake_compress)
 
     state = {
         "session_id": test_session_id,

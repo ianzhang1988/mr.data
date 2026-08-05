@@ -87,7 +87,10 @@ class FakeLLMClient(LLMClient):
                     {"text": "这是一个测试回复。", "references": []}
                 ],
             }
-        if name in ("WebRelevanceFilterResult", "MemoryRelevanceFilterResult"):
+        if name == "WebDocExtraction":
+            # Empty extraction keeps the original document.
+            return {"is_relevant": True, "extracted_text": ""}
+        if name == "MemoryRelevanceFilterResult":
             # Returning empty results causes the node to fall back to keeping all docs.
             return {"results": []}
         return {"deltas": []}

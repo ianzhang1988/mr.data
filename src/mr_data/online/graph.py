@@ -8,7 +8,6 @@ from langgraph.graph import StateGraph, END
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.llm import LLMClient
-from mr_data.llm.tokenizer import TokenCounter
 from mr_data.logging import get_logger
 from mr_data.models import (
     AssistantReply,
@@ -22,10 +21,16 @@ from mr_data.models import (
     ReplyReference,
     ThinkDecision,
     DimensionSelection,
-    WebRelevanceFilterResult,
     MemoryRelevanceFilterResult,
 )
 from mr_data.online.page_extract import PageExtractor
+from mr_data.online.web_filter import filter_web_docs
+from mr_data.online.prompt_assembly import (
+    PromptAssembler,
+    PromptSection,
+    build_messages,
+    wrap_section,
+)
 from mr_data.online.web_search import WebSearchTool
 
 
@@ -75,16 +80,6 @@ class ChatResult:
         return self.text
 
 
-@dataclass
-class PromptSection:
-    """Prompt 组装中的一个分块。"""
-
-    name: str
-    text: str
-    priority: int
-    role: str  # "system" | "assistant" | "user"
-
-
 class DialogueState(TypedDict, total=False):
     session_id: str
     user_input: str
@@ -126,6 +121,7 @@ class DialogueGraph:
             enable_web_search if enable_web_search is not None else settings.enable_web_search
         )
         self.logger = logger or get_logger("mr_data.online")
+        self.prompt_assembler = PromptAssembler(self.llm)
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -197,14 +193,17 @@ class DialogueGraph:
                 if dim.id is not None
             )
             system = "你是一个性格维度选择助手。请根据用户输入，从下列维度中选出最应当起作用的一个或多个维度。"
-            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{dim_text}\n\n请返回维度 ID 列表。"
+            prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{
+                dim_text}\n\n请返回维度 ID 列表。"
             try:
                 result = self.llm.structured_chat(
                     system, prompt, response_format=DimensionSelection, temperature=0.3
                 )
                 selection = DimensionSelection.model_validate(result)
-                valid_ids = {dim.id for dim in dimensions if dim.id is not None}
-                selected_ids = [x for x in selection.dimension_ids if x in valid_ids]
+                valid_ids = {
+                    dim.id for dim in dimensions if dim.id is not None}
+                selected_ids = [
+                    x for x in selection.dimension_ids if x in valid_ids]
             except Exception:
                 pass
 
@@ -347,30 +346,10 @@ class DialogueGraph:
         docs = state.get("web_docs", [])
         if not docs:
             return {**state, "web_docs": []}
+        if not settings.enable_web_doc_extraction:
+            return {**state, "web_docs": docs}
 
-        user_input = state["user_input"]
-        indexed_docs = [
-            (i, doc.get("page_content", "")[:2000]) for i, doc in enumerate(docs)
-        ]
-        items_text = "\n\n".join(
-            f"[{idx}] {content}" for idx, content in indexed_docs
-        )
-        system = "判断下列网络资料是否与用户输入相关。请为每条资料返回是否相关。"
-        prompt = f"用户输入：{user_input}\n\n资料列表：\n{items_text}\n\n请返回每条资料的相关性判断。"
-
-        try:
-            result = self.llm.structured_chat(
-                system, prompt, response_format=WebRelevanceFilterResult, temperature=0.0
-            )
-            decision = WebRelevanceFilterResult.model_validate(result)
-            relevant_indices = {item.index for item in decision.results if item.is_relevant}
-            filtered = [doc for i, doc in enumerate(docs) if i in relevant_indices]
-        except Exception:
-            filtered = docs
-
-        # Fallback: if the LLM filtered out everything, keep the original docs.
-        if not filtered and docs:
-            filtered = docs
+        filtered = filter_web_docs(self.llm, docs, state["user_input"])
 
         self.logger.info(
             "Filtered web docs",
@@ -443,8 +422,10 @@ class DialogueGraph:
                 system, prompt, response_format=MemoryRelevanceFilterResult, temperature=0.0
             )
             decision = MemoryRelevanceFilterResult.model_validate(result)
-            relevant_indices = {item.index for item in decision.results if item.is_relevant}
-            filtered = [doc for i, doc in enumerate(docs) if i in relevant_indices]
+            relevant_indices = {
+                item.index for item in decision.results if item.is_relevant}
+            filtered = [doc for i, doc in enumerate(
+                docs) if i in relevant_indices]
         except Exception:
             filtered = docs
 
@@ -472,8 +453,7 @@ class DialogueGraph:
         user_identity = state.get("user_identity")
 
         dim_text = "\n".join(
-            f"- {dim.description} (成功{dim.success_count} / 失败{dim.failure_count})"
-            for dim in dimensions
+            f"- {dim.description})" for dim in dimensions
         )
         user_identity_text = ""
         if user_identity:
@@ -484,7 +464,8 @@ class DialogueGraph:
 
         identity_text = "\n".join(
             part for part in [
-                f"你是 {identity.name if identity else 'mr.data'}，{identity.role if identity else '一个对话程序'}。",
+                f"你是 {identity.name if identity else 'mr.data'}，{
+                    identity.role if identity else '一个对话程序'}。",
                 identity.base_prompt if identity else "",
                 user_identity_text,
                 "你的基础性格自白：",
@@ -496,7 +477,8 @@ class DialogueGraph:
         user_input_text = f"用户说：{state['user_input']}"
 
         personality_text = "\n".join(
-            f"- [id: {d.get('id', 'unknown')}] [{d['metadata'].get('source_type', 'line')}] {d['page_content']}"
+            f"- [id: {d.get('id', 'unknown')}] [{d['metadata'].get(
+                'source_type', 'line')}] {d['page_content']}"
             for d in personality_docs
         )
         memory_text = "\n".join(
@@ -507,14 +489,16 @@ class DialogueGraph:
             f"{'user' if m.role == 'user' else 'assistant'}: {m.content}"
             + (f"\n  内心独白：{m.inner_monologue}" if m.inner_monologue else "")
             + (
-                f"\n  参考来源：{', '.join(r.summary for block in m.blocks for r in block.references)}"
+                f"\n  参考来源：{
+                    ', '.join(r.summary for block in m.blocks for r in block.references)}"
                 if any(block.references for block in m.blocks)
                 else ""
             )
             for m in messages
         )
         web_text = "\n".join(
-            f"- [id: {d.get('id', 'unknown')}] [{d['metadata'].get('title', 'web')}] {d['page_content']}"
+            f"- [id: {d.get('id', 'unknown')
+                      }] [{d['metadata'].get('title', 'web')}] {d['page_content']}"
             for d in web_docs
         )
 
@@ -542,9 +526,11 @@ class DialogueGraph:
         for d in web_docs:
             known_refs[d.get("id", "")] = "web"
         for d in personality_docs:
-            known_refs[d.get("id", "")] = d["metadata"].get("source_type", "personality")
+            known_refs[d.get("id", "")] = d["metadata"].get(
+                "source_type", "personality")
         for d in memory_docs:
-            known_refs[d.get("id", "")] = d["metadata"].get("source_type", "memory")
+            known_refs[d.get("id", "")] = d["metadata"].get(
+                "source_type", "memory")
 
         guidance_text = (
             "你是助手，后续会出现多条 assistant 消息，其中包含给你参考的素材。"
@@ -558,21 +544,27 @@ class DialogueGraph:
         sections = [
             PromptSection("system", guidance_text, 100, "system"),
             PromptSection("identity", identity_text, 90, "system"),
-            PromptSection("personality", self._wrap_section("personality", personality_text), 70, "assistant"),
-            PromptSection("memory", self._wrap_section("memory", memory_text), 60, "assistant"),
-            PromptSection("messages", self._wrap_section("messages", messages_text), 50, "assistant"),
-            PromptSection("web", self._wrap_section("web", web_text), 40, "assistant"),
+            PromptSection("personality", wrap_section(
+                "personality", personality_text), 70, "assistant"),
+            PromptSection("memory", wrap_section(
+                "memory", memory_text), 60, "assistant"),
+            PromptSection("messages", wrap_section(
+                "messages", messages_text), 50, "assistant"),
+            PromptSection("web", wrap_section(
+                "web", web_text), 40, "assistant"),
             PromptSection("user_input", user_input_text, 80, "user"),
             PromptSection("format", format_instruction, 100, "system"),
         ]
 
-        fitted = self._fit_sections(sections, settings.llm_context_token_limit)
-        llm_messages = self._build_messages(fitted)
+        fitted = self.prompt_assembler.fit_sections(
+            sections, settings.llm_context_token_limit)
+        llm_messages = build_messages(fitted)
 
         reply = ""
         blocks: list[ReplyBlock] = []
         try:
-            raw = self.llm.structured_chat_with_messages(llm_messages, AssistantReply, temperature=0.8)
+            raw = self.llm.structured_chat_with_messages(
+                llm_messages, AssistantReply, temperature=0.8)
             decision = AssistantReply.model_validate(raw)
             reply = decision.text
             blocks = [
@@ -581,7 +573,8 @@ class DialogueGraph:
                     references=[
                         ReplyReference(
                             id=ref.id,
-                            source_type=known_refs.get(ref.id, ref.source_type),
+                            source_type=known_refs.get(
+                                ref.id, ref.source_type),
                             summary=ref.summary,
                         )
                         for ref in block.references
@@ -591,7 +584,8 @@ class DialogueGraph:
                 for block in decision.blocks
             ]
         except Exception:
-            fallback_text = self.llm.chat_with_messages(llm_messages, temperature=0.8)
+            fallback_text = self.llm.chat_with_messages(
+                llm_messages, temperature=0.8)
             reply = fallback_text
             blocks = [ReplyBlock(text=fallback_text, references=[])]
 
@@ -612,91 +606,6 @@ class DialogueGraph:
             },
         )
         return {**state, "reply": reply, "reply_blocks": blocks}
-
-    def _fit_sections(
-        self, sections: list[PromptSection], limit: int
-    ) -> list[tuple[PromptSection, str]]:
-        """Assemble prompt sections, compressing lower-priority ones if over token budget."""
-        counter = TokenCounter()
-        section_tokens = [(s, counter.count(s.text)) for s in sections]
-        total = sum(t for _, t in section_tokens)
-        if total <= limit:
-            return [(s, s.text) for s, _ in section_tokens]
-
-        must_keep = [(s, t) for s, t in section_tokens if s.priority >= 80]
-        adjustable = [(s, t) for s, t in section_tokens if s.priority < 80]
-        must_total = sum(t for _, t in must_keep)
-
-        fitted_map: dict[str, str] = {}
-        if must_total >= limit:
-            # Even high-priority sections exceed the budget; compress them proportionally.
-            fitted_map = self._compress_to_budget(must_keep, limit)
-            for s, _ in adjustable:
-                fitted_map[s.name] = f"（{s.name} 因上下文限制已省略）"
-        else:
-            remaining = limit - must_total
-            fitted_map = self._compress_to_budget(adjustable, remaining)
-            for s, _ in must_keep:
-                fitted_map[s.name] = s.text
-
-        return [(s, fitted_map.get(s.name, s.text)) for s, _ in section_tokens]
-
-    def _compress_to_budget(
-        self, section_tokens: list[tuple[PromptSection, int]], budget: int
-    ) -> dict[str, str]:
-        """Compress a list of sections so their total token count fits within budget."""
-        total = sum(t for _, t in section_tokens)
-        fitted: dict[str, str] = {}
-        if total <= budget:
-            for s, _ in section_tokens:
-                fitted[s.name] = s.text
-            return fitted
-        for s, t in section_tokens:
-            target = max(int(budget * (t / total)), 1)
-            if t <= target:
-                fitted[s.name] = s.text
-            else:
-                fitted[s.name] = self._compress_text(s.text, target)
-        return fitted
-
-    def _compress_text(self, text: str, target_tokens: int) -> str:
-        """Use LLM to compress text to roughly target_tokens; fallback to hard truncation."""
-        counter = TokenCounter()
-        if counter.count(text) <= target_tokens:
-            return text
-        system = f"请将以下内容压缩到大约 {target_tokens} token 以内，保留关键事实和语义，不要输出解释："
-        try:
-            # Pre-truncate input so the compression prompt itself stays reasonable.
-            max_input_chars = max(target_tokens * 8, 500)
-            input_text = text[:max_input_chars]
-            compressed = self.llm.chat(system, input_text, temperature=0.3)
-        except Exception:
-            compressed = text
-        # Ensure the result does not exceed the target by too much.
-        max_chars = max(target_tokens * 4, 100)
-        if len(compressed) > max_chars:
-            compressed = compressed[:max_chars]
-        return compressed
-
-    def _wrap_section(self, tag: str, text: str) -> str:
-        """Wrap a section of context materials in XML-style tags for clarity."""
-        body = text if text else "（无）"
-        return f"<{tag}>\n{body}\n</{tag}>"
-
-    def _build_messages(
-        self, fitted: list[tuple[PromptSection, str]]
-    ) -> list[dict]:
-        """Group fitted sections into OpenAI-style messages by role."""
-        role_texts: dict[str, list[str]] = {}
-        for section, text in fitted:
-            if not text:
-                continue
-            role_texts.setdefault(section.role, []).append(text)
-        messages = []
-        for role in ("system", "assistant", "user"):
-            if role in role_texts:
-                messages.append({"role": role, "content": "\n\n".join(role_texts[role])})
-        return messages
 
     def _log_dialogue(self, state: DialogueState) -> DialogueState:
         session_id = state["session_id"]
@@ -750,10 +659,6 @@ class DialogueGraph:
         ]
         self.pg.insert_dialogue_vector_refs(assistant_log_id, vector_refs)
 
-        # 写入记忆向量库
-        self.chroma.add_memory(session_id, f"用户：{user_input}")
-        self.chroma.add_memory(session_id, f"助手：{reply}")
-
         # 把网络资料作为世界知识写入记忆向量库（使用 URL 哈希作为全局稳定 id）
         retrieval_query = state.get("retrieval_query", user_input)
         retrieved_at = datetime.now(timezone.utc).isoformat()
@@ -805,12 +710,14 @@ class DialogueGraph:
         for log in sorted(logs, key=lambda x: x.created_at or 0):
             meta = log.metadata or {}
             if log.role == "user":
-                messages.append(DialogueMessage(role="user", content=log.content))
+                messages.append(DialogueMessage(
+                    role="user", content=log.content))
             else:
                 blocks = [
                     ReplyBlock(
                         text=b.get("text", ""),
-                        references=[ReplyReference(**r) for r in b.get("references", [])],
+                        references=[ReplyReference(**r)
+                                    for r in b.get("references", [])],
                     )
                     for b in meta.get("blocks", [])
                 ]

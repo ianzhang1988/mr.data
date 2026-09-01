@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Annotated, Optional, TypedDict
+from typing import Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
@@ -32,29 +32,6 @@ from mr_data.online.prompt_assembly import (
     wrap_section,
 )
 from mr_data.online.web_search import WebSearchTool
-
-
-def _merge_docs(old: list[dict], new: list[dict]) -> list[dict]:
-    seen = set()
-    merged = []
-    for doc in old + new:
-        doc_id = doc.get("id")
-        if doc_id is None or doc_id not in seen:
-            merged.append(doc)
-            if doc_id is not None:
-                seen.add(doc_id)
-    return merged
-
-
-def _merge_messages(
-    old: list[DialogueMessage], new: list[DialogueMessage]
-) -> list[DialogueMessage]:
-    merged = old + new
-    max_turns = settings.dialogue_state_message_turns
-    max_messages = max_turns * 2
-    if len(merged) > max_messages:
-        return merged[-max_messages:]
-    return merged
 
 
 @dataclass
@@ -93,10 +70,10 @@ class DialogueState(TypedDict, total=False):
     memory_query: str
     needs_web_search: bool
     search_query: Optional[str]
-    web_docs: Annotated[list[dict], _merge_docs]
-    personality_docs: Annotated[list[dict], _merge_docs]
-    memory_docs: Annotated[list[dict], _merge_docs]
-    messages: Annotated[list[DialogueMessage], _merge_messages]
+    web_docs: list[dict]
+    personality_docs: list[dict]
+    memory_docs: list[dict]
+    messages: list[DialogueMessage]
     reply: str
     reply_blocks: list[ReplyBlock]
     assistant_log_id: Optional[int]
@@ -452,8 +429,12 @@ class DialogueGraph:
         inner_monologue = state.get("inner_monologue")
         user_identity = state.get("user_identity")
 
+        selected_ids = set(
+            state.get("selected_dimension_ids")
+            or [d.id for d in dimensions if d.id is not None]
+        )
         dim_text = "\n".join(
-            f"- {dim.description})" for dim in dimensions
+            f"- {dim.description})" for dim in dimensions if dim.id in selected_ids
         )
         user_identity_text = ""
         if user_identity:
@@ -632,9 +613,13 @@ class DialogueGraph:
             )
         )
 
-        # 记录加载的基础维度
+        # 记录本次实际选中的维度（未选择时回退为全量维度）
+        selected_ids = set(
+            state.get("selected_dimension_ids")
+            or [d.id for d in dimensions if d.id is not None]
+        )
         self.pg.insert_dialogue_dimension_refs(
-            assistant_log_id, [dim.id for dim in dimensions if dim.id])
+            assistant_log_id, [dim.id for dim in dimensions if dim.id in selected_ids])
 
         # 记录检索到的向量素材（人格素材 + 网络资料）
         vector_refs = [

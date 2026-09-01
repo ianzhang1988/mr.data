@@ -110,6 +110,12 @@ class AttributionEngine:
                 continue
 
             result = self._attribute_session(session.id, logs)
+            if result is None:
+                self.logger.info(
+                    "Session attribution failed, will retry next run",
+                    extra={"event": "offline.session_failed", "session_id": session.id},
+                )
+                continue
             applied = self._apply(result, session.id, logs)
 
             for log in logs:
@@ -192,7 +198,7 @@ class AttributionEngine:
 {thought_text if thought_text else '（暂无）'}
 """.strip()
 
-    def _attribute_session(self, session_id: str, logs: list[DialogueLog]) -> AttributionResult:
+    def _attribute_session(self, session_id: str, logs: list[DialogueLog]) -> Optional[AttributionResult]:
         transcript = self._build_transcript(logs)
         context = self._build_context(session_id, transcript)
 
@@ -227,7 +233,7 @@ class AttributionEngine:
                     "session_id": session_id,
                 },
             )
-            return AttributionResult()
+            return None
 
     def _apply(self, result: AttributionResult, session_id: str, logs: list[DialogueLog]) -> int:
         # Precompute a fallback assistant log id for evidence that lacks an explicit target.

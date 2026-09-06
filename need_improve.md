@@ -17,19 +17,18 @@
 # 已完成的改进项
 (保留最近项目，完成项目放到finished_improvement.md中)
 
-29. ✅ **`_filter_web_docs` 逐文档判断与段落摘取**：新增 `WebDocExtraction` 模型与 `online/web_filter.py`；每条 web 文档单独 LLM 调用，先判断相关性，相关则摘取/简化相关内容替换 `page_content`，不相关丢弃；单文档异常保留原文档，全部丢弃时 fallback 保留全部；新增 `enable_web_doc_extraction` 配置（默认开启）；移除旧的批量过滤模型 `WebRelevanceItem`/`WebRelevanceFilterResult`。
-30. ✅ **graph.py 帮助函数拆出**：新增 `online/prompt_assembly.py`，移入 `PromptSection`、`wrap_section`、`build_messages` 与 `PromptAssembler` 类（`fit_sections`/`_compress_to_budget`/`_compress_text`）；graph.py 保留 `DialogueState`/`ChatResult`/reducer 与节点组装逻辑。
-31. ✅ **对话记忆改为离线按会话分段写入**：删除 `_log_dialogue` 中每轮无 metadata 的逐条 `add_memory`（野数据，无 `source_type` 标签、不参与 recall 计数与清理）；`attribution.py` 新增 `chunk_dialogue_logs`（按字符预算分段、段间保留 overlap 行）与 `_persist_session_memories`，离线归因后按会话整体分段写入记忆向量库，metadata 含 `source_type="dialogue"`、`chunk_index`、首尾 `dialogue_log_id`、`recall_count` 等完整标签；新增配置 `memory_dialogue_chunk_chars`（默认 1200）与 `memory_dialogue_chunk_overlap_lines`（默认 2）。
-32. ✅ **删除 DialogueState reducer（`_merge_docs`/`_merge_messages`）**：reducer 并集/拼接语义与节点 `{**state, ...}` 返回方式冲突，导致 web 文档过滤/提取结果被还原、messages 每节点翻倍；图为线性无并行分支，reducer 无必要，4 个字段改为普通 overwrite 语义。
-33. ✅ **归因失败不再误标记已处理**：`_attribute_session` 异常时返回 `None`（而非空结果），`run()` 检测到失败后 `continue`，不写对话记忆、不 `mark_dialogue_processed`，留待下次离线运行重试。
-34. ✅ **选中维度在 assemble 与 log 中生效**：`_assemble_and_generate` 的 `dim_text` 与 `_log_dialogue` 的 `insert_dialogue_dimension_refs` 改用 `selected_dimension_ids` 过滤（空时回退全量），不再使用全量维度。
+35. ✅ **测试共享 PG 状态隔离**：`tests/conftest.py` 新增 function 级 fixture `reset_pg_state`，每个 PG 测试前 `TRUNCATE ... RESTART IDENTITY CASCADE` 8 张业务表并重跑 `seed()`；4 个 PG 测试文件以 `pytestmark = usefixtures` 启用；顺带删除 `test_select_dimensions_uses_core_flag` 的错误还原（dim2 seed 原值是 `core=TRUE`）与 `test_user_identity_crud` 的手动还原。已验证乱序、单文件、连跑两次均无残留。
+36. ✅ **删除废弃脚本 `scripts/ingest_personality.py`**：硬编码旧版人格维度/台词，功能被 `mr-data ingest` 完全覆盖，全仓库零引用。
+37. ✅ **统一 LLM 结构化输出调用**：合并为统一核心入口 `structured_chat(messages, response_format)`（内置降级+warning 日志+端点能力缓存），`chat_structured` 保留为语法糖，删除 `structured_chat_with_messages`；新增配置 `llm_structured_mode`（auto/parse/prompt）；降级解析新增 `_extract_json`（围栏剥离+首个 JSON 子串提取）；6 个调用点统一迁移，`_think`/web_filter 白得降级能力；新增 `tests/test_llm_structured.py` 10 用例（全量 74 passed, 1 skipped）。
 
 # 未来可选增强(计划中)
 
-
-
+1. 遍布：`llm/client.py`（降级无日志）、`web_filter.py:37`、`page_extract.py:39/52`、`prompt_assembly.py:98-99`、`chroma.py:243-246`、`pgembed_manager.py stop()` (行号可能因为之前的修改发生了变化，你需要适应)。故障表现为"功能静默退化"，排障困难。**建议**：统一在吞错点补 warning 级结构化日志。将代码分组（4个及以下），每组进入一个子agent，找到并标记问题点。然后在对应分组启动子agent，进行对应更改。
 - 自动关闭长期未活动的会话（session timeout policy）。
 - 更完善的日志查看/搜索 UI 或 CLI 命令。
-1. graph.py 中考虑到本地运行使用的模型，例如qwen3.5:9B，目前部分结构化输出对模型的压力可能太大了。我们需要一种兼容性的模式，根据配置来决定是否用复杂的结构化输出方式。
+1. graph.py 中考虑到本地运行使用的模型，例如qwen3.5:9B，目前部分结构化输出对模型的压力可能太大了。我们需要一种兼容性的模式，根据配置来决定是否用复杂的结构化输出方式。（改进项 37 已落地 `llm_structured_mode` 配置与自动降级，剩余：复杂 schema 本身的精简，如块级引用嵌套结构的简化模式）, 我说的其实是model不能完成正确的json输出，甚至连格式都不能保证的情况下。要如何降级的问题。改进37没有处理这类问题的能力。
 2. 最后对话组装和生成的部分，是不是考虑做个独立codeagent？给他获取相关内容的能力
 3. 做成再cli命令/newsession时，触发 AttributionEngine.run(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
+1. scripts/init_db.py、scripts/run_offline.py 也是 CLI 命令的薄封装，检查是否有必要
+2. 降级路径可加「解析失败重试一次」，本次未加
+3. chat_structured 主路径可改用 message.parsed 替代 json.loads，本次为控制 diff 保持现状

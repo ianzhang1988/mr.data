@@ -221,7 +221,7 @@ class AttributionEngine:
 请按 JSON 格式返回归因结果。"""
 
         try:
-            result = self.llm.structured_chat(
+            result = self.llm.chat_structured(
                 system, prompt, response_format=AttributionResult, temperature=0.2
             )
             return AttributionResult.model_validate(result)

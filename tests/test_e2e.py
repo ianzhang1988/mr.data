@@ -14,6 +14,8 @@ from mr_data.models import (
 from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
 
+pytestmark = pytest.mark.usefixtures("reset_pg_state")
+
 
 def test_models_serialize():
     dim = PersonalityDimension(description="我相信轻松的表达能拉近距离。", core=True)
@@ -168,10 +170,6 @@ def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_availabl
     dim = pg.get_dimension(2)
     assert dim is not None
     assert dim.core is True
-
-    # Reset to avoid leaking core=True into other tests that share the embedded PG.
-    with pg._cursor(commit=True) as cur:
-        cur.execute("UPDATE personality_dimensions SET core = FALSE WHERE id = 2")
 
 
 def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chroma_store, monkeypatch):
@@ -578,7 +576,15 @@ def test_assemble_and_generate_returns_references(
                 "needs_web_search": True,
                 "search_query": user_prompt,
             }
-        if name == "AssistantReply":
+        return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
+
+    # The final reply generation now goes through the messages-based structured_chat.
+    original_structured_chat = fake_llm.structured_chat
+
+    def _patched_structured_chat(messages, response_format, temperature=0.2):
+        if response_format.__name__ == "AssistantReply":
             return {
                 "text": "根据参考资料，太阳系有八大行星。",
                 "blocks": [
@@ -591,9 +597,9 @@ def test_assemble_and_generate_returns_references(
                     }
                 ],
             }
-        return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
+        return original_structured_chat(messages, response_format, temperature)
 
-    monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
+    monkeypatch.setattr(fake_llm, "structured_chat", _patched_structured_chat)
 
     class FakeWebSearch:
         def search(self, query: str) -> list[dict]:

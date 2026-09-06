@@ -6,6 +6,8 @@ from mr_data.db import PostgresStore
 from mr_data.llm import LLMClient
 from mr_data.online import DialogueGraph
 
+pytestmark = pytest.mark.usefixtures("reset_pg_state")
+
 
 class RecordingFakeLLM(LLMClient):
     """Fake LLM that records the last system prompt."""
@@ -34,10 +36,7 @@ class RecordingFakeLLM(LLMClient):
         self._record_messages(messages)
         return "这是一个测试回复。"
 
-    def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
-        return {"deltas": []}
-
-    def structured_chat_with_messages(self, messages: list[dict], response_format, temperature=0.2):
+    def structured_chat(self, messages: list[dict], response_format, temperature=0.2):
         self._record_messages(messages)
         name = response_format.__name__
         if name == "AssistantReply":
@@ -130,9 +129,6 @@ def test_user_identity_crud(pg_available):
 
     assert pg.delete_user_identity(str(identity_id)) is True
     assert pg.get_user_identity(str(identity_id)) is None
-
-    # Restore Picard as default to avoid leaking state to other tests.
-    pg.set_default_user_identity("Picard")
 
 
 def test_user_identity_in_system_prompt(

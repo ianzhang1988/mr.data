@@ -4,6 +4,8 @@ from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
 from mr_data.offline import AttributionEngine
 
+pytestmark = pytest.mark.usefixtures("reset_pg_state")
+
 
 def _setup_closed_session(pg: PostgresStore, session_id: str) -> None:
     pg.create_session(session_id)
@@ -33,7 +35,7 @@ def test_attribution_failure_does_not_mark_processed(
     def _failing_structured_chat(system_prompt, user_prompt, response_format, temperature=0.2):
         raise RuntimeError("LLM 服务不可用")
 
-    monkeypatch.setattr(fake_llm, "structured_chat", _failing_structured_chat)
+    monkeypatch.setattr(fake_llm, "chat_structured", _failing_structured_chat)
 
     engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
     engine.run()
@@ -62,7 +64,7 @@ def test_attribution_retry_after_failure(
     def _failing_structured_chat(system_prompt, user_prompt, response_format, temperature=0.2):
         raise RuntimeError("LLM 服务不可用")
 
-    monkeypatch.setattr(fake_llm, "structured_chat", _failing_structured_chat)
+    monkeypatch.setattr(fake_llm, "chat_structured", _failing_structured_chat)
 
     engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
     engine.run()
@@ -74,7 +76,7 @@ def test_attribution_retry_after_failure(
     def _empty_deltas(system_prompt, user_prompt, response_format, temperature=0.2):
         return {"deltas": []}
 
-    monkeypatch.setattr(fake_llm, "structured_chat", _empty_deltas)
+    monkeypatch.setattr(fake_llm, "chat_structured", _empty_deltas)
     engine.run()
 
     unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)

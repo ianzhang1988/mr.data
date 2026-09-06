@@ -51,11 +51,7 @@ class FakeLLMClient(LLMClient):
         joined = "\n".join(m.get("content", "") for m in messages)
         return self.chat("", joined, temperature)
 
-    def structured_chat_with_messages(self, messages: list[dict], response_format, temperature=0.2):
-        joined = "\n".join(m.get("content", "") for m in messages)
-        return self.chat_structured("", joined, response_format, temperature)
-
-    def chat_structured(self, system_prompt, user_prompt, response_format, temperature=0.2):
+    def structured_chat(self, messages: list[dict], response_format, temperature=0.2):
         name = response_format.__name__
         if name == "ThinkDecision":
             return {
@@ -171,6 +167,38 @@ def pg_available(pgembed_server):
 @pytest.fixture
 def test_session_id():
     return f"test-{uuid.uuid4().hex[:8]}"
+
+
+# All business tables managed by PostgresStore.init_schema (see db/postgres.py).
+_PG_BUSINESS_TABLES = (
+    "fixed_identity",
+    "personality_dimensions",
+    "sessions",
+    "dialogue_logs",
+    "dialogue_dimension_refs",
+    "dialogue_vector_refs",
+    "adjustment_logs",
+    "user_identities",
+)
+
+
+@pytest.fixture
+def reset_pg_state(pg_available):
+    """Reset the shared pgembed database to a clean seeded state before each test.
+
+    PG tests share one session-scoped database; without this fixture mutations
+    (dimension flags, user identities, unprocessed dialogues) leak across tests.
+    """
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+    store = PostgresStore()
+    store.init_schema()  # ensure tables exist before truncating (fresh database)
+    with store._cursor(commit=True) as cur:
+        cur.execute(
+            f"TRUNCATE {', '.join(_PG_BUSINESS_TABLES)} RESTART IDENTITY CASCADE"
+        )
+    store.seed()
 
 
 @pytest.fixture

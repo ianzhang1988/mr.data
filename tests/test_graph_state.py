@@ -15,6 +15,8 @@ from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
 from mr_data.online import DialogueGraph
 
+pytestmark = pytest.mark.usefixtures("reset_pg_state")
+
 
 class FakeWebSearch:
     def __init__(self, docs: list[dict]):

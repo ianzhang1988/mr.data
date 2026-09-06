@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
+    # 结构化输出模式：parse（仅原生解析）/ prompt（仅 schema-in-prompt）/ auto（parse 失败后自动降级）
+    llm_structured_mode: str = "auto"
 
     postgres_dsn: str = ""  # 留空且 use_pgembed=true 时使用嵌入式 PostgreSQL
 

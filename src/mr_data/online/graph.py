@@ -173,7 +173,7 @@ class DialogueGraph:
             prompt = f"用户输入：{state['user_input']}\n\n可选维度：\n{
                 dim_text}\n\n请返回维度 ID 列表。"
             try:
-                result = self.llm.structured_chat(
+                result = self.llm.chat_structured(
                     system, prompt, response_format=DimensionSelection, temperature=0.3
                 )
                 selection = DimensionSelection.model_validate(result)
@@ -395,7 +395,7 @@ class DialogueGraph:
         prompt = f"用户输入：{user_input}\n\n记忆列表：\n{items_text}\n\n请返回每条记忆的相关性判断。"
 
         try:
-            result = self.llm.structured_chat(
+            result = self.llm.chat_structured(
                 system, prompt, response_format=MemoryRelevanceFilterResult, temperature=0.0
             )
             decision = MemoryRelevanceFilterResult.model_validate(result)
@@ -544,7 +544,7 @@ class DialogueGraph:
         reply = ""
         blocks: list[ReplyBlock] = []
         try:
-            raw = self.llm.structured_chat_with_messages(
+            raw = self.llm.structured_chat(
                 llm_messages, AssistantReply, temperature=0.8)
             decision = AssistantReply.model_validate(raw)
             reply = decision.text

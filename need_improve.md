@@ -20,10 +20,10 @@
 35. ✅ **测试共享 PG 状态隔离**：`tests/conftest.py` 新增 function 级 fixture `reset_pg_state`，每个 PG 测试前 `TRUNCATE ... RESTART IDENTITY CASCADE` 8 张业务表并重跑 `seed()`；4 个 PG 测试文件以 `pytestmark = usefixtures` 启用；顺带删除 `test_select_dimensions_uses_core_flag` 的错误还原（dim2 seed 原值是 `core=TRUE`）与 `test_user_identity_crud` 的手动还原。已验证乱序、单文件、连跑两次均无残留。
 36. ✅ **删除废弃脚本 `scripts/ingest_personality.py`**：硬编码旧版人格维度/台词，功能被 `mr-data ingest` 完全覆盖，全仓库零引用。
 37. ✅ **统一 LLM 结构化输出调用**：合并为统一核心入口 `structured_chat(messages, response_format)`（内置降级+warning 日志+端点能力缓存），`chat_structured` 保留为语法糖，删除 `structured_chat_with_messages`；新增配置 `llm_structured_mode`（auto/parse/prompt）；降级解析新增 `_extract_json`（围栏剥离+首个 JSON 子串提取）；6 个调用点统一迁移，`_think`/web_filter 白得降级能力；新增 `tests/test_llm_structured.py` 10 用例（全量 74 passed, 1 skipped）。
+38. ✅ **吞错点统一补 warning 级结构化日志**：按 4 组并行排查（finder/fixer 子 agent 分离），全 src/ 共甄别出 11 处「功能静默退化」吞错点并补齐结构化 warning 日志：graph.py ×4（`personality.dimension_select_failed`/`think.decision_failed`/`retrieve.memory_filter_failed`/`chat.reply_fallback`）、web_filter.py（`web.filter_doc_failed`）、page_extract.py ×2（`web.page_extract_primary_failed`/`web.page_extract_failed`）、prompt_assembly.py（`prompt.compress_failed`）、tokenizer.py（`llm.tokenize_fallback`，warn-once 防刷屏）、chroma.py（`chroma.prune_failed`）、pgembed_manager.py（`db.pgembed_stop_failed`）、cli.py（`cli.eval_score_parse_failed` + rprint 用户提示）；正常控制流（StopIteration、metadata 解析兜底、REPL 退出等）与已有日志点均未动，控制流与兜底语义零改动。补充：`web_search.py`/`search_providers.py` 的裸 `logging.getLogger` 统一为结构化 `get_logger("mr_data.online")`，11+3 处 printf 风格 warning 归并为结构化事件（`web.search_failed`/`web.search_not_configured`/`web.search_provider_unknown`/`web.search_no_results`），至此全项目日志形式统一。
 
 # 未来可选增强(计划中)
 
-1. 遍布：`llm/client.py`（降级无日志）、`web_filter.py:37`、`page_extract.py:39/52`、`prompt_assembly.py:98-99`、`chroma.py:243-246`、`pgembed_manager.py stop()` (行号可能因为之前的修改发生了变化，你需要适应)。故障表现为"功能静默退化"，排障困难。**建议**：统一在吞错点补 warning 级结构化日志。将代码分组（4个及以下），每组进入一个子agent，找到并标记问题点。然后在对应分组启动子agent，进行对应更改。
 - 自动关闭长期未活动的会话（session timeout policy）。
 - 更完善的日志查看/搜索 UI 或 CLI 命令。
 1. graph.py 中考虑到本地运行使用的模型，例如qwen3.5:9B，目前部分结构化输出对模型的压力可能太大了。我们需要一种兼容性的模式，根据配置来决定是否用复杂的结构化输出方式。（改进项 37 已落地 `llm_structured_mode` 配置与自动降级，剩余：复杂 schema 本身的精简，如块级引用嵌套结构的简化模式）, 我说的其实是model不能完成正确的json输出，甚至连格式都不能保证的情况下。要如何降级的问题。改进37没有处理这类问题的能力。

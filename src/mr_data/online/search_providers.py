@@ -1,5 +1,4 @@
 import hashlib
-import logging
 import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -9,8 +8,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from mr_data.config import settings
+from mr_data.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("mr_data.online")
 
 
 def _stable_web_id(url: str, body: str = "") -> str:
@@ -64,14 +64,27 @@ class DuckDuckGoProvider(SearchProvider):
         try:
             from duckduckgo_search import DDGS
         except ImportError:
-            logger.warning("duckduckgo_search package is not installed")
+            logger.warning(
+                "duckduckgo_search package is not installed",
+                extra={
+                    "event": "web.search_not_configured",
+                    "details": {"provider": self.name, "missing": "duckduckgo_search package"},
+                },
+            )
             return []
 
         try:
             with DDGS() as ddgs:
                 results = ddgs.text(query, max_results=self.max_results)
         except Exception as exc:  # pragma: no cover
-            logger.warning("DuckDuckGo search failed: %s", exc)
+            logger.warning(
+                "DuckDuckGo search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         rows = [
@@ -100,7 +113,13 @@ class SearxngProvider(SearchProvider):
 
     def search(self, query: str) -> list[dict]:
         if not self.base_url:
-            logger.warning("SearXNG base URL is not configured")
+            logger.warning(
+                "SearXNG base URL is not configured",
+                extra={
+                    "event": "web.search_not_configured",
+                    "details": {"provider": self.name, "missing": "base_url"},
+                },
+            )
             return []
 
         url = urljoin(self.base_url.rstrip("/"), "/search")
@@ -110,7 +129,14 @@ class SearxngProvider(SearchProvider):
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("SearXNG search failed: %s", exc)
+            logger.warning(
+                "SearXNG search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         results = data.get("results", [])
@@ -142,7 +168,13 @@ class BraveProvider(SearchProvider):
 
     def search(self, query: str) -> list[dict]:
         if not self.api_key:
-            logger.warning("Brave API key is not configured")
+            logger.warning(
+                "Brave API key is not configured",
+                extra={
+                    "event": "web.search_not_configured",
+                    "details": {"provider": self.name, "missing": "api_key"},
+                },
+            )
             return []
 
         headers = {
@@ -155,7 +187,14 @@ class BraveProvider(SearchProvider):
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("Brave search failed: %s", exc)
+            logger.warning(
+                "Brave search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         results = data.get("web", {}).get("results", [])
@@ -187,7 +226,13 @@ class BingProvider(SearchProvider):
 
     def search(self, query: str) -> list[dict]:
         if not self.api_key:
-            logger.warning("Bing API key is not configured")
+            logger.warning(
+                "Bing API key is not configured",
+                extra={
+                    "event": "web.search_not_configured",
+                    "details": {"provider": self.name, "missing": "api_key"},
+                },
+            )
             return []
 
         headers = {"Ocp-Apim-Subscription-Key": self.api_key}
@@ -197,7 +242,14 @@ class BingProvider(SearchProvider):
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("Bing search failed: %s", exc)
+            logger.warning(
+                "Bing search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         results = data.get("webPages", {}).get("value", [])
@@ -231,7 +283,13 @@ class GoogleCseProvider(SearchProvider):
 
     def search(self, query: str) -> list[dict]:
         if not self.api_key or not self.cse_id:
-            logger.warning("Google CSE API key or CSE ID is not configured")
+            logger.warning(
+                "Google CSE API key or CSE ID is not configured",
+                extra={
+                    "event": "web.search_not_configured",
+                    "details": {"provider": self.name, "missing": "api_key/cse_id"},
+                },
+            )
             return []
 
         params = {
@@ -245,7 +303,14 @@ class GoogleCseProvider(SearchProvider):
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("Google CSE search failed: %s", exc)
+            logger.warning(
+                "Google CSE search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         results = data.get("items", [])
@@ -279,7 +344,14 @@ class BaiduProvider(SearchProvider):
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
         except Exception as exc:
-            logger.warning("Baidu search failed: %s", exc)
+            logger.warning(
+                "Baidu search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         rows = []
@@ -317,7 +389,14 @@ class Qihoo360Provider(SearchProvider):
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
         except Exception as exc:
-            logger.warning("Qihoo360 search failed: %s", exc)
+            logger.warning(
+                "Qihoo360 search failed: %s",
+                exc,
+                extra={
+                    "event": "web.search_failed",
+                    "details": {"provider": self.name, "error": str(exc)},
+                },
+            )
             return []
 
         rows = []

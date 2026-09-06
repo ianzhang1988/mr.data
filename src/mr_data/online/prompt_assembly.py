@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
 from mr_data.llm.tokenizer import TokenCounter
+from mr_data.logging import get_logger
+
+logger = get_logger("mr_data.online")
 
 
 @dataclass
@@ -95,7 +98,18 @@ class PromptAssembler:
             max_input_chars = max(target_tokens * 8, 500)
             input_text = text[:max_input_chars]
             compressed = self.llm.chat(system, input_text, temperature=0.3)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "LLM compression failed, falling back to hard truncation",
+                extra={
+                    "event": "prompt.compress_failed",
+                    "details": {
+                        "target_tokens": target_tokens,
+                        "text_chars": len(text),
+                        "error": str(exc),
+                    },
+                },
+            )
             compressed = text
         # Ensure the result does not exceed the target by too much.
         max_chars = max(target_tokens * 4, 100)

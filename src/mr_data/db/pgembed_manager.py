@@ -3,6 +3,9 @@ from pathlib import Path
 from typing import Optional
 
 from mr_data.config import settings
+from mr_data.logging import get_logger
+
+logger = get_logger("mr_data.pgembed")
 
 
 class PgEmbedManager:
@@ -47,8 +50,17 @@ class PgEmbedManager:
             try:
                 # PostgresServer uses cleanup() to stop the process.
                 self._server.cleanup()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to stop embedded PostgreSQL server",
+                    extra={
+                        "event": "db.pgembed_stop_failed",
+                        "details": {
+                            "data_dir": str(self.data_dir),
+                            "error": repr(exc),
+                        },
+                    },
+                )
             self._server = None
             self._dsn = None
 

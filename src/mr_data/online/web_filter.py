@@ -6,7 +6,10 @@ extraction of the parts relevant to the user input. Any failure falls back
 to keeping the original document.
 """
 
+from mr_data.logging import get_logger
 from mr_data.models import WebDocExtraction
+
+logger = get_logger("mr_data.online")
 
 
 def filter_web_docs(llm, docs: list[dict], user_input: str) -> list[dict]:
@@ -34,7 +37,17 @@ def filter_web_docs(llm, docs: list[dict], user_input: str) -> list[dict]:
                 system, prompt, response_format=WebDocExtraction, temperature=0.0
             )
             extraction = WebDocExtraction.model_validate(result)
-        except Exception:
+        except Exception as exc:
+            metadata = doc.get("metadata", {})
+            details = {"error": str(exc), "doc_id": doc.get("id")}
+            if metadata.get("url"):
+                details["url"] = metadata["url"]
+            if metadata.get("title"):
+                details["title"] = metadata["title"]
+            logger.warning(
+                "Web doc filtering failed; keeping original document",
+                extra={"event": "web.filter_doc_failed", "details": details},
+            )
             filtered.append(doc)
             continue
 

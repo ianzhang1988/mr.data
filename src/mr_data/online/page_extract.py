@@ -1,6 +1,9 @@
 from typing import Optional
 
 from mr_data.config import settings
+from mr_data.logging import get_logger
+
+logger = get_logger("mr_data.online")
 
 
 class PageExtractor:
@@ -36,7 +39,14 @@ class PageExtractor:
             if not downloaded:
                 return None
             return trafilatura.extract(downloaded, include_comments=False, include_tables=False)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Primary page extraction failed; falling back to requests",
+                extra={
+                    "event": "web.page_extract_primary_failed",
+                    "details": {"url": url, "error": str(exc)},
+                },
+            )
             return None
 
     def _extract_with_fallback(self, url: str) -> Optional[str]:
@@ -49,7 +59,14 @@ class PageExtractor:
         try:
             response = requests.get(url, timeout=self.timeout, headers={"User-Agent": "mr-data/0.1"})
             response.raise_for_status()
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Fallback page extraction failed",
+                extra={
+                    "event": "web.page_extract_failed",
+                    "details": {"url": url, "error": str(exc)},
+                },
+            )
             return None
 
         soup = BeautifulSoup(response.text, "html.parser")

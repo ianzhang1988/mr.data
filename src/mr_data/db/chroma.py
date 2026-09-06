@@ -242,7 +242,18 @@ class ChromaStore:
         """Remove dialogue memories that are older than cutoff_days and recalled fewer than min_recall_count times."""
         try:
             result = self.memories.get(where={"source_type": "dialogue"}, include=["metadatas"])
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch dialogue memories for pruning",
+                extra={
+                    "event": "chroma.prune_failed",
+                    "details": {
+                        "cutoff_days": cutoff_days,
+                        "min_recall_count": min_recall_count,
+                        "error": str(exc),
+                    },
+                },
+            )
             return 0
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=cutoff_days)

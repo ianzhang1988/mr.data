@@ -9,9 +9,12 @@ from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.db.personality_loader import load_personality_pack
 from mr_data.llm import LLMClient
+from mr_data.logging import get_logger
 from mr_data.models import DialogueLog, PersonalityEvent, UserIdentity
 from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
+
+logger = get_logger("mr_data.cli")
 
 app = typer.Typer(help="mr.data personality subsystem CLI")
 identity_app = typer.Typer(help="Manage user identities")
@@ -116,6 +119,15 @@ def chat(
                     score = int(score_str)
                 except ValueError:
                     score = None
+                    rprint(f"[yellow]Invalid score {score_str!r}, recorded as empty.[/yellow]")
+                    logger.warning(
+                        "Failed to parse evaluation score",
+                        extra={
+                            "event": "cli.eval_score_parse_failed",
+                            "session_id": current_session_id,
+                            "details": {"raw_input": score_str},
+                        },
+                    )
                 # Update the last assistant log with evaluation
                 recent = pg.get_recent_dialogues(session_id=current_session_id, limit=1)
                 if recent and recent[0].role == "assistant":

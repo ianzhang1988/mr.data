@@ -181,8 +181,15 @@ class DialogueGraph:
                     dim.id for dim in dimensions if dim.id is not None}
                 selected_ids = [
                     x for x in selection.dimension_ids if x in valid_ids]
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.warning(
+                    "Dimension selection failed; falling back to all dimensions",
+                    extra={
+                        "event": "personality.dimension_select_failed",
+                        "session_id": state["session_id"],
+                        "details": {"error": str(exc), "fallback_ids": fallback_ids},
+                    },
+                )
 
         self.logger.info(
             "Selected dimensions",
@@ -229,7 +236,15 @@ class DialogueGraph:
                 system, prompt, response_format=ThinkDecision, temperature=0.3
             )
             decision = ThinkDecision.model_validate(raw)
-        except Exception:
+        except Exception as exc:
+            self.logger.warning(
+                "Think decision failed; using fallback decision",
+                extra={
+                    "event": "think.decision_failed",
+                    "session_id": state["session_id"],
+                    "details": {"error": str(exc)},
+                },
+            )
             decision = ThinkDecision(
                 inner_monologue="",
                 personality_query=state["user_input"],
@@ -403,7 +418,15 @@ class DialogueGraph:
                 item.index for item in decision.results if item.is_relevant}
             filtered = [doc for i, doc in enumerate(
                 docs) if i in relevant_indices]
-        except Exception:
+        except Exception as exc:
+            self.logger.warning(
+                "Memory relevance filtering failed; keeping all memory docs",
+                extra={
+                    "event": "retrieve.memory_filter_failed",
+                    "session_id": state["session_id"],
+                    "details": {"error": str(exc), "doc_count": len(docs)},
+                },
+            )
             filtered = docs
 
         if not filtered and docs:
@@ -564,7 +587,15 @@ class DialogueGraph:
                 )
                 for block in decision.blocks
             ]
-        except Exception:
+        except Exception as exc:
+            self.logger.warning(
+                "Structured reply generation failed; falling back to plain text",
+                extra={
+                    "event": "chat.reply_fallback",
+                    "session_id": state["session_id"],
+                    "details": {"error": str(exc)},
+                },
+            )
             fallback_text = self.llm.chat_with_messages(
                 llm_messages, temperature=0.8)
             reply = fallback_text

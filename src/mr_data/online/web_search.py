@@ -1,7 +1,7 @@
-import logging
 from typing import Optional
 
 from mr_data.config import settings
+from mr_data.logging import get_logger
 from mr_data.online.search_providers import (
     BaiduProvider,
     BingProvider,
@@ -13,7 +13,7 @@ from mr_data.online.search_providers import (
     SearxngProvider,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("mr_data.online")
 
 
 _PROVIDER_CLASSES: list[type[SearchProvider]] = [
@@ -50,20 +50,42 @@ class WebSearchTool:
         for name in self.providers:
             provider_cls = _PROVIDER_MAP.get(name)
             if provider_cls is None:
-                logger.warning("Unknown web search provider: %s", name)
+                logger.warning(
+                    "Unknown web search provider: %s",
+                    name,
+                    extra={
+                        "event": "web.search_provider_unknown",
+                        "details": {"provider": name},
+                    },
+                )
                 continue
 
             try:
                 provider = self._build_provider(provider_cls)
                 results = provider.search(query)
             except Exception as exc:
-                logger.warning("Web search provider %s raised: %s", name, exc)
+                logger.warning(
+                    "Web search provider %s raised: %s",
+                    name,
+                    exc,
+                    extra={
+                        "event": "web.search_failed",
+                        "details": {"provider": name, "error": str(exc)},
+                    },
+                )
                 continue
 
             if results:
                 return results
 
-            logger.warning("Web search provider %s returned no results", name)
+            logger.warning(
+                "Web search provider %s returned no results",
+                name,
+                extra={
+                    "event": "web.search_no_results",
+                    "details": {"provider": name, "query": query},
+                },
+            )
 
         return []
 

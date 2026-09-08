@@ -1,6 +1,13 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
+
+# 素材来源类型（source_type）唯一事实来源；详细约定见 doc/database-design.md
+# personality 集合：line / event / evidence；memories 集合：web / dialogue
+PersonalitySourceType = Literal["line", "event", "evidence"]
+MemorySourceType = Literal["web", "dialogue"]
+SourceType = Literal["line", "event", "evidence", "web", "dialogue"]
+DialogueVectorRefSourceType = Literal["line", "event", "evidence", "web"]
 
 
 class ThinkDecision(BaseModel):
@@ -28,7 +35,7 @@ class ReplyReference(BaseModel):
     """助手回复中引用的一条参考来源。"""
 
     id: str = Field(description="被引用素材的唯一标识，例如 Chroma doc id 或数据库记录 id")
-    source_type: str = Field(description="素材来源类型：web / personality / memory / dialogue")
+    source_type: str = Field(description="素材在向量库中的来源类型：line/event/evidence（人格素材）或 web/dialogue（记忆）；由系统根据检索结果填充，LLM 输出值仅供参考")
     summary: str = Field(description="对该素材内容的一句话总结")
 
 
@@ -157,7 +164,7 @@ class DialogueVectorRef(BaseModel):
     id: Optional[int] = None
     dialogue_log_id: int
     vector_doc_id: str
-    source_type: str  # 'line' | 'event' | 'web'
+    source_type: DialogueVectorRefSourceType
     content: str
     dimension_ids: list[int] = Field(default_factory=list)
     created_at: Optional[datetime] = None
@@ -180,7 +187,7 @@ class PersonalityEvent(BaseModel):
     context: Optional[str] = None  # 前置场景 / 多轮上下文（仅用于向量 embedding）
     speaker: Optional[str] = None  # 说话者标识，默认 assistant
     dimension_ids: list[int] = Field(default_factory=list)
-    source_type: str = "line"  # 'line' | 'event' | 'evidence' | 'web'
+    source_type: PersonalitySourceType = "line"
     source_id: Optional[str] = None
 
 

@@ -518,7 +518,7 @@ class DialogueGraph:
             '    {\n'
             '      "text": "内容块文本",\n'
             '      "references": [\n'
-            '        {"id": "素材id", "source_type": "web|personality|memory", "summary": "该素材的一句话总结"}\n'
+            '        {"id": "素材id", "source_type": "素材列表中标注的来源类型（line/evidence/event/web/dialogue）", "summary": "该素材的一句话总结"}\n'
             '      ]\n'
             '    }\n'
             '  ]\n'
@@ -531,10 +531,10 @@ class DialogueGraph:
             known_refs[d.get("id", "")] = "web"
         for d in personality_docs:
             known_refs[d.get("id", "")] = d["metadata"].get(
-                "source_type", "personality")
+                "source_type", "line")
         for d in memory_docs:
             known_refs[d.get("id", "")] = d["metadata"].get(
-                "source_type", "memory")
+                "source_type", "dialogue")
 
         guidance_text = (
             "你是助手，后续会出现多条 assistant 消息，其中包含给你参考的素材。"

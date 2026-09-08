@@ -153,6 +153,33 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 
 ---
 
+## 素材来源类型（`source_type`）约定
+
+`source_type` 标识一条向量素材的来源，唯一事实来源是 `src/mr_data/models/personality.py` 中的 Literal 别名：
+
+- `PersonalitySourceType = Literal["line", "event", "evidence"]` —— Chroma `personality` 集合
+- `MemorySourceType = Literal["web", "dialogue"]` —— Chroma `memories` 集合
+- `DialogueVectorRefSourceType = Literal["line", "event", "evidence", "web"]` —— 本表 `source_type` 列
+
+规范值共 5 种，含义与写入路径：
+
+| 值 | 含义 | 写入位置 | 存储 |
+|------|------|----------|------|
+| `line` | ingest 的台词素材 | `cli.py`（`mr-data ingest`） | Chroma `personality` |
+| `event` | 离线归因的事件摘要 | `offline/attribution.py` | Chroma `personality` |
+| `evidence` | 离线归因的证据片段 | `offline/attribution.py` | Chroma `personality` + 本表 |
+| `web` | 网络检索资料 | `online/search_providers.py`、`online/graph.py` | Chroma `memories` + 本表 |
+| `dialogue` | 会话分块沉淀的记忆 | `offline/attribution.py` | Chroma `memories` |
+
+规则：
+
+1. **值域按集合划分**：`personality` 集合只会出现 `line/event/evidence`，`memories` 集合只会出现 `web/dialogue`；本表不会出现 `dialogue`（分块记忆不回写引用）。
+2. **存储侧强校验**：`PersonalityEvent.source_type` 与 `DialogueVectorRef.source_type` 使用上述 Literal 别名，非规范值在模型构造时即报错。新写入路径必须复用这些别名，禁止字面量扩散。
+3. **LLM 边界宽松**：`ReplyReference.source_type`（回复引用）保持自由 `str`——该值由系统按检索结果覆盖填充（`graph.py` 的 `known_refs`），LLM 输出仅供参考，不做强校验以避免小模型输出不规范导致整个回复解析失败。
+4. **读取路径**：`chroma.prune_stale_dialogue_memories` 与 graph 中 recall_count 递增均按 `source_type == "dialogue"` 过滤；离线归因的 `_purge_dimension_vectors` 依赖本表回溯 `personality` 集合文档。
+
+---
+
 ## `adjustment_logs`
 
 记录离线归因任务对性格维度的每一次调整，便于审计和回滚分析。

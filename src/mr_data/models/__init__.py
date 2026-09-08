@@ -1,7 +1,11 @@
 from .personality import (
     AssistantReply,
     DialogueMessage,
+    DialogueVectorRefSourceType,
     FixedIdentity,
+    MemorySourceType,
+    PersonalitySourceType,
+    SourceType,
     UserIdentity,
     PersonalityDimension,
     PersonalitySampleLine,
@@ -40,4 +44,8 @@ __all__ = [
     "ReplyReference",
     "ReplyBlock",
     "DialogueMessage",
+    "PersonalitySourceType",
+    "MemorySourceType",
+    "SourceType",
+    "DialogueVectorRefSourceType",
 ]

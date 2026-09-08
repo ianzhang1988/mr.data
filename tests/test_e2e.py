@@ -812,7 +812,7 @@ def test_assemble_respects_token_limit(
         "selected_dimension_ids": [],
         "personality_docs": [],
         "memory_docs": [
-            {"id": "m1", "page_content": "a" * 300, "metadata": {"source_type": "memory"}}
+            {"id": "m1", "page_content": "a" * 300, "metadata": {"source_type": "dialogue"}}
         ],
         "messages": [],
         "web_docs": [],

@@ -21,7 +21,8 @@
 36. ✅ **删除废弃脚本 `scripts/ingest_personality.py`**：硬编码旧版人格维度/台词，功能被 `mr-data ingest` 完全覆盖，全仓库零引用。
 37. ✅ **统一 LLM 结构化输出调用**：合并为统一核心入口 `structured_chat(messages, response_format)`（内置降级+warning 日志+端点能力缓存），`chat_structured` 保留为语法糖，删除 `structured_chat_with_messages`；新增配置 `llm_structured_mode`（auto/parse/prompt）；降级解析新增 `_extract_json`（围栏剥离+首个 JSON 子串提取）；6 个调用点统一迁移，`_think`/web_filter 白得降级能力；新增 `tests/test_llm_structured.py` 10 用例（全量 74 passed, 1 skipped）。
 38. ✅ **吞错点统一补 warning 级结构化日志**：（略，详见 finished_improvement.md）
-39. ✅ **统一 source_type 声明与实现**：`models/personality.py` 新增 Literal 别名 `PersonalitySourceType`（line/event/evidence）、`MemorySourceType`（web/dialogue）、`DialogueVectorRefSourceType`（line/event/evidence/web）作为唯一事实来源并从 `models/__init__` 导出；`PersonalityEvent`/`DialogueVectorRef` 改用 Literal 强校验，`ReplyReference` 保持宽松 str（LLM 边界）但 description 改为真实语义；graph.py 的 known_refs fallback 从非规范值 `"personality"`/`"memory"` 改为 `"line"`/`"dialogue"`，回复生成 prompt 的 source_type 示例改为与素材列表标注一致；`doc/database-design.md` 新增「素材来源类型约定」一节；新增 `tests/test_source_type.py` 4 用例锁定值域，test_e2e 两处非规范 `"memory"` 用法对齐为 `"web"`/`"dialogue"`。
+39. ✅ **统一 source_type 声明与实现**：（略，详见 finished_improvement.md）
+40. ✅ **测试 Chroma 改内存模式提速**：profile 定位 `chroma_store` fixture（PersistentClient 26 次×~1s=26.4s）为最大耗时项；实测测试数据本体仅 KB 级（每用例 chroma 目录 252K 多为 SQLite 开销），符合内存方案条件。`ChromaStore.__init__` 新增 `ephemeral=False` 参数（内存模式用 `chromadb.EphemeralClient()`，跳过 mkdir；因 EphemeralClient 是进程级单例，init 时删除遗留 personality/memories 集合保证测试隔离）；`conftest.py` 的 `chroma_store` 与 `test_embeddings.py` 4 处直建改为 ephemeral。全量 89s→58s（-35%），78 passed, 1 skipped 不变。
 
 # 未来可选增强(计划中)
 

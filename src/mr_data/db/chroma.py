@@ -19,10 +19,23 @@ class ChromaStore:
         persist_dir: Optional[str] = None,
         personality_embedding_fn: Optional = None,
         memory_embedding_fn: Optional = None,
+        ephemeral: bool = False,
     ):
-        self.persist_dir = Path(persist_dir or settings.chroma_persist_dir)
-        self.persist_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(self.persist_dir))
+        if ephemeral:
+            # In-memory mode (used by tests): no persistence directory involved.
+            # chromadb EphemeralClient is a process-wide singleton (SharedSystemClient),
+            # so drop leftover collections from previous instances to keep isolation.
+            self.persist_dir = None
+            self._client = chromadb.EphemeralClient()
+            for name in ("personality", "memories"):
+                try:
+                    self._client.delete_collection(name)
+                except Exception:
+                    pass
+        else:
+            self.persist_dir = Path(persist_dir or settings.chroma_persist_dir)
+            self.persist_dir.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(path=str(self.persist_dir))
 
         self._personality_embedding_fn = personality_embedding_fn or NomicPersonalityEmbedding(
             model_name=settings.personality_embedding_model,

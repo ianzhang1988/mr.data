@@ -81,10 +81,10 @@ class _RecordingEmbedding:
         return self._dim
 
 
-def test_personality_document_prefix_on_add(tmp_path):
+def test_personality_document_prefix_on_add():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
-        persist_dir=str(tmp_path / "chroma"),
+        ephemeral=True,
         personality_embedding_fn=recorder,
         memory_embedding_fn=_RecordingEmbedding(dim=8),
     )
@@ -99,10 +99,10 @@ def test_personality_document_prefix_on_add(tmp_path):
     assert any("测试场景" in item for item in recorder.recorded)
 
 
-def test_personality_query_prefix(tmp_path):
+def test_personality_query_prefix():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
-        persist_dir=str(tmp_path / "chroma"),
+        ephemeral=True,
         personality_embedding_fn=recorder,
         memory_embedding_fn=_RecordingEmbedding(dim=8),
     )
@@ -116,10 +116,10 @@ def test_personality_query_prefix(tmp_path):
     assert any(item.startswith("search_query: ") for item in recorder.recorded)
 
 
-def test_memory_query_prefix(tmp_path):
+def test_memory_query_prefix():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
-        persist_dir=str(tmp_path / "chroma"),
+        ephemeral=True,
         personality_embedding_fn=_RecordingEmbedding(dim=8),
         memory_embedding_fn=recorder,
     )
@@ -133,10 +133,10 @@ def test_memory_query_prefix(tmp_path):
     )
 
 
-def test_memory_documents_not_prefixed(tmp_path):
+def test_memory_documents_not_prefixed():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
-        persist_dir=str(tmp_path / "chroma"),
+        ephemeral=True,
         personality_embedding_fn=_RecordingEmbedding(dim=8),
         memory_embedding_fn=recorder,
     )

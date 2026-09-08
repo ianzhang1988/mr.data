@@ -121,10 +121,10 @@ def fake_embedding():
 
 
 @pytest.fixture
-def chroma_store(tmp_path):
-    """ChromaStore with lightweight fake embeddings for unit/integration tests."""
+def chroma_store():
+    """In-memory ChromaStore with lightweight fake embeddings for tests."""
     return ChromaStore(
-        persist_dir=str(tmp_path / "chroma"),
+        ephemeral=True,
         personality_embedding_fn=FakeEmbedding(dim=8),
         memory_embedding_fn=FakeEmbedding(dim=8),
     )

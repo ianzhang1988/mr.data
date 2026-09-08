@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import uuid
+from pathlib import Path
 
 # Disable web search by default in tests to avoid external network calls.
 os.environ.setdefault("MR_DATA_ENABLE_WEB_SEARCH", "false")
@@ -132,19 +133,46 @@ def chroma_store():
 
 @pytest.fixture(scope="session")
 def pgembed_server():
-    """Start a temporary pgembed server for the test session when needed."""
+    """Start a reusable embedded PG server for the test session when needed.
+
+    The cluster lives in a fixed temp-dir location so the one-time initdb
+    cost (~11-15s) is paid only when the cluster is missing or the schema
+    fingerprint changed. reset_pg_state wipes business tables before each
+    test, so reusing the cluster carries no data-isolation risk.
+    """
     if os.environ.get("MR_DATA_POSTGRES_DSN"):
         # User provided an external DSN; no need to start embedded PG.
         yield None
         return
 
-    data_dir = tempfile.mkdtemp(prefix="pgembed-")
-    manager = PgEmbedManager(data_dir=data_dir)
-    dsn = manager.start()
+    from mr_data.db.postgres import SCHEMA_SQL
+
+    fingerprint = hashlib.sha256(SCHEMA_SQL.encode("utf-8")).hexdigest()
+    data_dir = Path(tempfile.gettempdir()) / f"mr-data-pgembed-test-{os.getuid()}"
+    marker = data_dir / ".schema_fingerprint"
+
+    def _start():
+        # Drop the singleton cache entry so a retry gets a fresh manager.
+        PgEmbedManager._instances.pop(str(data_dir.resolve()), None)
+        manager = PgEmbedManager(data_dir=data_dir)
+        return manager, manager.start()
+
+    stale_schema = not marker.exists() or marker.read_text().strip() != fingerprint
+    if stale_schema and data_dir.exists():
+        shutil.rmtree(data_dir, ignore_errors=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        manager, dsn = _start()
+    except Exception:
+        # Stale postmaster lock or corrupted cluster: wipe and retry once.
+        shutil.rmtree(data_dir, ignore_errors=True)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        manager, dsn = _start()
+    marker.write_text(fingerprint)
+
     os.environ["MR_DATA_POSTGRES_DSN"] = dsn
     yield manager
-    manager.stop()
-    shutil.rmtree(data_dir, ignore_errors=True)
+    manager.stop()  # keep the cluster on disk for the next run
 
 
 @pytest.fixture(scope="session")

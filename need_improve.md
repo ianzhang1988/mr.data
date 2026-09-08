@@ -22,7 +22,8 @@
 37. ✅ **统一 LLM 结构化输出调用**：合并为统一核心入口 `structured_chat(messages, response_format)`（内置降级+warning 日志+端点能力缓存），`chat_structured` 保留为语法糖，删除 `structured_chat_with_messages`；新增配置 `llm_structured_mode`（auto/parse/prompt）；降级解析新增 `_extract_json`（围栏剥离+首个 JSON 子串提取）；6 个调用点统一迁移，`_think`/web_filter 白得降级能力；新增 `tests/test_llm_structured.py` 10 用例（全量 74 passed, 1 skipped）。
 38. ✅ **吞错点统一补 warning 级结构化日志**：（略，详见 finished_improvement.md）
 39. ✅ **统一 source_type 声明与实现**：（略，详见 finished_improvement.md）
-40. ✅ **测试 Chroma 改内存模式提速**：profile 定位 `chroma_store` fixture（PersistentClient 26 次×~1s=26.4s）为最大耗时项；实测测试数据本体仅 KB 级（每用例 chroma 目录 252K 多为 SQLite 开销），符合内存方案条件。`ChromaStore.__init__` 新增 `ephemeral=False` 参数（内存模式用 `chromadb.EphemeralClient()`，跳过 mkdir；因 EphemeralClient 是进程级单例，init 时删除遗留 personality/memories 集合保证测试隔离）；`conftest.py` 的 `chroma_store` 与 `test_embeddings.py` 4 处直建改为 ephemeral。全量 89s→58s（-35%），78 passed, 1 skipped 不变。
+40. ✅ **测试 Chroma 改内存模式提速**：（略，详见 finished_improvement.md）
+41. ✅ **测试 pgembed 集群跨运行复用**：`pgembed_server` fixture 从每次临时目录 initdb（11-15s/次）改为固定目录 `/tmp/mr-data-pgembed-test-<uid>` 复用；兜底：`SCHEMA_SQL` sha256 指纹标记文件，不一致删目录重建；启动失败（脏锁/损坏）删目录重试一次。数据隔离由既有 `reset_pg_state` 每用例 TRUNCATE+seed 保证。仅动 `tests/conftest.py`，业务代码零改动。实测冷启动 61.5s、复用 46.5s/39.7s、指纹篡改后自动重建 53.1s，四轮均 78 passed。
 
 # 未来可选增强(计划中)
 

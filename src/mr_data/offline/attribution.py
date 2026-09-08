@@ -6,6 +6,11 @@ from pydantic import BaseModel, Field
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
+from mr_data.db.chroma import (
+    dialogue_chunk_memory_id,
+    evidence_doc_id,
+    event_doc_id,
+)
 from mr_data.llm import LLMClient
 from mr_data.logging import get_logger, read_session_events
 from mr_data.models import AdjustmentLog, DialogueLog, DialogueVectorRef, PersonalityEvent
@@ -277,6 +282,7 @@ class AttributionEngine:
                 context = self._build_evidence_context(logs, target_log_id)
                 for snippet in delta.evidence_snippets:
                     event = PersonalityEvent(
+                        id=evidence_doc_id(target_log_id, dim_id, snippet),
                         content=snippet,
                         context=context,
                         speaker="assistant",
@@ -302,6 +308,7 @@ class AttributionEngine:
             # Persist high-level event summary if provided.
             if delta.event_summary:
                 event = PersonalityEvent(
+                    id=event_doc_id(target_log_id, dim_id, delta.event_summary),
                     content=delta.event_summary,
                     dimension_ids=[dim_id],
                     source_type="event",
@@ -350,6 +357,12 @@ class AttributionEngine:
             self.chroma.add_memory(
                 session_id,
                 chunk["content"],
+                memory_id=dialogue_chunk_memory_id(
+                    session_id,
+                    chunk["first_log_id"],
+                    chunk["last_log_id"],
+                    chunk["content"],
+                ),
                 metadata={
                     "source_type": "dialogue",
                     "session_id": session_id,

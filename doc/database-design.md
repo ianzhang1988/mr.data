@@ -180,6 +180,24 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 
 ---
 
+## Chroma 写入幂等约定
+
+Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等性由「稳定 id + 已存在跳过」保证：所有 id 派生规则集中在 `db/chroma.py` 模块级函数中，写入方调用时传入；`add_personality_event` / `add_memory` 在调用方提供 id 时先判存，已存在则直接返回 id 不写入（保留 `recall_count`/`added_at` 不被重放重置）。
+
+| 写入路径 | id 派生（`db/chroma.py`） | 幂等？ |
+|---|---|---|
+| evidence 片段（personality） | `evidence_doc_id(目标日志id, 维度id, 片段)` | ✅ 重放跳过 |
+| event 摘要（personality） | `event_doc_id(目标日志id, 维度id, 摘要)` | ✅ 重放跳过 |
+| ingest 台词（personality） | `line_doc_id(speaker, 内容, context)` | ✅ 重复 ingest 跳过 |
+| 对话分块（memories） | `dialogue_chunk_memory_id(session_id, 首/末日志id, 内容)` | ✅ 重放跳过 |
+| web 资料（memories） | `_stable_web_id(url, body, title)`（`online/search_providers.py`） | ✅ upsert 覆盖 |
+
+`_stable_web_id` 的优先级：真实 URL 的 sha256 → 跳转链接/无 URL 时退化为 `title+body` 内容键（`web:` 前缀，识别 `baidu.com/link`、`so.com/link` 等跳转域名，避免同一页面因跳转参数变化重复入库）→ 皆无时间随机 uuid 兜底（此时内容本身无稳定标识，重复入库可接受）。
+
+已知边界：PG 侧归因计数（`update_dimension` 累加、`adjustment_logs` 插入）在 `mark_dialogue_processed` 之前执行且非幂等，`_apply` 中途崩溃重跑会使 PG 计数翻倍——Chroma 侧不会重复，PG 侧待后续处理。
+
+---
+
 ## `adjustment_logs`
 
 记录离线归因任务对性格维度的每一次调整，便于审计和回滚分析。

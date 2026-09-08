@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,41 @@ from mr_data.logging import get_logger
 from mr_data.models import PersonalityEvent
 
 logger = get_logger("mr_data.chroma")
+
+
+def _stable_doc_id(kind: str, *parts: str) -> str:
+    """Derive a deterministic document id from the natural key parts of a write.
+
+    All id derivation rules for Chroma writes live here so that idempotency
+    semantics are defined in one place. Ids are prefixed by kind to avoid
+    cross-type collisions (e.g. "evidence:<sha256>").
+    """
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return f"{kind}:{digest}"
+
+
+def evidence_doc_id(dialogue_log_id: Optional[int], dimension_id: int, snippet: str) -> str:
+    """Stable id for an evidence snippet persisted to the personality collection."""
+    return _stable_doc_id("evidence", str(dialogue_log_id), str(dimension_id), snippet)
+
+
+def event_doc_id(dialogue_log_id: Optional[int], dimension_id: int, summary: str) -> str:
+    """Stable id for an event summary persisted to the personality collection."""
+    return _stable_doc_id("event", str(dialogue_log_id), str(dimension_id), summary)
+
+
+def line_doc_id(speaker: Optional[str], content: str, context: Optional[str] = None) -> str:
+    """Stable id for an ingested sample line persisted to the personality collection."""
+    return _stable_doc_id("line", speaker or "assistant", content, context or "")
+
+
+def dialogue_chunk_memory_id(
+    session_id: str, first_log_id, last_log_id, content: str
+) -> str:
+    """Stable id for a dialogue chunk persisted to the memory collection."""
+    return _stable_doc_id(
+        "dialogue", session_id, str(first_log_id), str(last_log_id), content
+    )
 
 
 class ChromaStore:
@@ -111,7 +147,12 @@ class ChromaStore:
         )
 
     def add_personality_event(self, event: PersonalityEvent) -> str:
+        """Add a personality event. When the caller provides a (stable) event id,
+        an existing document with that id is left untouched and its id returned,
+        so replays never create duplicates (see doc/database-design.md)."""
         doc_id = event.id or str(uuid.uuid4())
+        if event.id and self.personality.get(ids=[doc_id])["ids"]:
+            return doc_id
         # Embed the full context if available; otherwise fall back to the utterance.
         embedding_text = event.context if event.context else event.content
         # Nomic expects a document prefix for retrieval alignment.
@@ -179,7 +220,12 @@ class ChromaStore:
         memory_id: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> str:
+        """Add a memory document. When the caller provides a (stable) memory_id,
+        an existing document with that id is left untouched and its id returned,
+        so replays never reset recall_count/added_at."""
         doc_id = memory_id or str(uuid.uuid4())
+        if memory_id and self.memories.get(ids=[doc_id])["ids"]:
+            return doc_id
         meta = {"session_id": session_id}
         if metadata:
             meta.update(metadata)

@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,12 +13,35 @@ from mr_data.logging import get_logger
 logger = get_logger("mr_data.online")
 
 
-def _stable_web_id(url: str, body: str = "") -> str:
-    """Generate a long-term stable id for a web result based on its URL."""
-    if url:
+def _is_redirect_url(url: str) -> bool:
+    """Check whether a search-result URL is a redirect/jump link rather than the
+    real page URL. Baidu and Qihoo 360 return jump links (e.g.
+    https://www.baidu.com/link?url=...) whose parameters vary per search, so the
+    same page yields different URLs and thus different ids across runs."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if not path.startswith("/link"):
+        return False
+    return host.endswith("baidu.com") or host.endswith("so.com")
+
+
+def _stable_web_id(url: str, body: str = "", title: str = "") -> str:
+    """Generate a long-term stable id for a web result.
+
+    Preference order:
+    1. sha256 of the real URL (most precise);
+    2. content key from title+body when the URL is missing or is a
+       redirect/jump link whose parameters vary per search;
+    3. random fallback when nothing stable is available.
+    """
+    if url and not _is_redirect_url(url):
         return hashlib.sha256(url.encode("utf-8")).hexdigest()
-    if body:
-        return f"web:{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}"
+    if title or body:
+        return f"web:{hashlib.sha256(f'{title}\n{body}'.encode('utf-8')).hexdigest()[:16]}"
     return f"web:{uuid.uuid4().hex}"
 
 
@@ -30,7 +53,7 @@ def _to_doc_format(results: list[dict]) -> list[dict]:
         body = r.get("body", "")
         url = r.get("url", "")
         docs.append({
-            "id": _stable_web_id(url, body),
+            "id": _stable_web_id(url, body, title),
             "page_content": f"{title}\n{body}",
             "metadata": {
                 "source_type": "web",

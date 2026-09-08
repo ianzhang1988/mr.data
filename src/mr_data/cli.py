@@ -7,6 +7,7 @@ from rich.prompt import Prompt
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
+from mr_data.db.chroma import line_doc_id
 from mr_data.db.personality_loader import load_personality_pack
 from mr_data.llm import LLMClient
 from mr_data.logging import get_logger

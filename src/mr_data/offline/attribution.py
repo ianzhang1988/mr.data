@@ -121,10 +121,10 @@ class AttributionEngine:
                     extra={"event": "offline.session_failed", "session_id": session.id},
                 )
                 continue
-            applied = self._apply(result, session.id, logs)
-
-            for log in logs:
-                self.pg.mark_dialogue_processed(log.id)
+            with self.pg.transaction():
+                applied = self._apply(result, session.id, logs)
+                for log in logs:
+                    self.pg.mark_dialogue_processed(log.id)
 
             total_sessions += 1
             total_deltas += applied

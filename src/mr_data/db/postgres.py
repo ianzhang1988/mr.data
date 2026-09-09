@@ -159,9 +159,31 @@ class PostgresStore:
             raise RuntimeError(
                 "No PostgreSQL DSN configured. Set MR_DATA_POSTGRES_DSN or MR_DATA_USE_PGEMBED=true."
             )
+        self._tx_conn = None
+
+    @contextmanager
+    def transaction(self):
+        """会话级事务：事务态下 _cursor 复用同一连接并抑制逐方法 commit。"""
+        if self._tx_conn is not None:
+            raise RuntimeError("PostgresStore: nested transactions are not supported")
+        conn = psycopg.connect(self.dsn, row_factory=dict_row)
+        self._tx_conn = conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+            self._tx_conn = None
 
     @contextmanager
     def _cursor(self, *, commit: bool = False):
+        if self._tx_conn is not None:
+            with self._tx_conn.cursor() as cur:
+                yield cur
+            return
         conn = psycopg.connect(self.dsn, row_factory=dict_row)
         try:
             with conn.cursor() as cur:

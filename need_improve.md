@@ -12,13 +12,7 @@
 
 # 待改进
 
-1. 离线分析 PG 侧崩溃重放非幂等：update_dimension 计数累加、adjustment_logs 插入都在 mark_dialogue_processed 之前，_apply 中途崩溃重跑 PG 侧会翻倍（Chroma 侧本次已不会重复）。修
-     向可以是批次级事务把离线分析整个放到一个事务中。
-2. 百度/360 搜索同一页面，两次搜索返回的摘要（body）往往是不同的（搜索引擎按查询词动态摘取）。修复后 id = sha256(title + body)，body 不同 → id 不同 → upsert_memory 当成两条
-  不同记忆写入。注意此时 metadata 里的 url 也是不同的跳转链接，入库后没有任何字段能把这两条关联起来（title 可能相同，但不保证）。
-   写入时重定 id（推荐方向） │ PageExtractor.extract 用 requests 抓取时本就跟随 302，re │ ✅ 低-中         │ 需改 _extract_web_pages（提取后更新 doc id）+ _log_dialo │
-  │                              │ sponse.url 就是真实 URL；提取成功后用真实 URL 重算 id 再 │                  │ gue；只对被提取的页面生效（web_extract_max_pages 限制）  │
-  │                              │ 入库                                                     │                  │ ，未提取的仍按内容键
+ 1. 在线 _log_dialogue（graph.py:622-719）同样是多步独立 commit，存在半失败脏数据窗口——本次事务机制可直接复用，整体包为事务
 
 # 已完成的改进项
 (保留最近项目，完成项目放到finished_improvement.md中)
@@ -30,7 +24,9 @@
 39. ✅ **统一 source_type 声明与实现**：（略，详见 finished_improvement.md）
 40. ✅ **测试 Chroma 改内存模式提速**：（略，详见 finished_improvement.md）
 41. ✅ **测试 pgembed 集群跨运行复用**：（略，详见 finished_improvement.md）
-42. ✅ **Chroma 写入路径幂等性统一**：稳定 id 内容哈希派生（规则集中在 `db/chroma.py` 模块级函数）+「已存在则跳过」语义；evidence/event_summary/ingest 台词/对话分块四条路径全部幂等；`_stable_web_id` 洞 1 补 title 兜底、洞 2 跳转域名退化 `title+body` 内容键；新增 `tests/test_chroma_idempotency.py` 10 用例（全量 88 passed, 1 skipped）。范围外建议：PG 侧归因计数重放翻倍问题未处理。
+42. ✅ **Chroma 写入路径幂等性统一**：（略，详见 finished_improvement.md）
+43. ✅ **离线归因 PG 侧会话级事务**：`PostgresStore` 新增 `transaction()` 上下文管理器（实例级 `_tx_conn`，嵌套事务抛错），事务态下 `_cursor` 读写复用同一连接并抑制逐方法 commit，非事务态行为逐字节不变；`AttributionEngine.run()` 将 `_apply` + `mark_dialogue_processed` 循环包入事务（LLM 调用在事务外），崩溃整体回滚、会话保持 unprocessed 留待重跑，修复计数翻倍/审计双份；Chroma 侧不可回滚靠稳定 id 幂等自愈（语义已写入 database-design.md）；新增 `tests/test_attribution_transaction.py` 4 用例。
+44. ✅ **web 提取成功后真实 URL 重定 id（方案 D）**：`page_extract.py` 重构为「先统一抓取（requests 跟随 302，`response.url` 即真实 URL）、再两级解析（trafilatura→BS4）」，新增 `ExtractedPage(text, url)` 返回值与 `_fetch`；`_extract_web_pages` 提取成功后用真实 URL 重算 doc id（`_stable_web_id` 裸 sha256 分支）、更新 `metadata.url`、原跳转链接留 `metadata.source_url`，下游（filter/assemble/log）零改动；同一页面不再因摘要不同重复入库；已知边界：仅对被提取页面生效；`tests/test_page_extract.py` 适配+302 用例、新增 `tests/test_web_reid.py` 2 用例（全量 95 passed, 1 skipped）。
 
 # 未来可选增强(计划中)
 

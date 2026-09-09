@@ -24,6 +24,7 @@ from mr_data.models import (
     MemoryRelevanceFilterResult,
 )
 from mr_data.online.page_extract import PageExtractor
+from mr_data.online.search_providers import _stable_web_id
 from mr_data.online.web_filter import filter_web_docs
 from mr_data.online.prompt_assembly import (
     PromptAssembler,
@@ -310,13 +311,17 @@ class DialogueGraph:
             if not url:
                 extracted.append(doc)
                 continue
-            text = self.page_extractor.extract(url)
-            if text:
+            result = self.page_extractor.extract(url)
+            if result:
+                real_url = result.url
                 new_doc = {
                     **doc,
-                    "page_content": f"{doc.get('metadata', {}).get('title', '')}\n{text}",
+                    "id": _stable_web_id(real_url),
+                    "page_content": f"{doc.get('metadata', {}).get('title', '')}\n{result.text}",
                     "metadata": {
                         **doc.get("metadata", {}),
+                        "url": real_url,
+                        "source_url": url,
                         "extracted": True,
                     },
                 }

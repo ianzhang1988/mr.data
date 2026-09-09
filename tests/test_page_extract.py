@@ -8,6 +8,11 @@ from mr_data.online.page_extract import PageExtractor
 
 class _SimpleHTMLHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/landing")
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -45,12 +50,21 @@ def local_html_server():
 
 def test_page_extractor_extracts_article(local_html_server):
     extractor = PageExtractor(max_length=500)
-    text = extractor.extract(local_html_server)
-    assert text is not None
-    assert "Important Article" in text
-    assert "main content" in text
-    assert "Navigation" not in text
-    assert "Footer" not in text
+    page = extractor.extract(local_html_server)
+    assert page is not None
+    assert "Important Article" in page.text
+    assert "main content" in page.text
+    assert "Navigation" not in page.text
+    assert "Footer" not in page.text
+    assert page.url.rstrip("/") == local_html_server
+
+
+def test_page_extractor_follows_redirect(local_html_server):
+    extractor = PageExtractor(max_length=500)
+    page = extractor.extract(f"{local_html_server}/redirect")
+    assert page is not None
+    assert "Important Article" in page.text
+    assert page.url == f"{local_html_server}/landing"
 
 
 def test_page_extractor_invalid_url():

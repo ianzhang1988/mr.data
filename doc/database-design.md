@@ -194,7 +194,9 @@ Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等�
 
 `_stable_web_id` 的优先级：真实 URL 的 sha256 → 跳转链接/无 URL 时退化为 `title+body` 内容键（`web:` 前缀，识别 `baidu.com/link`、`so.com/link` 等跳转域名，避免同一页面因跳转参数变化重复入库）→ 皆无时间随机 uuid 兜底（此时内容本身无稳定标识，重复入库可接受）。
 
-已知边界：PG 侧归因计数（`update_dimension` 累加、`adjustment_logs` 插入）在 `mark_dialogue_processed` 之前执行且非幂等，`_apply` 中途崩溃重跑会使 PG 计数翻倍——Chroma 侧不会重复，PG 侧待后续处理。
+**提取成功后重定 id**：`_extract_web_pages` 中 PageExtractor 抓取时 requests 自动跟随 302，以最终落地页 URL（`response.url`）重算 doc id（真实 URL 走裸 sha256 分支）并更新 `metadata.url`，原跳转链接保留在 `metadata.source_url` 备查。同一页面即使两次搜索摘要不同，提取后 id 也收敛为同一真实 URL 哈希，不再重复入库。已知边界：只对被提取的页面生效（`web_extract_max_pages` 限制），未提取的仍按内容键，同页不同摘要仍可能重复。
+
+**PG 侧崩溃重放幂等（会话级事务）**：`PostgresStore.transaction()` 提供会话级事务上下文，事务态下 `_cursor` 复用同一连接并抑制逐方法 commit；`AttributionEngine.run()` 把 `_apply` + `mark_dialogue_processed` 循环整体包入事务，LLM 调用（`_attribute_session`）在事务外。事务内任意失败整体回滚，会话保持 unprocessed 留待重跑，不再出现计数翻倍/审计双份。跨库一致性语义：Chroma 写不可回滚，崩溃后可能有孤儿向量文档，但因 doc id 为确定性哈希，重跑幂等跳过/自愈；非事务态（在线路径、CLI）行为不变，逐方法 autocommit。
 
 ---
 

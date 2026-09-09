@@ -196,7 +196,9 @@ Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等�
 
 **提取成功后重定 id**：`_extract_web_pages` 中 PageExtractor 抓取时 requests 自动跟随 302，以最终落地页 URL（`response.url`）重算 doc id（真实 URL 走裸 sha256 分支）并更新 `metadata.url`，原跳转链接保留在 `metadata.source_url` 备查。同一页面即使两次搜索摘要不同，提取后 id 也收敛为同一真实 URL 哈希，不再重复入库。已知边界：只对被提取的页面生效（`web_extract_max_pages` 限制），未提取的仍按内容键，同页不同摘要仍可能重复。
 
-**PG 侧崩溃重放幂等（会话级事务）**：`PostgresStore.transaction()` 提供会话级事务上下文，事务态下 `_cursor` 复用同一连接并抑制逐方法 commit；`AttributionEngine.run()` 把 `_apply` + `mark_dialogue_processed` 循环整体包入事务，LLM 调用（`_attribute_session`）在事务外。事务内任意失败整体回滚，会话保持 unprocessed 留待重跑，不再出现计数翻倍/审计双份。跨库一致性语义：Chroma 写不可回滚，崩溃后可能有孤儿向量文档，但因 doc id 为确定性哈希，重跑幂等跳过/自愈；非事务态（在线路径、CLI）行为不变，逐方法 autocommit。
+**PG 侧崩溃重放幂等（会话级事务）**：`PostgresStore.transaction()` 提供会话级事务上下文，事务态下 `_cursor` 复用同一连接并抑制逐方法 commit；`AttributionEngine.run()` 把 `_apply` + `mark_dialogue_processed` 循环整体包入事务，LLM 调用（`_attribute_session`）在事务外。事务内任意失败整体回滚，会话保持 unprocessed 留待重跑，不再出现计数翻倍/审计双份。跨库一致性语义：Chroma 写不可回滚，崩溃后可能有孤儿向量文档，但因 doc id 为确定性哈希，重跑幂等跳过/自愈；非事务态（在线路径、CLI）行为不变，逐方法 autocommit。在线侧 `_log_dialogue` 的 4 步 PG 写（对话行/维度引用/向量引用）同样包入事务，Chroma upsert 留事务外。
+
+**集合重建防丢数据**：`_ensure_collection` 检测 embedding 维度/模型不一致时，先把集合导出为 `<chroma_persist_dir 父目录>/chroma-backups/<集合名>-<UTC时间戳>.json`（ids+documents+metadatas，不导 embeddings——旧向量在新空间无意义，恢复时重算），导出失败则阻止删除；重建后打印报告与恢复提示。`mr-data chroma-restore <backup.json>` 用当前配置的 embedding 模型重算向量并恢复（已存在 id 跳过，幂等），是否使用老数据由用户决定。
 
 ---
 

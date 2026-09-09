@@ -1,4 +1,5 @@
 import hashlib
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -85,7 +86,60 @@ class ChromaStore:
         _ = self.personality
         _ = self.memories
 
+    def _export_collection_backup(self, coll) -> Optional[Path]:
+        """Export a collection's documents/metadatas to a JSON backup before it is deleted.
+
+        Embeddings are intentionally not exported: a recreate happens because the
+        embedding model/dim changed, so old vectors are meaningless and embeddings
+        are recomputed on restore. Ephemeral mode (no persist_dir) skips exporting.
+        Any export failure raises RuntimeError so the caller will NOT delete the
+        collection (fail-safe: losing the backup is worse than keeping old data).
+        """
+        if self.persist_dir is None:
+            return None
+        data = coll.get(include=["documents", "metadatas"])
+        documents = [
+            {"id": doc_id, "document": document, "metadata": metadata}
+            for doc_id, document, metadata in zip(
+                data.get("ids", []), data.get("documents", []), data.get("metadatas", [])
+            )
+        ]
+        backup_dir = self.persist_dir.parent / "chroma-backups"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        backup_path = backup_dir / f"{coll.name}-{timestamp}.json"
+        payload = {
+            "collection": coll.name,
+            "collection_metadata": coll.metadata,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "count": len(documents),
+            "documents": documents,
+        }
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to export backup for Chroma collection {coll.name!r} to {backup_path}; "
+                "refusing to delete the collection."
+            ) from exc
+        logger.info(
+            "Exported Chroma collection backup before recreate",
+            extra={
+                "event": "chroma.backup_exported",
+                "details": {
+                    "collection": coll.name,
+                    "path": str(backup_path),
+                    "count": len(documents),
+                },
+            },
+        )
+        return backup_path
+
     def _ensure_collection(self, name: str, dim: int, model_name: str):
+        backup_path = None
+        backup_count = 0
         try:
             coll = self._client.get_collection(name)
         except Exception:
@@ -97,6 +151,11 @@ class ChromaStore:
             existing_model = meta.get("embedding_model")
             if existing_dim is None or existing_dim != dim or existing_model != model_name:
                 if settings.chroma_recreate_on_mismatch:
+                    # Export a backup FIRST; if it fails, the RuntimeError propagates
+                    # and delete_collection below is never reached.
+                    backup_path = self._export_collection_backup(coll)
+                    if backup_path is not None:
+                        backup_count = coll.count()
                     logger.warning(
                         "Recreating Chroma collection due to embedding mismatch",
                         extra={
@@ -128,7 +187,68 @@ class ChromaStore:
                     "embedding_model": model_name,
                 },
             )
+        if backup_path is not None:
+            print(
+                f"[Chroma] Collection '{name}' was recreated due to an embedding change. "
+                f"Backed up {backup_count} document(s) to {backup_path}. "
+                f"To restore into the new embedding space, run: mr-data chroma-restore {backup_path}"
+            )
         return coll
+
+    def restore_collection_backup(self, backup_path) -> dict:
+        """Restore a JSON backup (see _export_collection_backup) into this store.
+
+        Embeddings are recomputed with the currently configured embedding function.
+        Documents are embedded exactly as stored: personality documents already
+        carry the "search_document: " prefix (added by add_personality_event before
+        calling the embedding fn, which itself adds no prefix), so no prefix is
+        added here. Documents whose id already exists are skipped, so repeated
+        restores never duplicate. Metadatas (recall_count/added_at etc.) are
+        restored verbatim via collection.add.
+
+        Returns a report dict: {"collection", "restored", "skipped"}.
+        """
+        backup_path = Path(backup_path)
+        payload = json.loads(backup_path.read_text(encoding="utf-8"))
+        name = payload["collection"]
+        if name == "personality":
+            coll = self.personality
+            embedding_fn = self._personality_embedding_fn
+        elif name == "memories":
+            coll = self.memories
+            embedding_fn = self._memory_embedding_fn
+        else:
+            raise ValueError(f"Unknown Chroma collection {name!r} in backup {backup_path}")
+
+        documents = payload.get("documents", [])
+        existing_ids = set(coll.get(ids=[d["id"] for d in documents])["ids"]) if documents else set()
+        restored = 0
+        skipped = 0
+        for entry in documents:
+            if entry["id"] in existing_ids:
+                skipped += 1
+                continue
+            embedding = embedding_fn([entry["document"]])[0]
+            coll.add(
+                ids=[entry["id"]],
+                documents=[entry["document"]],
+                embeddings=[embedding],
+                metadatas=[entry["metadata"] or {}],
+            )
+            restored += 1
+        logger.info(
+            "Restored Chroma collection backup",
+            extra={
+                "event": "chroma.backup_restored",
+                "details": {
+                    "collection": name,
+                    "path": str(backup_path),
+                    "restored": restored,
+                    "skipped": skipped,
+                },
+            },
+        )
+        return {"collection": name, "restored": restored, "skipped": skipped}
 
     @property
     def personality(self):

@@ -1,12 +1,28 @@
-from typing import Optional
+from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _find_project_root() -> Path:
+    """从本文件向上逐级探测含 pyproject.toml 的目录，作为项目根。
+
+    找不到时回退到本包文件的固定位置（src/mr_data/config.py 的上三级目录）。
+    不使用 Path.cwd()——CWD 是运行目录，仍会漂移。
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    return Path(__file__).resolve().parents[2]
+
+
+_PROJECT_ROOT = _find_project_root()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MR_DATA_",
-        env_file=".env",
+        env_file=_PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -19,14 +35,18 @@ class Settings(BaseSettings):
 
     postgres_dsn: str = ""  # 留空且 use_pgembed=true 时使用嵌入式 PostgreSQL
 
+    # 数据根目录（默认 <项目根>/data）。路径默认值锚定项目根；
+    # 显式设置的相对路径仍相对当前工作目录（CWD）。
+    data_dir: str | None = None
+
     # pgembed 配置（未设置外部 DSN 时的默认运行方式）
     use_pgembed: bool = True
-    pgembed_data_dir: str = "./data/pgembed"
+    pgembed_data_dir: str | None = None  # 默认 <data_dir>/pgembed
 
-    chroma_persist_dir: str = "./data/chroma"
+    chroma_persist_dir: str | None = None  # 默认 <data_dir>/chroma
 
-    # 人格文件配置
-    personality_file: str = "./data/personalities/data.json"
+    # 人格文件配置（默认 <data_dir>/personalities/data.json）
+    personality_file: str | None = None
 
     # 向量库 embedding 配置
     personality_embedding_model: str = "nomic-ai/nomic-embed-text-v1.5"
@@ -45,8 +65,8 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     google_cse_id: str = ""
 
-    # 日志配置
-    log_dir: str = "./logs"
+    # 日志配置（log_dir 默认 <项目根>/logs）
+    log_dir: str | None = None
     log_level: str = "INFO"
     log_max_bytes: int = 10_000_000
     log_backup_count: int = 5
@@ -83,6 +103,21 @@ class Settings(BaseSettings):
     # LLM 上下文 tokenizer 与 token 预算
     tokenizer_model: str = "cl100k_base"
     llm_context_token_limit: int = 30000
+
+    @model_validator(mode="after")
+    def _fill_default_paths(self) -> "Settings":
+        """填充未显式设置的路径默认值（锚定项目根），填充后字段保持 str。"""
+        if self.data_dir is None:
+            self.data_dir = str(_PROJECT_ROOT / "data")
+        if self.pgembed_data_dir is None:
+            self.pgembed_data_dir = str(Path(self.data_dir) / "pgembed")
+        if self.chroma_persist_dir is None:
+            self.chroma_persist_dir = str(Path(self.data_dir) / "chroma")
+        if self.personality_file is None:
+            self.personality_file = str(Path(self.data_dir) / "personalities" / "data.json")
+        if self.log_dir is None:
+            self.log_dir = str(_PROJECT_ROOT / "logs")
+        return self
 
 
 settings = Settings()

@@ -12,7 +12,7 @@
 
 # 待改进
 
- 1. 在线 _log_dialogue（graph.py:622-719）同样是多步独立 commit，存在半失败脏数据窗口——本次事务机制可直接复用，整体包为事务
+（空）
 
 # 已完成的改进项
 (保留最近项目，完成项目放到finished_improvement.md中)
@@ -26,7 +26,10 @@
 41. ✅ **测试 pgembed 集群跨运行复用**：（略，详见 finished_improvement.md）
 42. ✅ **Chroma 写入路径幂等性统一**：（略，详见 finished_improvement.md）
 43. ✅ **离线归因 PG 侧会话级事务**：`PostgresStore` 新增 `transaction()` 上下文管理器（实例级 `_tx_conn`，嵌套事务抛错），事务态下 `_cursor` 读写复用同一连接并抑制逐方法 commit，非事务态行为逐字节不变；`AttributionEngine.run()` 将 `_apply` + `mark_dialogue_processed` 循环包入事务（LLM 调用在事务外），崩溃整体回滚、会话保持 unprocessed 留待重跑，修复计数翻倍/审计双份；Chroma 侧不可回滚靠稳定 id 幂等自愈（语义已写入 database-design.md）；新增 `tests/test_attribution_transaction.py` 4 用例。
-44. ✅ **web 提取成功后真实 URL 重定 id（方案 D）**：`page_extract.py` 重构为「先统一抓取（requests 跟随 302，`response.url` 即真实 URL）、再两级解析（trafilatura→BS4）」，新增 `ExtractedPage(text, url)` 返回值与 `_fetch`；`_extract_web_pages` 提取成功后用真实 URL 重算 doc id（`_stable_web_id` 裸 sha256 分支）、更新 `metadata.url`、原跳转链接留 `metadata.source_url`，下游（filter/assemble/log）零改动；同一页面不再因摘要不同重复入库；已知边界：仅对被提取页面生效；`tests/test_page_extract.py` 适配+302 用例、新增 `tests/test_web_reid.py` 2 用例（全量 95 passed, 1 skipped）。
+44. ✅ **web 提取成功后真实 URL 重定 id（方案 D）**：（略，详见 finished_improvement.md）
+45. ✅ **在线 `_log_dialogue` 事务化**：4 步 PG 写包入 `pg.transaction()`，中途失败整体回滚不留脏数据；Chroma upsert 留事务外；新增 `tests/test_log_dialogue_transaction.py` 2 用例。
+46. ✅ **config 路径锚定项目根 + 数据目录配置项**：默认路径不再相对 CWD；新增 `MR_DATA_DATA_DIR`；新增 `tests/test_config_paths.py` 5 用例。
+47. ✅ **Chroma 重建防丢数据（导出+报告+恢复 CLI）**：mismatch 删除前先导出 JSON 备份（导出失败阻止删除）、重建后打印报告；新增 `mr-data chroma-restore`；新增 `tests/test_chroma_backup.py` 4 用例（全量 106 passed, 1 skipped）。
 
 # 未来可选增强(计划中)
 
@@ -37,9 +40,8 @@
 3. 做成再cli命令/newsession时，触发 AttributionEngine.run(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
 2. 降级路径可加「解析失败重试一次」，本次未加
 3. chat_structured 主路径可改用 message.parsed 替代 json.loads，本次为控制 diff 保持现状
-2. config.py 全部默认路径（`.env`、`./data/...`、`./logs`）都是工作目录，默认用“main”脚本所在目录，增加数据目录的配置项目。保证在运行阶段目录不会飘移。
+
 3. 读一下 review/group_reviews/G10_文档与配置.md 这里提到多处文档没有更新，发起子agent确认问题，属实的话发起子agent修复，你作为管理者，核验修复结果。
-4. chroma_recreate_on_mismatch=True 会造成数据丢失的问题，改为发现问题把数据导出，并打印这个行为，完成时给个报告。增加一个在新的chroma回复数据的功能，放到命令行中，这样数据不会丢失，是否使用老数据的判断留给用户。
 5.  ┌───┬────────────────────────┬────────────────────────────┬────────┬─────────────────────┐
   │ # │ 数据                   │ PG                         │ Chroma │ Chroma 删了能找回吗 │
   ├───┼────────────────────────┼────────────────────────────┼────────┼─────────────────────┤
@@ -51,4 +53,3 @@
   │ 6 │ 事件总结 event_summary │ ❌ 无任何记录              │ ✅     │ ❌ 永久丢失         │
   └───┴────────────────────────┴────────────────────────────┴────────┴─────────────────────┘
 在离线处理时，event_summary没有加到pg里面。这里具体的逻辑还没有看。不过这个似乎应该加到pg作为一个新的维度。这部分需要先看代码，再说。
-

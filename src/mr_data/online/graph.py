@@ -633,52 +633,54 @@ class DialogueGraph:
         web_docs = state.get("web_docs", [])
         inner_monologue = state.get("inner_monologue")
 
-        self.pg.insert_dialogue(
-            DialogueLog(session_id=session_id, role="user", content=user_input)
-        )
-        assistant_metadata = {
-            "inner_monologue": inner_monologue,
-            "blocks": [block.model_dump() for block in state.get("reply_blocks", [])],
-        }
-        assistant_log_id = self.pg.insert_dialogue(
-            DialogueLog(
-                session_id=session_id,
-                role="assistant",
-                content=reply,
-                metadata=assistant_metadata,
+        # 4 步 PG 写入在同一事务内提交，中途失败整体回滚，避免留下脏数据。
+        with self.pg.transaction():
+            self.pg.insert_dialogue(
+                DialogueLog(session_id=session_id, role="user", content=user_input)
             )
-        )
+            assistant_metadata = {
+                "inner_monologue": inner_monologue,
+                "blocks": [block.model_dump() for block in state.get("reply_blocks", [])],
+            }
+            assistant_log_id = self.pg.insert_dialogue(
+                DialogueLog(
+                    session_id=session_id,
+                    role="assistant",
+                    content=reply,
+                    metadata=assistant_metadata,
+                )
+            )
 
-        # 记录本次实际选中的维度（未选择时回退为全量维度）
-        selected_ids = set(
-            state.get("selected_dimension_ids")
-            or [d.id for d in dimensions if d.id is not None]
-        )
-        self.pg.insert_dialogue_dimension_refs(
-            assistant_log_id, [dim.id for dim in dimensions if dim.id in selected_ids])
+            # 记录本次实际选中的维度（未选择时回退为全量维度）
+            selected_ids = set(
+                state.get("selected_dimension_ids")
+                or [d.id for d in dimensions if d.id is not None]
+            )
+            self.pg.insert_dialogue_dimension_refs(
+                assistant_log_id, [dim.id for dim in dimensions if dim.id in selected_ids])
 
-        # 记录检索到的向量素材（人格素材 + 网络资料）
-        vector_refs = [
-            DialogueVectorRef(
-                dialogue_log_id=assistant_log_id,
-                vector_doc_id=doc["id"],
-                source_type=doc["metadata"].get("source_type", "line"),
-                content=doc["page_content"],
-                dimension_ids=doc["metadata"].get("dimension_ids", []),
-            )
-            for doc in personality_docs
-        ]
-        vector_refs += [
-            DialogueVectorRef(
-                dialogue_log_id=assistant_log_id,
-                vector_doc_id=doc["id"],
-                source_type="web",
-                content=doc["page_content"],
-                dimension_ids=[],
-            )
-            for doc in web_docs
-        ]
-        self.pg.insert_dialogue_vector_refs(assistant_log_id, vector_refs)
+            # 记录检索到的向量素材（人格素材 + 网络资料）
+            vector_refs = [
+                DialogueVectorRef(
+                    dialogue_log_id=assistant_log_id,
+                    vector_doc_id=doc["id"],
+                    source_type=doc["metadata"].get("source_type", "line"),
+                    content=doc["page_content"],
+                    dimension_ids=doc["metadata"].get("dimension_ids", []),
+                )
+                for doc in personality_docs
+            ]
+            vector_refs += [
+                DialogueVectorRef(
+                    dialogue_log_id=assistant_log_id,
+                    vector_doc_id=doc["id"],
+                    source_type="web",
+                    content=doc["page_content"],
+                    dimension_ids=[],
+                )
+                for doc in web_docs
+            ]
+            self.pg.insert_dialogue_vector_refs(assistant_log_id, vector_refs)
 
         # 把网络资料作为世界知识写入记忆向量库（使用 URL 哈希作为全局稳定 id）
         retrieval_query = state.get("retrieval_query", user_input)

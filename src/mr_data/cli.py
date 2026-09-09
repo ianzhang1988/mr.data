@@ -1,4 +1,6 @@
+import json
 import uuid
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -54,6 +56,7 @@ def _print_chat_help(pg: PostgresStore) -> None:
   identity select  切换默认用户身份
   identity edit    编辑用户身份
   identity delete  删除用户身份
+  chroma-restore   从备份恢复 Chroma 集合并重算向量
 
 [bold]当前用户身份[/bold]: """ + current_text + "\n")
 
@@ -308,6 +311,39 @@ def identity_delete(
     except ValueError as exc:
         rprint(f"[red]{exc}[/red]")
         raise typer.Exit(1)
+
+
+@app.command("chroma-restore")
+def chroma_restore(
+    backup_path: str = typer.Argument(..., help="Chroma 备份 JSON 路径（recreate 时自动导出）"),
+    force: bool = typer.Option(False, "--force", help="目标集合非空时跳过确认"),
+) -> None:
+    """Restore a Chroma collection backup, recomputing embeddings with the current model."""
+    path = Path(backup_path)
+    if not path.is_file():
+        rprint(f"[red]Backup file not found: {path}[/red]")
+        raise typer.Exit(1)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    name = payload.get("collection")
+    if name not in ("personality", "memories"):
+        rprint(f"[red]Unknown collection {name!r} in backup {path}.[/red]")
+        raise typer.Exit(1)
+
+    store = ChromaStore()
+    target = store.personality if name == "personality" else store.memories
+    existing = target.count()
+    if existing > 0 and not force:
+        confirm = typer.confirm(
+            f"Collection '{name}' already has {existing} document(s); restore anyway (existing ids are skipped)?"
+        )
+        if not confirm:
+            rprint("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
+    report = store.restore_collection_backup(path)
+    rprint(
+        f"[green]Restored {report['restored']} document(s) into '{report['collection']}' "
+        f"({report['skipped']} skipped, already present).[/green]"
+    )
 
 
 if __name__ == "__main__":

@@ -72,19 +72,45 @@ class PromptAssembler:
     def _compress_to_budget(
         self, section_tokens: list[tuple[PromptSection, int]], budget: int
     ) -> dict[str, str]:
-        """Compress a list of sections so their total token count fits within budget."""
+        """Compress sections to fit budget by greedy water-filling, highest priority first.
+
+        Sections are grouped by priority (descending). A group that fits entirely
+        in the remaining budget is kept verbatim; the first group that does not
+        fit shares the remainder proportionally by size; lower-priority groups
+        are replaced with an omission placeholder.
+        """
         total = sum(t for _, t in section_tokens)
         fitted: dict[str, str] = {}
         if total <= budget:
             for s, _ in section_tokens:
                 fitted[s.name] = s.text
             return fitted
+
+        groups: dict[int, list[tuple[PromptSection, int]]] = {}
         for s, t in section_tokens:
-            target = max(int(budget * (t / total)), 1)
-            if t <= target:
-                fitted[s.name] = s.text
-            else:
-                fitted[s.name] = self._compress_text(s.text, target)
+            groups.setdefault(s.priority, []).append((s, t))
+
+        remaining = budget
+        for priority in sorted(groups, reverse=True):
+            group = groups[priority]
+            group_total = sum(t for _, t in group)
+            if remaining <= 0:
+                for s, _ in group:
+                    fitted[s.name] = f"（{s.name} 因上下文限制已省略）"
+                continue
+            if group_total <= remaining:
+                for s, _ in group:
+                    fitted[s.name] = s.text
+                remaining -= group_total
+                continue
+            # The first group that does not fit shares the remainder by size.
+            for s, t in group:
+                target = max(int(remaining * (t / group_total)), 1)
+                if t <= target:
+                    fitted[s.name] = s.text
+                else:
+                    fitted[s.name] = self._compress_text(s.text, target)
+            remaining = 0
         return fitted
 
     def _compress_text(self, text: str, target_tokens: int) -> str:

@@ -15,21 +15,12 @@
 （空）
 
 # 已完成的改进项
-(保留最近项目，完成项目放到finished_improvement.md中)
+(保留最近项目，完成项目放到finished_improvement.md中；35-44 已迁移归档)
 
-35. ✅ **测试共享 PG 状态隔离**：`tests/conftest.py` 新增 function 级 fixture `reset_pg_state`，每个 PG 测试前 `TRUNCATE ... RESTART IDENTITY CASCADE` 8 张业务表并重跑 `seed()`；4 个 PG 测试文件以 `pytestmark = usefixtures` 启用；顺带删除 `test_select_dimensions_uses_core_flag` 的错误还原（dim2 seed 原值是 `core=TRUE`）与 `test_user_identity_crud` 的手动还原。已验证乱序、单文件、连跑两次均无残留。
-36. ✅ **删除废弃脚本 `scripts/ingest_personality.py`**：硬编码旧版人格维度/台词，功能被 `mr-data ingest` 完全覆盖，全仓库零引用。
-37. ✅ **统一 LLM 结构化输出调用**：合并为统一核心入口 `structured_chat(messages, response_format)`（内置降级+warning 日志+端点能力缓存），`chat_structured` 保留为语法糖，删除 `structured_chat_with_messages`；新增配置 `llm_structured_mode`（auto/parse/prompt）；降级解析新增 `_extract_json`（围栏剥离+首个 JSON 子串提取）；6 个调用点统一迁移，`_think`/web_filter 白得降级能力；新增 `tests/test_llm_structured.py` 10 用例（全量 74 passed, 1 skipped）。
-38. ✅ **吞错点统一补 warning 级结构化日志**：（略，详见 finished_improvement.md）
-39. ✅ **统一 source_type 声明与实现**：（略，详见 finished_improvement.md）
-40. ✅ **测试 Chroma 改内存模式提速**：（略，详见 finished_improvement.md）
-41. ✅ **测试 pgembed 集群跨运行复用**：（略，详见 finished_improvement.md）
-42. ✅ **Chroma 写入路径幂等性统一**：（略，详见 finished_improvement.md）
-43. ✅ **离线归因 PG 侧会话级事务**：`PostgresStore` 新增 `transaction()` 上下文管理器（实例级 `_tx_conn`，嵌套事务抛错），事务态下 `_cursor` 读写复用同一连接并抑制逐方法 commit，非事务态行为逐字节不变；`AttributionEngine.run()` 将 `_apply` + `mark_dialogue_processed` 循环包入事务（LLM 调用在事务外），崩溃整体回滚、会话保持 unprocessed 留待重跑，修复计数翻倍/审计双份；Chroma 侧不可回滚靠稳定 id 幂等自愈（语义已写入 database-design.md）；新增 `tests/test_attribution_transaction.py` 4 用例。
-44. ✅ **web 提取成功后真实 URL 重定 id（方案 D）**：（略，详见 finished_improvement.md）
 45. ✅ **在线 `_log_dialogue` 事务化**：4 步 PG 写包入 `pg.transaction()`，中途失败整体回滚不留脏数据；Chroma upsert 留事务外；新增 `tests/test_log_dialogue_transaction.py` 2 用例。
 46. ✅ **config 路径锚定项目根 + 数据目录配置项**：默认路径不再相对 CWD；新增 `MR_DATA_DATA_DIR`；新增 `tests/test_config_paths.py` 5 用例。
 47. ✅ **Chroma 重建防丢数据（导出+报告+恢复 CLI）**：mismatch 删除前先导出 JSON 备份（导出失败阻止删除）、重建后打印报告；新增 `mr-data chroma-restore`；新增 `tests/test_chroma_backup.py` 4 用例（全量 106 passed, 1 skipped）。
+48. ✅ **Prompt 预算分配 priority 梯度生效（贪心注水）**：`_compress_to_budget` 超预算分支改为按 priority 降序分层注水——高优先级组整组原文保留，首个装不下的组按体积分摊剩余，预算耗尽的组输出省略占位符；must_keep 极端超预算分支顺带变为 100→90→80 降序注水；新增 `tests/test_prompt_assembly.py` 5 用例（全量 111 passed, 1 skipped）。
 
 # 未来可选增强(计划中)
 
@@ -41,8 +32,7 @@
 2. 降级路径可加「解析失败重试一次」，本次未加
 3. chat_structured 主路径可改用 message.parsed 替代 json.loads，本次为控制 diff 保持现状
 
-3. 读一下 review/group_reviews/G10_文档与配置.md 这里提到多处文档没有更新，发起子agent确认问题，属实的话发起子agent修复，你作为管理者，核验修复结果。
-5.  ┌───┬────────────────────────┬────────────────────────────┬────────┬─────────────────────┐
+1.  ┌───┬────────────────────────┬────────────────────────────┬────────┬─────────────────────┐
   │ # │ 数据                   │ PG                         │ Chroma │ Chroma 删了能找回吗 │
   ├───┼────────────────────────┼────────────────────────────┼────────┼─────────────────────┤
   │ 1 │ 对话原文（用户+助手）  │ ✅ dialogue_logs           │ —      │ —                   │
@@ -53,3 +43,8 @@
   │ 6 │ 事件总结 event_summary │ ❌ 无任何记录              │ ✅     │ ❌ 永久丢失         │
   └───┴────────────────────────┴────────────────────────────┴────────┴─────────────────────┘
 在离线处理时，event_summary没有加到pg里面。这里具体的逻辑还没有看。不过这个似乎应该加到pg作为一个新的维度。这部分需要先看代码，再说。
+2. 用户打分部分
+  采集端src/mr_data/cli.py：退出会话时问一次, 而不是每轮对话问一次, 评分，评论可选
+  使用端：在离线处理时，llm对性格维度评分时，参考会话的打分，还有评论（如果有，可能包含对某些性格模式的批评，就需要对改性格减分。也可能反过来）
+  存储端：看看pg是否需要适配上面的调整
+3. 读一下 review/group_reviews/G10_文档与配置.md 这里提到多处文档没有更新，发起子agent确认问题，属实的话发起子agent修复，你作为管理者，核验修复结果。

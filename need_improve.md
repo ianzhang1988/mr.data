@@ -23,6 +23,7 @@
 48. ✅ **Prompt 预算分配 priority 梯度生效（贪心注水）**：`_compress_to_budget` 超预算分支改为按 priority 降序分层注水——高优先级组整组原文保留，首个装不下的组按体积分摊剩余，预算耗尽的组输出省略占位符；must_keep 极端超预算分支顺带变为 100→90→80 降序注水；新增 `tests/test_prompt_assembly.py` 5 用例（全量 111 passed, 1 skipped）。
 49. ✅ **落库 metadata 全面 schema 类化**：新增 `DialogueLogMetadata`（PG jsonb）、`PersonalityDocMetadata`（personality 集合，CSV↔list[int] 转换集中）、`DialogueMemoryMetadata`/`WebMemoryMetadata`（memories 集合两套形态）4 个 schema 类；`add_memory`/`upsert_memory` 参数收紧为模型 Union；新增 `tests/test_metadata_schema.py`，陈旧测试形态对齐（全量 118 passed, 1 skipped）。
 50. ✅ **event_summary 写入 PG adjustment_logs**：`adjustment_logs` 加列 `event_summary TEXT`（幂等迁移），`AdjustmentLog`/`insert_adjustment`/`_apply` 贯通，与 delta 一一对应；新增 `tests/test_event_summary_pg.py` 2 用例。
+51. ✅ **归因上下文 `_build_context` 重构**：维度按「本次会话激活（新增 `list_session_dimension_ids`，源自 dialogue_dimension_refs）/ 其余活跃（对照去重）」分组；删除向量库人格素材检索段；内心独白改从 PG `metadata.inner_monologue` 并入 transcript 逐行展示，`read_session_events` think 日志段落删除；system prompt 同步；新增 `tests/test_attribution_context.py` 4 用例（全量 122 passed, 1 skipped）。
 
 # 未来可选增强(计划中)
 
@@ -35,20 +36,7 @@
 3. chat_structured 主路径可改用 message.parsed 替代 json.loads，本次为控制 diff 保持现状
 4. metadata schema 化残留（改进 49 范围外）：web doc 管道流转裸 dict（search_providers/web_filter/graph）与 DialogueState 的 list[dict] 粒度；chunk_dialogue_logs 内部 chunk dict key 名（first_log_id）与落库 metadata（first_dialogue_log_id）不一致；collection 级配置 metadata 无类；increment_memory_recall 就地 dict 修改未走模型
 
-1.
-attribution.py 中 _build_context, 注意下面代码 ## 后的问题
-```
-        return f"""{identity_text}
-
-当前活跃的性格维度：
-{dim_text}  ## 应该分成两组，当前会话激活的，和剩余的，作为推到新性格时去重的工具
-
-与本次会话相关的人格素材（来自向量库）：
-{personality_text if personality_text else '（暂无）'} ## 没有必要放在这里。
-助手在本次会话中的思考过程（检索查询、内心独白等）： ## 只有内心独白部分有实际作用，而且应该和对话放在一起，而不是这里
-{thought_text if thought_text else '（暂无）'}
-""".strip()
-```
+5. `AttributionEngine.log_dir` 构造参数沦为死参数（改进 51 后仅兼容现有调用点）；`logging.read_session_events` 成为无调用方函数，可考虑删除
 2. attribution.py 中,
   1. 这两条用于发现新的性格维度的prompt是不是太单薄了，description这个名字也不清晰，而system中处理描述新的性格外，应该明确的让llm把新增的理由填写到对应字段。
   另外，还有个严重的问题，这种方式，可能和原来接近的性格，考虑再增加一次llm调用判断新增的是否和原来的重合，直接加到数据库，有膨胀的风险。

@@ -542,6 +542,20 @@ class PostgresStore:
                     (dialogue_log_id, dim_id),
                 )
 
+    def list_session_dimension_ids(self, session_id: str) -> list[int]:
+        """Return distinct dimension ids actually selected in the given session."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT r.dimension_id FROM dialogue_dimension_refs r
+                JOIN dialogue_logs l ON l.id = r.dialogue_log_id
+                WHERE l.session_id = %s
+                ORDER BY r.dimension_id
+                """,
+                (session_id,),
+            )
+            return [row["dimension_id"] for row in cur.fetchall()]
+
     def insert_dialogue_vector_refs(
         self, dialogue_log_id: int, refs: list[DialogueVectorRef]
     ) -> None:

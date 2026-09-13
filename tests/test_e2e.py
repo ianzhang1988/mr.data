@@ -1,6 +1,3 @@
-import json
-from pathlib import Path
-
 import pytest
 
 from mr_data.config import settings
@@ -119,24 +116,12 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_sto
             content="测试回复",
             evaluation_score=1,
             evaluation_feedback="不错",
+            metadata=DialogueLogMetadata(inner_monologue="用户似乎在测试我"),
         )
     )
 
     # Close the session before running attribution
     pg.close_session(test_session_id)
-
-    # Seed a structured thought log so attribution can read assistant thinking process.
-    log_file = Path(temp_log_dir) / "mr-data.log"
-    thought_entry = {
-        "timestamp": "2026-01-01T00:00:00+00:00",
-        "level": "INFO",
-        "logger": "mr_data.online",
-        "event": "think.query_generated",
-        "message": "Generated retrieval query",
-        "session_id": test_session_id,
-        "details": {"query": "测试查询", "inner_monologue": "用户似乎在测试我"},
-    }
-    log_file.write_text(json.dumps(thought_entry, ensure_ascii=False) + "\n", encoding="utf-8")
 
     engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir)
     engine.run()

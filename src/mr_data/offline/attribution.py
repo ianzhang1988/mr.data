@@ -12,7 +12,7 @@ from mr_data.db.chroma import (
     event_doc_id,
 )
 from mr_data.llm import LLMClient
-from mr_data.logging import get_logger, read_session_events
+from mr_data.logging import get_logger
 from mr_data.models import (
     AdjustmentLog,
     DialogueLog,
@@ -158,35 +158,28 @@ class AttributionEngine:
         lines = []
         for log in sorted_logs:
             label = "user" if log.role == "user" else "assistant"
+            monologue = log.metadata.inner_monologue if log.metadata else None
+            if log.role == "assistant" and monologue:
+                label = f"assistant（内心独白：{monologue}）"
             lines.append(f"{label}: {log.content}")
         return "\n".join(lines)
 
-    def _load_session_thoughts(self, session_id: str) -> list[dict[str, Any]]:
-        return read_session_events(session_id, event_prefix="think.", log_dir=self.log_dir)
-
-    def _build_context(self, session_id: str, transcript: str) -> str:
+    def _build_context(self, session_id: str) -> str:
         identity = self.pg.get_identity()
         dimensions = self.pg.list_dimensions(active_only=True)
 
-        dim_text = "\n".join(
-            f"- [{dim.id}] {dim.description} (成功 {dim.success_count} / 失败 {dim.failure_count})"
-            for dim in dimensions
-        )
+        activated_ids = set(self.pg.list_session_dimension_ids(session_id))
 
-        # Retrieve relevant historical personality materials using the transcript as query.
-        query = transcript[:500] if transcript else session_id
-        retrieved = self.chroma.query_personality(query, top_k=settings.personality_retrieval_top_k)
-        personality_text = "\n".join(
-            f"- [{', '.join(str(d) for d in doc['metadata'].get('dimension_ids', []))}] {doc['page_content']}"
-            for doc in retrieved
-        )
+        def render(dims: list) -> str:
+            return "\n".join(
+                f"- [{dim.id}] {dim.description} (成功 {dim.success_count} / 失败 {dim.failure_count})"
+                for dim in dims
+            )
 
-        # Load assistant thinking process from structured logs.
-        thoughts = self._load_session_thoughts(session_id)
-        thought_text = "\n".join(
-            f"- [{t.get('event')}] {t.get('details', {})}"
-            for t in thoughts
-        )
+        activated = [d for d in dimensions if d.id in activated_ids]
+        remaining = [d for d in dimensions if d.id not in activated_ids]
+        activated_text = render(activated) if activated else "（无记录）"
+        remaining_text = render(remaining) if remaining else "（无）"
 
         identity_text = ""
         if identity:
@@ -199,25 +192,22 @@ class AttributionEngine:
 
         return f"""{identity_text}
 
-当前活跃的性格维度：
-{dim_text}
+本次会话中实际激活的性格维度：
+{activated_text}
 
-与本次会话相关的人格素材（来自向量库）：
-{personality_text if personality_text else '（暂无）'}
-
-助手在本次会话中的思考过程（检索查询、内心独白等）：
-{thought_text if thought_text else '（暂无）'}
+其余活跃的性格维度（新增维度前请先对照去重）：
+{remaining_text}
 """.strip()
 
     def _attribute_session(self, session_id: str, logs: list[DialogueLog]) -> Optional[AttributionResult]:
         transcript = self._build_transcript(logs)
-        context = self._build_context(session_id, transcript)
+        context = self._build_context(session_id)
 
-        system = """你是对话归因分析器。请阅读下面提供的完整会话记录，并结合人设、当前性格维度、历史人格素材以及助手的思考过程，完成以下任务：
+        system = """你是对话归因分析器。请阅读下面提供的完整会话记录（assistant 行附该轮的内心独白），并结合人设、性格维度分组（本次会话激活/其余活跃），完成以下任务：
 1. 判断哪些性格维度促成了成功或失败。
 2. 如果维度已存在，给出其 dimension_id（整数）；如果是新维度，给出 description（描述性自白）。
 3. 给出每个维度的 delta_success、delta_failure 和变化原因 reason。
-4. 针对每个维度变化，提取 0-N 条关键证据片段 evidence_snippets（原始对话、思考过程原文），并说明该证据与基础性格的关系 relation_to_personality（例如：体现、强化、违背、修正）。
+4. 针对每个维度变化，提取 0-N 条关键证据片段 evidence_snippets（原始对话、内心独白原文），并说明该证据与基础性格的关系 relation_to_personality（例如：体现、强化、违背、修正）。
 5. 如果某条对话值得记录为长期人格事件，请写 event_summary；否则留空。
 6. 使用 target_dialogue_log_id 标注该归因主要对应的 assistant 回复日志 ID（可选）。
 

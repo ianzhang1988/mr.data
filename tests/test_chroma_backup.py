@@ -16,7 +16,7 @@ import pytest
 from mr_data.config import settings
 from mr_data.db import ChromaStore
 from mr_data.db.chroma import event_doc_id
-from mr_data.models import PersonalityEvent
+from mr_data.models import DialogueMemoryMetadata, PersonalityEvent
 
 from conftest import FakeEmbedding
 
@@ -64,7 +64,7 @@ def _backup_files(tmp_path: Path) -> list[Path]:
 def test_mismatch_exports_backup_before_recreate(tmp_path, monkeypatch):
     store = _make_store(tmp_path / "chroma", dim=8)
     ids = _seed_personality(store)
-    store.add_memory("s1", "记忆内容", memory_id="mem:1", metadata={"recall_count": 2})
+    store.add_memory("s1", "记忆内容", memory_id="mem:1", metadata=DialogueMemoryMetadata(recall_count=2))
     assert store.personality.count() == 3
 
     # 新 dim 触发 mismatch → 自动备份并重建

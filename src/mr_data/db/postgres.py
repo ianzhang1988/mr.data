@@ -124,8 +124,11 @@ CREATE TABLE IF NOT EXISTS adjustment_logs (
     delta_failure INTEGER DEFAULT 0,
     reason TEXT NOT NULL,
     dialogue_log_id INTEGER REFERENCES dialogue_logs(id),
+    event_summary TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE adjustment_logs ADD COLUMN IF NOT EXISTS event_summary TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_adjustment_session ON adjustment_logs(session_id);
 
@@ -476,7 +479,7 @@ class PostgresStore:
                 """,
                 (log.session_id, log.role, log.content, log.evaluation_score,
                  log.evaluation_feedback, log.processed_for_attribution,
-                 json.dumps(log.metadata) if log.metadata is not None else None),
+                 json.dumps(log.metadata.model_dump(mode="json")) if log.metadata is not None else None),
             )
             return cur.fetchone()["id"]
 
@@ -597,9 +600,10 @@ class PostgresStore:
             cur.execute(
                 """
                 INSERT INTO adjustment_logs
-                (dimension_id, session_id, delta_success, delta_failure, reason, dialogue_log_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (dimension_id, session_id, delta_success, delta_failure, reason, dialogue_log_id,
+                 event_summary)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (adj.dimension_id, adj.session_id, adj.delta_success, adj.delta_failure,
-                 adj.reason, adj.dialogue_log_id),
+                 adj.reason, adj.dialogue_log_id, adj.event_summary),
             )

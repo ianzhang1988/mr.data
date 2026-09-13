@@ -13,7 +13,13 @@ from mr_data.db.chroma import (
 )
 from mr_data.llm import LLMClient
 from mr_data.logging import get_logger, read_session_events
-from mr_data.models import AdjustmentLog, DialogueLog, DialogueVectorRef, PersonalityEvent
+from mr_data.models import (
+    AdjustmentLog,
+    DialogueLog,
+    DialogueMemoryMetadata,
+    DialogueVectorRef,
+    PersonalityEvent,
+)
 
 
 class DimensionDelta(BaseModel):
@@ -273,11 +279,16 @@ class AttributionEngine:
                     delta_failure=delta.delta_failure,
                     reason=delta.reason,
                     dialogue_log_id=target_log_id,
+                    event_summary=delta.event_summary,
                 )
             )
             applied += 1
 
+            # 下面两个代码块的作用时“发育”性格向量库
+            #
+
             # Persist evidence snippets to personality collection.
+            # 这里筛选的是有价值对话，通过搜索对话上下文，返回agent当时的回答，作为有价值的参考
             if delta.evidence_snippets:
                 context = self._build_evidence_context(logs, target_log_id)
                 for snippet in delta.evidence_snippets:
@@ -306,6 +317,7 @@ class AttributionEngine:
                         )
 
             # Persist high-level event summary if provided.
+            # 这里是对pg中存在的维度，记录了维度的实际使用过程，作为后续性格的参考
             if delta.event_summary:
                 event = PersonalityEvent(
                     id=event_doc_id(target_log_id, dim_id, delta.event_summary),
@@ -363,16 +375,13 @@ class AttributionEngine:
                     chunk["last_log_id"],
                     chunk["content"],
                 ),
-                metadata={
-                    "source_type": "dialogue",
-                    "session_id": session_id,
-                    "chunk_index": chunk["chunk_index"],
-                    "first_dialogue_log_id": chunk["first_log_id"],
-                    "last_dialogue_log_id": chunk["last_log_id"],
-                    "recall_count": 0,
-                    "added_at": now,
-                    "last_recalled_at": "",
-                },
+                metadata=DialogueMemoryMetadata(
+                    session_id=session_id,
+                    chunk_index=chunk["chunk_index"],
+                    first_dialogue_log_id=chunk["first_log_id"],
+                    last_dialogue_log_id=chunk["last_log_id"],
+                    added_at=now,
+                ),
             )
 
     def _build_evidence_context(self, logs: list[DialogueLog], target_log_id: Optional[int]) -> str:

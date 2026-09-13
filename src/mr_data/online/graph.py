@@ -12,6 +12,7 @@ from mr_data.logging import get_logger
 from mr_data.models import (
     AssistantReply,
     DialogueLog,
+    DialogueLogMetadata,
     DialogueMessage,
     DialogueVectorRef,
     FixedIdentity,
@@ -22,6 +23,7 @@ from mr_data.models import (
     ThinkDecision,
     DimensionSelection,
     MemoryRelevanceFilterResult,
+    WebMemoryMetadata,
 )
 from mr_data.online.page_extract import PageExtractor
 from mr_data.online.search_providers import _stable_web_id
@@ -636,12 +638,13 @@ class DialogueGraph:
         # 4 步 PG 写入在同一事务内提交，中途失败整体回滚，避免留下脏数据。
         with self.pg.transaction():
             self.pg.insert_dialogue(
-                DialogueLog(session_id=session_id, role="user", content=user_input)
+                DialogueLog(session_id=session_id,
+                            role="user", content=user_input)
             )
-            assistant_metadata = {
-                "inner_monologue": inner_monologue,
-                "blocks": [block.model_dump() for block in state.get("reply_blocks", [])],
-            }
+            assistant_metadata = DialogueLogMetadata(
+                inner_monologue=inner_monologue,
+                blocks=state.get("reply_blocks", []),
+            )
             assistant_log_id = self.pg.insert_dialogue(
                 DialogueLog(
                     session_id=session_id,
@@ -695,14 +698,13 @@ class DialogueGraph:
                 session_id="",
                 content=memory_content,
                 memory_id=doc["id"],
-                metadata={
-                    "source_type": "web",
-                    "url": url,
-                    "title": title,
-                    "retrieved_at": retrieved_at,
-                    "retrieval_session_id": session_id,
-                    "query": retrieval_query,
-                },
+                metadata=WebMemoryMetadata(
+                    url=url,
+                    title=title,
+                    retrieved_at=retrieved_at,
+                    retrieval_session_id=session_id,
+                    query=retrieval_query,
+                ),
             )
 
         self.logger.info(
@@ -731,25 +733,17 @@ class DialogueGraph:
         logs = self.pg.get_recent_dialogues(session_id=session_id, limit=limit)
         messages: list[DialogueMessage] = []
         for log in sorted(logs, key=lambda x: x.created_at or 0):
-            meta = log.metadata or {}
+            meta = log.metadata
             if log.role == "user":
                 messages.append(DialogueMessage(
                     role="user", content=log.content))
             else:
-                blocks = [
-                    ReplyBlock(
-                        text=b.get("text", ""),
-                        references=[ReplyReference(**r)
-                                    for r in b.get("references", [])],
-                    )
-                    for b in meta.get("blocks", [])
-                ]
                 messages.append(
                     DialogueMessage(
                         role="assistant",
                         content=log.content,
-                        inner_monologue=meta.get("inner_monologue"),
-                        blocks=blocks,
+                        inner_monologue=meta.inner_monologue if meta else None,
+                        blocks=meta.blocks if meta else [],
                     )
                 )
         return messages

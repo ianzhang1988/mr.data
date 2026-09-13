@@ -7,9 +7,13 @@ from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.models import (
     DialogueLog,
+    DialogueLogMetadata,
+    DialogueMemoryMetadata,
     PersonalityDimension,
     PersonalityEvent,
     DialogueVectorRef,
+    ReplyBlock,
+    ReplyReference,
 )
 from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
@@ -429,24 +433,19 @@ def test_prune_stale_dialogue_memories(chroma_store):
     chroma_store.add_memory(
         session_id,
         "user: old stale dialogue",
-        metadata={
-            "source_type": "dialogue",
-            "session_id": session_id,
-            "recall_count": 0,
-            "added_at": old_time,
-            "last_recalled_at": old_time,
-        },
+        metadata=DialogueMemoryMetadata(
+            session_id=session_id,
+            added_at=old_time,
+            last_recalled_at=old_time,
+        ),
     )
     chroma_store.add_memory(
         session_id,
         "user: recent dialogue",
-        metadata={
-            "source_type": "dialogue",
-            "session_id": session_id,
-            "recall_count": 0,
-            "added_at": datetime.now(timezone.utc).isoformat(),
-            "last_recalled_at": "",
-        },
+        metadata=DialogueMemoryMetadata(
+            session_id=session_id,
+            added_at=datetime.now(timezone.utc).isoformat(),
+        ),
     )
 
     pruned = chroma_store.prune_stale_dialogue_memories(
@@ -515,8 +514,8 @@ def test_memory_relevance_filter(fake_llm, test_session_id, pg_available, chroma
     pg.seed()
     pg.create_session(test_session_id)
 
-    chroma_store.add_memory(test_session_id, "我喜欢蓝色", metadata={"source_type": "dialogue"})
-    chroma_store.add_memory(test_session_id, "今天天气很好", metadata={"source_type": "dialogue"})
+    chroma_store.add_memory(test_session_id, "我喜欢蓝色", metadata=DialogueMemoryMetadata(session_id=test_session_id))
+    chroma_store.add_memory(test_session_id, "今天天气很好", metadata=DialogueMemoryMetadata(session_id=test_session_id))
 
     original_chat_structured = fake_llm.chat_structured
 
@@ -716,12 +715,17 @@ def test_dialogue_log_metadata_roundtrip(pg_available):
     pg.seed()
     session_id = pg.create_session()
 
-    metadata = {
-        "inner_monologue": "我在思考",
-        "references": [
-            {"id": "web:abc", "source_type": "web", "summary": "参考摘要"}
+    metadata = DialogueLogMetadata(
+        inner_monologue="我在思考",
+        blocks=[
+            ReplyBlock(
+                text="回复块",
+                references=[
+                    ReplyReference(id="web:abc", source_type="web", summary="参考摘要")
+                ],
+            )
         ],
-    }
+    )
     log_id = pg.insert_dialogue(
         DialogueLog(
             session_id=session_id,
@@ -735,8 +739,8 @@ def test_dialogue_log_metadata_roundtrip(pg_available):
     found = next((log for log in logs if log.id == log_id), None)
     assert found is not None
     assert found.metadata is not None
-    assert found.metadata.get("inner_monologue") == "我在思考"
-    assert found.metadata.get("references")[0]["id"] == "web:abc"
+    assert found.metadata.inner_monologue == "我在思考"
+    assert found.metadata.blocks[0].references[0].id == "web:abc"
 
 
 def test_chat_loads_messages_from_postgres(

@@ -17,7 +17,7 @@ from mr_data.db.chroma import (
     event_doc_id,
     line_doc_id,
 )
-from mr_data.models import DialogueLog, PersonalityEvent
+from mr_data.models import DialogueLog, DialogueMemoryMetadata, PersonalityEvent
 from mr_data.offline import AttributionEngine
 from mr_data.offline.attribution import AttributionResult, DimensionDelta
 from mr_data.online.search_providers import _is_redirect_url, _stable_web_id
@@ -71,7 +71,7 @@ def test_add_memory_with_stable_id_preserves_metadata(chroma_store):
         "s1",
         "对话内容",
         memory_id=memory_id,
-        metadata={"source_type": "dialogue", "recall_count": 0, "added_at": "t0"},
+        metadata=DialogueMemoryMetadata(recall_count=0, added_at="t0"),
     )
     chroma_store.increment_memory_recall([memory_id])
 
@@ -80,7 +80,7 @@ def test_add_memory_with_stable_id_preserves_metadata(chroma_store):
         "s1",
         "对话内容",
         memory_id=memory_id,
-        metadata={"source_type": "dialogue", "recall_count": 0, "added_at": "t1"},
+        metadata=DialogueMemoryMetadata(recall_count=0, added_at="t1"),
     )
 
     assert chroma_store.memories.count() == 1

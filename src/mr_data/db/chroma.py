@@ -10,7 +10,12 @@ import chromadb
 from mr_data.config import settings
 from mr_data.embeddings import BGEMemoryEmbedding, NomicPersonalityEmbedding
 from mr_data.logging import get_logger
-from mr_data.models import PersonalityEvent
+from mr_data.models import (
+    DialogueMemoryMetadata,
+    PersonalityDocMetadata,
+    PersonalityEvent,
+    WebMemoryMetadata,
+)
 
 logger = get_logger("mr_data.chroma")
 
@@ -282,14 +287,14 @@ class ChromaStore:
             ids=[doc_id],
             documents=[prefixed_embedding_text],
             embeddings=[embedding],
-            metadatas=[{
-                "utterance": event.content,
-                "context": event.context or "",
-                "speaker": event.speaker or "assistant",
-                "dimension_ids": ",".join(str(d) for d in event.dimension_ids),
-                "source_type": event.source_type,
-                "source_id": event.source_id or doc_id,
-            }],
+            metadatas=[PersonalityDocMetadata(
+                utterance=event.content,
+                context=event.context or "",
+                speaker=event.speaker or "assistant",
+                dimension_ids=event.dimension_ids,
+                source_type=event.source_type,
+                source_id=event.source_id or doc_id,
+            ).to_chroma_metadata()],
         )
         return doc_id
 
@@ -300,16 +305,14 @@ class ChromaStore:
 
     def get_personality_event_ids_by_dimension(self, dimension_id: int) -> list[str]:
         """Return all personality doc IDs whose metadata includes the given dimension."""
-        target = str(dimension_id)
         # Chroma does not support substring matching on string metadata, so we
         # fetch ids/metadatas and filter locally. This is acceptable because the
         # personality collection is small and deactivation is infrequent.
         result = self.personality.get(include=["metadatas"])
         doc_ids = []
         for doc_id, metadata in zip(result["ids"], result["metadatas"]):
-            dim_ids_str = metadata.get("dimension_ids", "") if metadata else ""
-            dim_ids = [x for x in dim_ids_str.split(",") if x]
-            if target in dim_ids:
+            dim_ids = PersonalityDocMetadata.from_chroma_metadata(metadata).dimension_ids
+            if dimension_id in dim_ids:
                 doc_ids.append(doc_id)
         return doc_ids
 
@@ -320,7 +323,7 @@ class ChromaStore:
         docs = []
         for i in range(len(result["ids"][0])):
             metadata = result["metadatas"][0][i]
-            dim_ids_str = metadata.get("dimension_ids", "")
+            parsed = PersonalityDocMetadata.from_chroma_metadata(metadata)
             # Return the agent utterance as page_content, while preserving the
             # full context in metadata for callers that need it.
             docs.append({
@@ -328,7 +331,7 @@ class ChromaStore:
                 "page_content": metadata.get("utterance", result["documents"][0][i]),
                 "metadata": {
                     **metadata,
-                    "dimension_ids": [int(x) for x in dim_ids_str.split(",") if x],
+                    "dimension_ids": parsed.dimension_ids,
                 },
             })
         return docs
@@ -338,7 +341,7 @@ class ChromaStore:
         session_id: str,
         content: str,
         memory_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        metadata: Optional[DialogueMemoryMetadata | WebMemoryMetadata] = None,
     ) -> str:
         """Add a memory document. When the caller provides a (stable) memory_id,
         an existing document with that id is left untouched and its id returned,
@@ -348,7 +351,7 @@ class ChromaStore:
             return doc_id
         meta = {"session_id": session_id}
         if metadata:
-            meta.update(metadata)
+            meta.update(metadata.model_dump(exclude_none=True))
         embedding = self._memory_embedding_fn([content])[0]
         self.memories.add(
             ids=[doc_id],
@@ -363,12 +366,12 @@ class ChromaStore:
         session_id: str,
         content: str,
         memory_id: str,
-        metadata: Optional[dict] = None,
+        metadata: Optional[DialogueMemoryMetadata | WebMemoryMetadata] = None,
     ) -> str:
         """Upsert a memory document. Use this when the caller already has a stable id."""
         meta = {"session_id": session_id}
         if metadata:
-            meta.update(metadata)
+            meta.update(metadata.model_dump(exclude_none=True))
         embedding = self._memory_embedding_fn([content])[0]
         self.memories.upsert(
             ids=[memory_id],

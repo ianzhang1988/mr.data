@@ -100,6 +100,7 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | `evaluation_score` | INTEGER | 评估分数：-1（差）、0（中）、1（好），可为空 |
 | `evaluation_feedback` | TEXT | 评估反馈文字，可为空 |
 | `processed_for_attribution` | BOOLEAN | 是否已被离线归因处理，默认 FALSE |
+| `metadata` | JSONB | 助手回复的结构化元数据（仅 assistant 行），schema 见下文「落库 metadata schema」 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 
 ### 索引
@@ -166,7 +167,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 | 值 | 含义 | 写入位置 | 存储 |
 |------|------|----------|------|
 | `line` | ingest 的台词素材 | `cli.py`（`mr-data ingest`） | Chroma `personality` |
-| `event` | 离线归因的事件摘要 | `offline/attribution.py` | Chroma `personality` |
+| `event` | 离线归因的事件摘要 | `offline/attribution.py` | Chroma `personality` + PG `adjustment_logs.event_summary` |
 | `evidence` | 离线归因的证据片段 | `offline/attribution.py` | Chroma `personality` + 本表 |
 | `web` | 网络检索资料 | `online/search_providers.py`、`online/graph.py` | Chroma `memories` + 本表 |
 | `dialogue` | 会话分块沉淀的记忆 | `offline/attribution.py` | Chroma `memories` |
@@ -177,6 +178,25 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 2. **存储侧强校验**：`PersonalityEvent.source_type` 与 `DialogueVectorRef.source_type` 使用上述 Literal 别名，非规范值在模型构造时即报错。新写入路径必须复用这些别名，禁止字面量扩散。
 3. **LLM 边界宽松**：`ReplyReference.source_type`（回复引用）保持自由 `str`——该值由系统按检索结果覆盖填充（`graph.py` 的 `known_refs`），LLM 输出仅供参考，不做强校验以避免小模型输出不规范导致整个回复解析失败。
 4. **读取路径**：`chroma.prune_stale_dialogue_memories` 与 graph 中 recall_count 递增均按 `source_type == "dialogue"` 过滤；离线归因的 `_purge_dimension_vectors` 依赖本表回溯 `personality` 集合文档。
+
+---
+
+## 落库 metadata schema
+
+存储边界的裸 dict metadata 已全部类化，schema 定义在 `src/mr_data/models/personality.py`，读写两端的序列化/解析规则由模型方法收敛：
+
+| schema 类 | 存储位置 | 写入路径 | 说明 |
+|------|------|----------|------|
+| `DialogueLogMetadata` | PG `dialogue_logs.metadata`（JSONB） | `graph.py _log_dialogue` | `inner_monologue` + `blocks`（list[`ReplyBlock`]，含各块 `references`）；读回由 pydantic 自动从 JSONB dict validate，历史遗留行的顶层 `references` 等多余 key 被忽略 |
+| `PersonalityDocMetadata` | Chroma `personality` 集合 | `chroma.add_personality_event` | `utterance/context/speaker/source_type/source_id` + `dimension_ids`（领域形态 `list[int]`，落库时 `to_chroma_metadata()` 转 CSV 字符串，读回 `from_chroma_metadata()` 解析回 `list[int]`） |
+| `DialogueMemoryMetadata` | Chroma `memories` 集合 | `attribution._persist_session_memories` | `source_type="dialogue"` + `session_id/chunk_index/first/last_dialogue_log_id/recall_count/added_at/last_recalled_at` |
+| `WebMemoryMetadata` | Chroma `memories` 集合 | `graph.py _log_dialogue`（web 资料落库） | `source_type="web"` + `url/title/retrieved_at/retrieval_session_id/query` |
+
+规则：
+
+1. **存储侧强校验**：`add_memory`/`upsert_memory` 的 `metadata` 参数只接受 `DialogueMemoryMetadata | WebMemoryMetadata`，传裸 dict 在序列化时即报错；`DialogueLog.metadata` 类型为 `Optional[DialogueLogMetadata]`。
+2. **落库内容不变**：模型字段默认值与旧裸 dict 形态逐项对齐（如 `recall_count=0`、`last_recalled_at=""`），Chroma 落库 dict 的 key 集合与改造前一致；`model_dump(exclude_none=True)` 剔除未设置的 Optional 字段（Chroma 拒绝 None 值）。
+3. **范围只到存储边界**：web doc 管道流转的裸 dict（`search_providers`/`web_filter`/`graph` 中的 doc 字典）与 collection 级配置 metadata（embedding_dim/embedding_model）不做 schema 化。
 
 ---
 
@@ -215,6 +235,7 @@ Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等�
 | `delta_failure` | INTEGER | 失败计数变化 |
 | `reason` | TEXT | 原因 |
 | `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联对话 |
+| `event_summary` | TEXT | 归因事件摘要（与 delta 一一对应，可为空） |
 | `created_at` | TIMESTAMPTZ | |
 
 - 不再记录 `delta_value`（已移除 `current_value`）。
@@ -261,6 +282,7 @@ erDiagram
         int evaluation_score
         text evaluation_feedback
         boolean processed_for_attribution
+        jsonb metadata
         timestamptz created_at
     }
 
@@ -289,6 +311,7 @@ erDiagram
         int delta_failure
         text reason
         int dialogue_log_id FK
+        text event_summary
         timestamptz created_at
     }
 
@@ -313,6 +336,6 @@ erDiagram
 4. **会话结束**：用户输入 `/newsession` 或退出 CLI 时，当前 `sessions` 记录标记为 `closed`。
 5. **离线归因**：只读取状态为 `closed` 且包含未处理对话的会话，按会话分析后更新 `personality_dimensions`。
 6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
-7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词，供后续对话检索。`memories` 使用 BGE-base-zh-v1.5（768 维）。
+7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词（schema 见上文「落库 metadata schema」），供后续对话检索。`memories` 使用 BGE-base-zh-v1.5（768 维）。
 8. **人格素材向量库**：`personality` 集合使用 Nomic Embed Text v1.5 截断至 512 维；新增文档自动加 `search_document:` 前缀，查询自动加 `search_query:` 前缀。
 8. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。

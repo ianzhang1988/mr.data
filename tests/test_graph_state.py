@@ -12,7 +12,7 @@ import pytest
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore
-from mr_data.models import DialogueLog
+from mr_data.models import DialogueLog, DialogueLogMetadata
 from mr_data.online import DialogueGraph
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
@@ -147,7 +147,7 @@ def test_history_messages_not_duplicated(
             session_id=test_session_id,
             role="assistant",
             content="历史回答一",
-            metadata={"inner_monologue": None, "blocks": []},
+            metadata=DialogueLogMetadata(inner_monologue=None, blocks=[]),
         )
     )
 

@@ -21,6 +21,8 @@
 46. ✅ **config 路径锚定项目根 + 数据目录配置项**：默认路径不再相对 CWD；新增 `MR_DATA_DATA_DIR`；新增 `tests/test_config_paths.py` 5 用例。
 47. ✅ **Chroma 重建防丢数据（导出+报告+恢复 CLI）**：mismatch 删除前先导出 JSON 备份（导出失败阻止删除）、重建后打印报告；新增 `mr-data chroma-restore`；新增 `tests/test_chroma_backup.py` 4 用例（全量 106 passed, 1 skipped）。
 48. ✅ **Prompt 预算分配 priority 梯度生效（贪心注水）**：`_compress_to_budget` 超预算分支改为按 priority 降序分层注水——高优先级组整组原文保留，首个装不下的组按体积分摊剩余，预算耗尽的组输出省略占位符；must_keep 极端超预算分支顺带变为 100→90→80 降序注水；新增 `tests/test_prompt_assembly.py` 5 用例（全量 111 passed, 1 skipped）。
+49. ✅ **落库 metadata 全面 schema 类化**：新增 `DialogueLogMetadata`（PG jsonb）、`PersonalityDocMetadata`（personality 集合，CSV↔list[int] 转换集中）、`DialogueMemoryMetadata`/`WebMemoryMetadata`（memories 集合两套形态）4 个 schema 类；`add_memory`/`upsert_memory` 参数收紧为模型 Union；新增 `tests/test_metadata_schema.py`，陈旧测试形态对齐（全量 118 passed, 1 skipped）。
+50. ✅ **event_summary 写入 PG adjustment_logs**：`adjustment_logs` 加列 `event_summary TEXT`（幂等迁移），`AdjustmentLog`/`insert_adjustment`/`_apply` 贯通，与 delta 一一对应；新增 `tests/test_event_summary_pg.py` 2 用例。
 
 # 未来可选增强(计划中)
 
@@ -31,20 +33,43 @@
 3. 做成再cli命令/newsession时，触发 AttributionEngine.run(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
 2. 降级路径可加「解析失败重试一次」，本次未加
 3. chat_structured 主路径可改用 message.parsed 替代 json.loads，本次为控制 diff 保持现状
+4. metadata schema 化残留（改进 49 范围外）：web doc 管道流转裸 dict（search_providers/web_filter/graph）与 DialogueState 的 list[dict] 粒度；chunk_dialogue_logs 内部 chunk dict key 名（first_log_id）与落库 metadata（first_dialogue_log_id）不一致；collection 级配置 metadata 无类；increment_memory_recall 就地 dict 修改未走模型
 
-1.  ┌───┬────────────────────────┬────────────────────────────┬────────┬─────────────────────┐
-  │ # │ 数据                   │ PG                         │ Chroma │ Chroma 删了能找回吗 │
-  ├───┼────────────────────────┼────────────────────────────┼────────┼─────────────────────┤
-  │ 1 │ 对话原文（用户+助手）  │ ✅ dialogue_logs           │ —      │ —                   │
-  │ 2 │ 内心独白、回复引用     │ ✅ dialogue_logs.metadata  │ —      │ —                   │
-  │ 3 │ 权重调整（+0.1）及审计 │ ✅ adjustment_logs         │ —      │ —                   │
-  │ 4 │ 证据片段 evidence      │ ✅ vector_refs.content     │ ✅     │ ✅ 从 PG 重建       │
-  │ 5 │ 会话分块记忆           │ ✅（原文在 dialogue_logs） │ ✅     │ ✅ 重新分块         │
-  │ 6 │ 事件总结 event_summary │ ❌ 无任何记录              │ ✅     │ ❌ 永久丢失         │
-  └───┴────────────────────────┴────────────────────────────┴────────┴─────────────────────┘
-在离线处理时，event_summary没有加到pg里面。这里具体的逻辑还没有看。不过这个似乎应该加到pg作为一个新的维度。这部分需要先看代码，再说。
+1.
+attribution.py 中 _build_context, 注意下面代码 ## 后的问题
+```
+        return f"""{identity_text}
+
+当前活跃的性格维度：
+{dim_text}  ## 应该分成两组，当前会话激活的，和剩余的，作为推到新性格时去重的工具
+
+与本次会话相关的人格素材（来自向量库）：
+{personality_text if personality_text else '（暂无）'} ## 没有必要放在这里。
+助手在本次会话中的思考过程（检索查询、内心独白等）： ## 只有内心独白部分有实际作用，而且应该和对话放在一起，而不是这里
+{thought_text if thought_text else '（暂无）'}
+""".strip()
+```
+2. attribution.py 中,
+  1. 这两条用于发现新的性格维度的prompt是不是太单薄了，description这个名字也不清晰，而system中处理描述新的性格外，应该明确的让llm把新增的理由填写到对应字段。
+  另外，还有个严重的问题，这种方式，可能和原来接近的性格，考虑再增加一次llm调用判断新增的是否和原来的重合，直接加到数据库，有膨胀的风险。
+    - description: Optional[str] = Field(default=None, description="新建维度时的描述；与 dimension_id 二选一")
+    - system prompt中 如果维度已存在，给出其 dimension_id（整数）；如果是新维度，给出 description（描述性自白）。
+  2. attribute_session 中的system prompt，应该要求把推导出的性格收敛为3个。我希望的是筛选较强的关联，不要牵强的关系。新的维度生成也是，应该有明显的新的性格表现时。
+2. attribution.py
+  _build_transcript 拼行时带上日志 id（如 assistant[#123]: {content}），让 LLM 有据可依；对应后面的target_dialogue_log_id。同时检查一下，是否还有其他遗漏
+  从llm返回的所有数据库相关id要先验证,要考虑到llm容易幻觉id这类文本的摘取
+  target_log_id = delta.target_dialogue_log_id or fallback_assistant_id 这个兜底逻辑可能造成数据污染，尤其是对证据入库那部分，依赖这里生成查询key，不应该用fallback，应该跳过。
+  ① LLM 给的 id 不做校验，且能炸掉整个事务。 LLM 输出的 target_dialogue_log_id 没有验证"是否属于本 session、是否真实存在"。而 adjustment_logs.dialogue_log_id 有外键约束——LLM 幻觉一个不存在的 id 时，INSERT 触发 FK 违规，且 run()
+  里 _apply 的事务段（attribution.py:124-127）没有 try/except，异常会直接冒泡中断整个离线批处理。
+
+  ② None 的污染路径。 若 LLM 没给 id 且 session 里恰好没有 assistant 日志，target_log_id = None：
+  • adjustment_logs.dialogue_log_id 写入 NULL（列允许）；
+  • Chroma 的 evidence/event 文档照样写入，但 doc id 的哈希原料变成字符串 "None"，source_id 也是 "None"；
+  • 且 dialogue_vector_refs 因 if target_log_id is not None（attribution.py:294）跳过不写——产生"Chroma 有证据、PG 无反向引用"的孤儿文档（之前 review 文件里记的"内部问题 3：source_id 'None' 污染"就是这个）。
+  ③ 跨 session 串号无防护。 LLM 完全可能输出属于别的会话的 log id——代码不检查归属，于是 adjustment/vector_refs 会把 A 会话的归因挂到 B 会话的对话上；_build_evidence_context 虽然会因找不到而兜底，但 PG 里的关联已经错了。
 2. 用户打分部分
   采集端src/mr_data/cli.py：退出会话时问一次, 而不是每轮对话问一次, 评分，评论可选
   使用端：在离线处理时，llm对性格维度评分时，参考会话的打分，还有评论（如果有，可能包含对某些性格模式的批评，就需要对改性格减分。也可能反过来）
   存储端：看看pg是否需要适配上面的调整
+4. chroma性格库部分，增加召回时的记录，用来做淘汰等
 3. 读一下 review/group_reviews/G10_文档与配置.md 这里提到多处文档没有更新，发起子agent确认问题，属实的话发起子agent修复，你作为管理者，核验修复结果。

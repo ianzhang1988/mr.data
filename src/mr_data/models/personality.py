@@ -141,6 +141,13 @@ class Session(BaseModel):
     closed_at: Optional[datetime] = None
 
 
+class DialogueLogMetadata(BaseModel):
+    """`DialogueLog.metadata`（PG dialogue_logs.metadata JSONB）的落库 schema。"""
+
+    inner_monologue: Optional[str] = None
+    blocks: list[ReplyBlock] = Field(default_factory=list)
+
+
 class DialogueLog(BaseModel):
     id: Optional[int] = None
     session_id: str
@@ -149,7 +156,7 @@ class DialogueLog(BaseModel):
     evaluation_score: Optional[int] = None  # -1, 0, 1
     evaluation_feedback: Optional[str] = None
     processed_for_attribution: bool = False
-    metadata: Optional[dict] = None
+    metadata: Optional[DialogueLogMetadata] = None
     created_at: Optional[datetime] = None
 
 
@@ -170,6 +177,66 @@ class DialogueVectorRef(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class PersonalityDocMetadata(BaseModel):
+    """Chroma `personality` 集合文档的落库 metadata schema。"""
+
+    utterance: str
+    context: str = ""
+    speaker: str = "assistant"
+    dimension_ids: list[int] = Field(default_factory=list)  # 领域形态；落库为 CSV
+    source_type: PersonalitySourceType = "line"
+    source_id: str = ""
+
+    def to_chroma_metadata(self) -> dict:
+        """转为 Chroma 落库 dict（dimension_ids 逗号拼接）。"""
+        return {
+            "utterance": self.utterance,
+            "context": self.context,
+            "speaker": self.speaker,
+            "dimension_ids": ",".join(str(d) for d in self.dimension_ids),
+            "source_type": self.source_type,
+            "source_id": self.source_id,
+        }
+
+    @classmethod
+    def from_chroma_metadata(cls, meta: dict) -> "PersonalityDocMetadata":
+        """从 Chroma 读回的 dict 解析（dimension_ids CSV 还原为 list[int]）。"""
+        meta = meta or {}
+        dim_ids_str = meta.get("dimension_ids", "")
+        return cls(
+            utterance=meta.get("utterance", ""),
+            context=meta.get("context", ""),
+            speaker=meta.get("speaker", "assistant"),
+            dimension_ids=[int(x) for x in dim_ids_str.split(",") if x],
+            source_type=meta.get("source_type", "line"),
+            source_id=meta.get("source_id", ""),
+        )
+
+
+class DialogueMemoryMetadata(BaseModel):
+    """Chroma `memories` 集合对话分块记忆的落库 metadata schema。"""
+
+    source_type: Literal["dialogue"] = "dialogue"
+    session_id: str = ""
+    chunk_index: int = 0
+    first_dialogue_log_id: Optional[int] = None
+    last_dialogue_log_id: Optional[int] = None
+    recall_count: int = 0
+    added_at: str = ""
+    last_recalled_at: str = ""
+
+
+class WebMemoryMetadata(BaseModel):
+    """Chroma `memories` 集合网络资料记忆的落库 metadata schema。"""
+
+    source_type: Literal["web"] = "web"
+    url: str = ""
+    title: str = ""
+    retrieved_at: str = ""
+    retrieval_session_id: str = ""
+    query: str = ""
+
+
 class AdjustmentLog(BaseModel):
     id: Optional[int] = None
     dimension_id: int
@@ -178,6 +245,7 @@ class AdjustmentLog(BaseModel):
     delta_failure: int = 0
     reason: str
     dialogue_log_id: Optional[int] = None
+    event_summary: Optional[str] = None
     created_at: Optional[datetime] = None
 
 

@@ -16,13 +16,14 @@ from mr_data.offline import AttributionEngine
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 
-def _setup_closed_session(pg: PostgresStore, session_id: str) -> None:
+def _setup_closed_session(pg: PostgresStore, session_id: str) -> int:
     pg.create_session(session_id)
     pg.insert_dialogue(DialogueLog(session_id=session_id, role="user", content="测试输入"))
-    pg.insert_dialogue(
+    assistant_id = pg.insert_dialogue(
         DialogueLog(session_id=session_id, role="assistant", content="测试回复")
     )
     pg.close_session(session_id)
+    return assistant_id
 
 
 def _adjustment_count(pg: PostgresStore) -> int:
@@ -89,7 +90,9 @@ def test_crash_on_vector_refs_rolls_back_pg_writes(
     pg = PostgresStore()
     pg.init_schema()
     pg.seed()
-    _setup_closed_session(pg, test_session_id)
+    assistant_id = _setup_closed_session(pg, test_session_id)
+    # 改进 54 移除 fallback 后，需显式给归因 target 才能走到 vector refs 崩溃点。
+    fake_llm.attribution_target_log_id = assistant_id
 
     dim = pg.get_dimension(1)
     base_success = dim.success_count

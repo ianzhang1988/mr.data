@@ -159,9 +159,11 @@ class AttributionEngine:
         lines = []
         for log in sorted_logs:
             label = "user" if log.role == "user" else "assistant"
+            if log.id is not None:
+                label += f"[#{log.id}]"
             monologue = log.metadata.inner_monologue if log.metadata else None
             if log.role == "assistant" and monologue:
-                label = f"assistant（内心独白：{monologue}）"
+                label += f"（内心独白：{monologue}）"
             lines.append(f"{label}: {log.content}")
         return "\n".join(lines)
 
@@ -210,7 +212,7 @@ class AttributionEngine:
 3. 给出每个维度的 delta_success、delta_failure 和变化原因 reason。
 4. 针对每个维度变化，提取 0-N 条关键证据片段 evidence_snippets（原始对话、内心独白原文），并说明该证据与基础性格的关系 relation_to_personality（例如：体现、强化、违背、修正）。
 5. 如果某条对话值得记录为长期人格事件，请写 event_summary；否则留空。
-6. 使用 target_dialogue_log_id 标注该归因主要对应的 assistant 回复日志 ID（可选）。
+6. 使用 target_dialogue_log_id 标注该归因主要对应的 assistant 回复日志 ID（必须取自 transcript 中 assistant 行的 [#编号]，没有明确对应时留空）。
 7. 最终输出的 deltas 最多 3 条：只保留与本会话有强关联的维度变化，按关联强度降序排列；证据不足、牵强的关联不要输出。
 
 请严格按 JSON 格式返回，不要输出任何其他内容：
@@ -238,10 +240,53 @@ class AttributionEngine:
             )
             return None
 
-        # 事务外：新维度重合判断（防维度膨胀），随后按配置截断为最强 N 条。
+        # 事务外：新维度重合判断（防维度膨胀），随后按配置截断为最强 N 条，
+        # 最后校验 LLM 返回的数据库相关 id（防幻觉 id 触发外键违规/串号污染）。
         self._dedup_new_dimensions(session_id, parsed)
         parsed.deltas = parsed.deltas[: settings.offline_max_deltas_per_session]
+        self._validate_delta_ids(session_id, logs, parsed)
         return parsed
+
+    def _validate_delta_ids(
+        self, session_id: str, logs: list[DialogueLog], result: AttributionResult
+    ) -> None:
+        """校验 LLM 返回的数据库相关 id，非法 id 就地置 None 并记 warning。
+
+        - dimension_id 必须在活跃维度白名单内（否则 adjustment_logs 的外键
+          会在事务内炸掉整个离线批处理）；
+        - target_dialogue_log_id 必须是本会话 assistant 行的日志 id（防幻觉、
+          防指向 user 行、防跨 session 串号）。
+        """
+        assistant_ids = {
+            log.id for log in logs if log.role == "assistant" and log.id is not None
+        }
+        active_dim_ids = {
+            d.id for d in self.pg.list_dimensions(active_only=True) if d.id is not None
+        }
+        for delta in result.deltas:
+            if delta.dimension_id is not None and delta.dimension_id not in active_dim_ids:
+                self.logger.warning(
+                    "LLM returned unknown dimension id, discarded",
+                    extra={
+                        "event": "offline.invalid_dimension_id",
+                        "session_id": session_id,
+                        "details": {"dimension_id": delta.dimension_id},
+                    },
+                )
+                delta.dimension_id = None
+            if (
+                delta.target_dialogue_log_id is not None
+                and delta.target_dialogue_log_id not in assistant_ids
+            ):
+                self.logger.warning(
+                    "LLM returned invalid target dialogue log id, discarded",
+                    extra={
+                        "event": "offline.invalid_target_log_id",
+                        "session_id": session_id,
+                        "details": {"target_dialogue_log_id": delta.target_dialogue_log_id},
+                    },
+                )
+                delta.target_dialogue_log_id = None
 
     def _dedup_new_dimensions(self, session_id: str, result: AttributionResult) -> None:
         """对候选新维度做一次批量 LLM 重合判断（事务外调用）。
@@ -340,13 +385,9 @@ class AttributionEngine:
             delta.new_dimension_reason = None
 
     def _apply(self, result: AttributionResult, session_id: str, logs: list[DialogueLog]) -> int:
-        # Precompute a fallback assistant log id for evidence that lacks an explicit target.
+        # 不再提供 fallback target：无有效 target 时证据/事件不写向量库，
+        # 避免 doc id 哈希原料与 source_id 被 "None" 污染（改进 54）。
         sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
-        fallback_assistant_id: Optional[int] = None
-        for log in reversed(sorted_logs):
-            if log.role == "assistant" and log.id is not None:
-                fallback_assistant_id = log.id
-                break
 
         applied = 0
         for delta in result.deltas:
@@ -369,7 +410,7 @@ class AttributionEngine:
             if dim_id is None:
                 continue
 
-            target_log_id = delta.target_dialogue_log_id or fallback_assistant_id
+            target_log_id = delta.target_dialogue_log_id
 
             self.pg.update_dimension(
                 dim_id,
@@ -394,7 +435,7 @@ class AttributionEngine:
 
             # Persist evidence snippets to personality collection.
             # 这里筛选的是有价值对话，通过搜索对话上下文，返回agent当时的回答，作为有价值的参考
-            if delta.evidence_snippets:
+            if delta.evidence_snippets and target_log_id is not None:
                 context = self._build_evidence_context(logs, target_log_id)
                 for snippet in delta.evidence_snippets:
                     event = PersonalityEvent(
@@ -407,23 +448,31 @@ class AttributionEngine:
                         source_id=str(target_log_id),
                     )
                     doc_id = self.chroma.add_personality_event(event)
-                    if target_log_id is not None:
-                        self.pg.insert_dialogue_vector_refs(
-                            target_log_id,
-                            [
-                                DialogueVectorRef(
-                                    dialogue_log_id=target_log_id,
-                                    vector_doc_id=doc_id,
-                                    source_type="evidence",
-                                    content=snippet,
-                                    dimension_ids=[dim_id],
-                                )
-                            ],
-                        )
+                    self.pg.insert_dialogue_vector_refs(
+                        target_log_id,
+                        [
+                            DialogueVectorRef(
+                                dialogue_log_id=target_log_id,
+                                vector_doc_id=doc_id,
+                                source_type="evidence",
+                                content=snippet,
+                                dimension_ids=[dim_id],
+                            )
+                        ],
+                    )
+            elif delta.evidence_snippets:
+                self.logger.info(
+                    "Evidence snippets skipped: no valid target dialogue log id",
+                    extra={
+                        "event": "offline.evidence_skipped_no_target",
+                        "session_id": session_id,
+                        "details": {"dimension_id": dim_id},
+                    },
+                )
 
             # Persist high-level event summary if provided.
             # 这里是对pg中存在的维度，记录了维度的实际使用过程，作为后续性格的参考
-            if delta.event_summary:
+            if delta.event_summary and target_log_id is not None:
                 event = PersonalityEvent(
                     id=event_doc_id(target_log_id, dim_id, delta.event_summary),
                     content=delta.event_summary,
@@ -432,6 +481,15 @@ class AttributionEngine:
                     source_id=str(target_log_id),
                 )
                 self.chroma.add_personality_event(event)
+            elif delta.event_summary:
+                self.logger.info(
+                    "Event summary skipped: no valid target dialogue log id",
+                    extra={
+                        "event": "offline.evidence_skipped_no_target",
+                        "session_id": session_id,
+                        "details": {"dimension_id": dim_id},
+                    },
+                )
 
             # Check pruning threshold. Core dimensions stay active for stability.
             dim = self.pg.get_dimension(dim_id)
@@ -489,10 +547,8 @@ class AttributionEngine:
                 ),
             )
 
-    def _build_evidence_context(self, logs: list[DialogueLog], target_log_id: Optional[int]) -> str:
+    def _build_evidence_context(self, logs: list[DialogueLog], target_log_id: int) -> str:
         """Build a short transcript context around the target dialogue log."""
-        if target_log_id is None:
-            return self._build_transcript(logs)
         sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
         try:
             idx = next(i for i, log in enumerate(sorted_logs) if log.id == target_log_id)

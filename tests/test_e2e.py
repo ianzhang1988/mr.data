@@ -123,6 +123,9 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_sto
     # Close the session before running attribution
     pg.close_session(test_session_id)
 
+    # 改进 54 移除 fallback 后，需显式指定归因 target 才会写 evidence/vector_refs。
+    fake_llm.attribution_target_log_id = assistant_id
+
     engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
     engine.run()
 

@@ -25,6 +25,9 @@ class FakeLLMClient(LLMClient):
 
     def __init__(self):
         super().__init__(base_url="http://fake", api_key="fake", model="fake")
+        # 改进 54 移除了 target 的 fallback：需要 evidence/vector_refs 落库的测试
+        # 必须在插入对话后把它设为实际的 assistant 日志 id（否则归因无 target）。
+        self.attribution_target_log_id = None
 
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
         if "性格维度选择助手" in system_prompt:
@@ -43,6 +46,7 @@ class FakeLLMClient(LLMClient):
                         "reason": "测试归因原因",
                         "evidence_snippets": ["user: 测试输入\nassistant: 测试回复"],
                         "relation_to_personality": "体现",
+                        "target_dialogue_log_id": self.attribution_target_log_id,
                     }
                 ]
             })
@@ -74,6 +78,7 @@ class FakeLLMClient(LLMClient):
                         "reason": "测试归因原因",
                         "evidence_snippets": ["user: 测试输入\nassistant: 测试回复"],
                         "relation_to_personality": "体现",
+                        "target_dialogue_log_id": self.attribution_target_log_id,
                     }
                 ]
             }

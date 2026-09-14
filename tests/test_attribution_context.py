@@ -85,14 +85,14 @@ def test_transcript_inlines_inner_monologue(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    _insert_turn(pg, test_session_id, monologue="用户似乎在测试我")
+    assistant_id = _insert_turn(pg, test_session_id, monologue="用户似乎在测试我")
     logs = pg.get_recent_dialogues(session_id=test_session_id)
 
     engine = _make_engine(pg, chroma_store, fake_llm)
     transcript = engine._build_transcript(logs)
 
-    assert "assistant（内心独白：用户似乎在测试我）: 测试回复" in transcript
-    assert "user: 测试输入" in transcript
+    assert f"assistant[#{assistant_id}]（内心独白：用户似乎在测试我）: 测试回复" in transcript
+    assert "user[#" in transcript and ": 测试输入" in transcript
 
 
 def test_list_session_dimension_ids_isolated_across_sessions(

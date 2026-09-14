@@ -12,7 +12,7 @@ import pytest
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore
-from mr_data.models import DialogueLog, DialogueLogMetadata
+from mr_data.models import DialogueLog, DialogueLogMetadata, WebDoc, WebDocMetadata
 from mr_data.online import DialogueGraph
 
 from conftest import FakeLLMClient
@@ -21,10 +21,10 @@ pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 
 class FakeWebSearch:
-    def __init__(self, docs: list[dict]):
+    def __init__(self, docs: list[WebDoc]):
         self._docs = docs
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         return self._docs
 
 
@@ -66,24 +66,22 @@ def test_web_doc_filtering_not_undone_by_state_merge(
     kept_id = "web:kept"
     dropped_id = "web:dropped"
     docs = [
-        {
-            "id": kept_id,
-            "page_content": "太阳系有八大行星",
-            "metadata": {
-                "source_type": "web",
-                "url": "http://example.com/planets",
-                "title": "行星",
-            },
-        },
-        {
-            "id": dropped_id,
-            "page_content": "完全无关的蛋糕食谱",
-            "metadata": {
-                "source_type": "web",
-                "url": "http://example.com/cake",
-                "title": "蛋糕",
-            },
-        },
+        WebDoc(
+            id=kept_id,
+            page_content="太阳系有八大行星",
+            metadata=WebDocMetadata(
+                url="http://example.com/planets",
+                title="行星",
+            ),
+        ),
+        WebDoc(
+            id=dropped_id,
+            page_content="完全无关的蛋糕食谱",
+            metadata=WebDocMetadata(
+                url="http://example.com/cake",
+                title="蛋糕",
+            ),
+        ),
     ]
 
     original_chat_structured = fake_llm.chat_structured

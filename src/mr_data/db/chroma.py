@@ -6,12 +6,16 @@ from pathlib import Path
 from typing import Optional
 
 import chromadb
+from pydantic import ValidationError
 
 from mr_data.config import settings
 from mr_data.embeddings import BGEMemoryEmbedding, NomicPersonalityEmbedding
 from mr_data.logging import get_logger
 from mr_data.models import (
+    CollectionMetadata,
     DialogueMemoryMetadata,
+    MemoryDoc,
+    PersonalityDoc,
     PersonalityDocMetadata,
     PersonalityEvent,
     WebMemoryMetadata,
@@ -47,11 +51,11 @@ def line_doc_id(speaker: Optional[str], content: str, context: Optional[str] = N
 
 
 def dialogue_chunk_memory_id(
-    session_id: str, first_log_id, last_log_id, content: str
+    session_id: str, first_dialogue_log_id, last_dialogue_log_id, content: str
 ) -> str:
     """Stable id for a dialogue chunk persisted to the memory collection."""
     return _stable_doc_id(
-        "dialogue", session_id, str(first_log_id), str(last_log_id), content
+        "dialogue", session_id, str(first_dialogue_log_id), str(last_dialogue_log_id), content
     )
 
 
@@ -151,9 +155,9 @@ class ChromaStore:
             coll = None
 
         if coll is not None:
-            meta = coll.metadata or {}
-            existing_dim = meta.get("embedding_dim")
-            existing_model = meta.get("embedding_model")
+            meta = CollectionMetadata.model_validate(coll.metadata or {})
+            existing_dim = meta.embedding_dim
+            existing_model = meta.embedding_model
             if existing_dim is None or existing_dim != dim or existing_model != model_name:
                 if settings.chroma_recreate_on_mismatch:
                     # Export a backup FIRST; if it fails, the RuntimeError propagates
@@ -186,11 +190,9 @@ class ChromaStore:
         if coll is None:
             coll = self._client.create_collection(
                 name=name,
-                metadata={
-                    "hnsw:space": "cosine",
-                    "embedding_dim": dim,
-                    "embedding_model": model_name,
-                },
+                metadata=CollectionMetadata(
+                    embedding_dim=dim, embedding_model=model_name
+                ).model_dump(by_alias=True, exclude_none=True),
             )
         if backup_path is not None:
             print(
@@ -316,7 +318,7 @@ class ChromaStore:
                 doc_ids.append(doc_id)
         return doc_ids
 
-    def query_personality(self, query: str, top_k: int = 5) -> list[dict]:
+    def query_personality(self, query: str, top_k: int = 5) -> list[PersonalityDoc]:
         prefixed_query = f"search_query: {query}"
         query_embedding = self._personality_embedding_fn([prefixed_query])[0]
         result = self.personality.query(query_embeddings=[query_embedding], n_results=top_k)
@@ -326,14 +328,13 @@ class ChromaStore:
             parsed = PersonalityDocMetadata.from_chroma_metadata(metadata)
             # Return the agent utterance as page_content, while preserving the
             # full context in metadata for callers that need it.
-            docs.append({
-                "id": result["ids"][0][i],
-                "page_content": metadata.get("utterance", result["documents"][0][i]),
-                "metadata": {
-                    **metadata,
-                    "dimension_ids": parsed.dimension_ids,
-                },
-            })
+            docs.append(
+                PersonalityDoc(
+                    id=result["ids"][0][i],
+                    page_content=metadata.get("utterance", result["documents"][0][i]),
+                    metadata=parsed,
+                )
+            )
         return docs
 
     def add_memory(
@@ -381,19 +382,29 @@ class ChromaStore:
         )
         return memory_id
 
-    def query_memories(self, query: str, session_id: Optional[str] = None, top_k: int = 5) -> list[dict]:
+    def query_memories(self, query: str, session_id: Optional[str] = None, top_k: int = 5) -> list[MemoryDoc]:
         where = {"session_id": session_id} if session_id else None
         prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
         query_embedding = self._memory_embedding_fn([prefixed_query])[0]
         result = self.memories.query(query_embeddings=[query_embedding], n_results=top_k, where=where)
         docs = []
         for i in range(len(result["ids"][0])):
-            docs.append({
-                "id": result["ids"][0][i],
-                "page_content": result["documents"][0][i],
-                "metadata": result["metadatas"][0][i],
-            })
+            docs.append(
+                MemoryDoc(
+                    id=result["ids"][0][i],
+                    page_content=result["documents"][0][i],
+                    metadata=self._memory_metadata_from_raw(result["metadatas"][0][i]),
+                )
+            )
         return docs
+
+    @staticmethod
+    def _memory_metadata_from_raw(raw) -> DialogueMemoryMetadata | WebMemoryMetadata:
+        """按 source_type 判别解析 memories 集合的裸 metadata（两种形态之一）。"""
+        raw = raw or {}
+        if raw.get("source_type") == "dialogue":
+            return DialogueMemoryMetadata.model_validate(raw)
+        return WebMemoryMetadata.model_validate(raw)
 
     def increment_memory_recall(self, doc_ids: list[str]) -> None:
         """Increment recall_count and update last_recalled_at for dialogue memories."""
@@ -407,14 +418,28 @@ class ChromaStore:
         for metadata in result.get("metadatas", []):
             if metadata is None:
                 metadata = {}
-            count = metadata.get("recall_count", 0)
-            try:
-                count = int(count) + 1
-            except (TypeError, ValueError):
-                count = 1
-            metadata["recall_count"] = count
-            metadata["last_recalled_at"] = now
-            new_metadatas.append(metadata)
+            if metadata.get("source_type") == "dialogue":
+                # 经模型读-改-写，落库 key 集与改进 49 锁定一致
+                try:
+                    count = int(metadata.get("recall_count", 0))
+                except (TypeError, ValueError):
+                    count = 0
+                meta = DialogueMemoryMetadata.model_validate(
+                    {**metadata, "recall_count": count}
+                )
+                meta.recall_count += 1
+                meta.last_recalled_at = now
+                new_metadatas.append(meta.model_dump(exclude_none=True))
+            else:
+                # 非 dialogue 记忆（web 资料）无 recall 字段语义，保留原裸 dict 容错路径
+                count = metadata.get("recall_count", 0)
+                try:
+                    count = int(count) + 1
+                except (TypeError, ValueError):
+                    count = 1
+                metadata["recall_count"] = count
+                metadata["last_recalled_at"] = now
+                new_metadatas.append(metadata)
         if new_metadatas:
             self.memories.update(ids=unique_ids, metadatas=new_metadatas)
 
@@ -443,22 +468,24 @@ class ChromaStore:
         for doc_id, metadata in zip(result.get("ids", []), result.get("metadatas", [])):
             if metadata is None:
                 continue
-            count = metadata.get("recall_count", 0)
             try:
-                count = int(count)
+                count = int(metadata.get("recall_count", 0))
             except (TypeError, ValueError):
                 count = 0
-            last_recalled = metadata.get("last_recalled_at", "")
-            if not last_recalled:
-                # Never recalled; use added_at as fallback if available.
-                last_recalled = metadata.get("added_at", "")
+            try:
+                meta = DialogueMemoryMetadata.model_validate(
+                    {**metadata, "recall_count": count}
+                )
+            except ValidationError:
+                continue
+            last_recalled = meta.last_recalled_at or meta.added_at
             try:
                 last_dt = datetime.fromisoformat(last_recalled)
                 if last_dt.tzinfo is None:
                     last_dt = last_dt.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
                 continue
-            if last_dt < cutoff and count < min_recall_count:
+            if last_dt < cutoff and meta.recall_count < min_recall_count:
                 ids_to_delete.append(doc_id)
 
         if ids_to_delete:

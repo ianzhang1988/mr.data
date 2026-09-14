@@ -6,11 +6,14 @@ from mr_data.models import (
     DialogueLog,
     DialogueLogMetadata,
     DialogueMemoryMetadata,
+    MemoryDoc,
     PersonalityDimension,
     PersonalityEvent,
     DialogueVectorRef,
     ReplyBlock,
     ReplyReference,
+    WebDoc,
+    WebDocMetadata,
 )
 from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
@@ -32,8 +35,8 @@ def test_chroma_personality(chroma_store):
     assert doc_id
 
     docs = store.query_personality("测试")
-    assert any("测试事件" in d["page_content"] for d in docs)
-    assert any(1 in d["metadata"]["dimension_ids"] for d in docs)
+    assert any("测试事件" in d.page_content for d in docs)
+    assert any(1 in d.metadata.dimension_ids for d in docs)
 
 
 def test_chroma_personality_context(chroma_store):
@@ -49,9 +52,9 @@ def test_chroma_personality_context(chroma_store):
 
     # Query by context should return the utterance, not the full context.
     docs = store.query_personality("异常值", top_k=5)
-    assert any("这是 mr.data 的台词" in d["page_content"] for d in docs)
-    assert all("user:" not in d["page_content"] for d in docs)
-    assert docs[0]["metadata"].get("context")
+    assert any("这是 mr.data 的台词" in d.page_content for d in docs)
+    assert all("user:" not in d.page_content for d in docs)
+    assert docs[0].metadata.context
 
 
 def test_chroma_memories(chroma_store):
@@ -61,7 +64,7 @@ def test_chroma_memories(chroma_store):
 
     docs = store.query_memories("你好", session_id="s1")
     assert len(docs) >= 1
-    assert any("你好" in d["page_content"] for d in docs)
+    assert any("你好" in d.page_content for d in docs)
 
 
 def test_postgres_schema_and_seed(pg_available):
@@ -133,7 +136,7 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_sto
 
     # Evidence should be written to the personality collection and linked via vector refs.
     personality_docs = chroma_store.query_personality("测试回复", top_k=10)
-    assert any("测试回复" in doc["page_content"] for doc in personality_docs)
+    assert any("测试回复" in doc.page_content for doc in personality_docs)
 
     refs = pg.get_dialogue_vector_refs_by_dimension(1)
     assert any(ref.dialogue_log_id == assistant_id for ref in refs)
@@ -171,17 +174,16 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
     expected_web_id = hashlib.sha256("http://example.com/planets".encode("utf-8")).hexdigest()
 
     class FakeWebSearch:
-        def search(self, query: str) -> list[dict]:
+        def search(self, query: str) -> list[WebDoc]:
             return [
-                {
-                    "id": expected_web_id,
-                    "page_content": "太阳系有八大行星",
-                    "metadata": {
-                        "source_type": "web",
-                        "url": "http://example.com/planets",
-                        "title": "行星",
-                    },
-                }
+                WebDoc(
+                    id=expected_web_id,
+                    page_content="太阳系有八大行星",
+                    metadata=WebDocMetadata(
+                        url="http://example.com/planets",
+                        title="行星",
+                    ),
+                )
             ]
 
     pg = PostgresStore()
@@ -213,10 +215,10 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
 
     # Web memories are global knowledge, not scoped to a single session.
     docs = chroma_store.query_memories("八大行星", top_k=10)
-    assert any("八大行星" in d["page_content"] for d in docs)
-    assert any(d["metadata"].get("source_type") == "web" for d in docs)
-    assert any(d["metadata"].get("url") == "http://example.com/planets" for d in docs)
-    assert any(d["id"] == expected_web_id for d in docs)
+    assert any("八大行星" in d.page_content for d in docs)
+    assert any(d.metadata.source_type == "web" for d in docs)
+    assert any(d.metadata.url == "http://example.com/planets" for d in docs)
+    assert any(d.id == expected_web_id for d in docs)
 
 
 def test_full_session_lifecycle(fake_llm, pg_available, chroma_store, temp_log_dir):
@@ -406,9 +408,9 @@ def test_dialogue_memories_recall_count(
     assert reply
 
     docs = chroma_store.query_memories("测试输入", session_id=test_session_id, top_k=10)
-    dialogue_docs = [d for d in docs if d["metadata"].get("source_type") == "dialogue"]
+    dialogue_docs = [d for d in docs if d.metadata.source_type == "dialogue"]
     assert dialogue_docs
-    assert any(d["metadata"].get("recall_count", 0) >= 1 for d in dialogue_docs)
+    assert any(d.metadata.recall_count >= 1 for d in dialogue_docs)
 
 
 def test_prune_stale_dialogue_memories(chroma_store):
@@ -441,7 +443,7 @@ def test_prune_stale_dialogue_memories(chroma_store):
     assert pruned == 1
 
     remaining = chroma_store.query_memories("dialogue", session_id=session_id, top_k=10)
-    assert all("old stale" not in d["page_content"] for d in remaining)
+    assert all("old stale" not in d.page_content for d in remaining)
 
 
 def test_global_memory_recall(
@@ -476,18 +478,18 @@ def test_global_memory_recall(
 
     memory_docs = final_state.get("memory_docs", [])
     assert any(
-        d.get("metadata", {}).get("session_id") == session_a
+        d.metadata.session_id == session_a
         for d in memory_docs
     ), "Session B should retrieve memory from session A"
 
     # The recalled session A dialogue memory should have its recall_count incremented.
     dialogue_docs = [
         d for d in memory_docs
-        if d.get("metadata", {}).get("session_id") == session_a
-        and d.get("metadata", {}).get("source_type") == "dialogue"
+        if d.metadata.session_id == session_a
+        and d.metadata.source_type == "dialogue"
     ]
     assert dialogue_docs
-    assert all(d["metadata"].get("recall_count", 0) >= 1 for d in dialogue_docs)
+    assert all(d.metadata.recall_count >= 1 for d in dialogue_docs)
 
 
 def test_memory_relevance_filter(fake_llm, test_session_id, pg_available, chroma_store, monkeypatch):
@@ -534,7 +536,7 @@ def test_memory_relevance_filter(fake_llm, test_session_id, pg_available, chroma
     )
 
     assert len(state["memory_docs"]) == 1
-    assert "蓝色" in state["memory_docs"][0]["page_content"]
+    assert "蓝色" in state["memory_docs"][0].page_content
 
 
 def test_assemble_and_generate_returns_references(
@@ -587,17 +589,16 @@ def test_assemble_and_generate_returns_references(
     monkeypatch.setattr(fake_llm, "structured_chat", _patched_structured_chat)
 
     class FakeWebSearch:
-        def search(self, query: str) -> list[dict]:
+        def search(self, query: str) -> list[WebDoc]:
             return [
-                {
-                    "id": "web:0",
-                    "page_content": "太阳系有八大行星",
-                    "metadata": {
-                        "source_type": "web",
-                        "url": "http://example.com/planets",
-                        "title": "行星",
-                    },
-                }
+                WebDoc(
+                    id="web:0",
+                    page_content="太阳系有八大行星",
+                    metadata=WebDocMetadata(
+                        url="http://example.com/planets",
+                        title="行星",
+                    ),
+                )
             ]
 
     graph = DialogueGraph(
@@ -629,17 +630,16 @@ def test_web_memory_uses_stable_id(fake_llm, pg_available, chroma_store, monkeyp
     expected_id = _stable_web_id(url)
 
     class FakeWebSearch:
-        def search(self, query: str) -> list[dict]:
+        def search(self, query: str) -> list[WebDoc]:
             return [
-                {
-                    "id": expected_id,
-                    "page_content": "太阳系有八大行星",
-                    "metadata": {
-                        "source_type": "web",
-                        "url": url,
-                        "title": "行星",
-                    },
-                }
+                WebDoc(
+                    id=expected_id,
+                    page_content="太阳系有八大行星",
+                    metadata=WebDocMetadata(
+                        url=url,
+                        title="行星",
+                    ),
+                )
             ]
 
     original_chat_structured = fake_llm.chat_structured
@@ -802,7 +802,7 @@ def test_assemble_respects_token_limit(
         "selected_dimension_ids": [],
         "personality_docs": [],
         "memory_docs": [
-            {"id": "m1", "page_content": "a" * 300, "metadata": {"source_type": "dialogue"}}
+            MemoryDoc(id="m1", page_content="a" * 300, metadata=DialogueMemoryMetadata())
         ],
         "messages": [],
         "web_docs": [],

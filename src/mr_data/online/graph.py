@@ -22,7 +22,10 @@ from mr_data.models import (
     ReplyReference,
     ThinkDecision,
     DimensionSelection,
+    MemoryDoc,
     MemoryRelevanceFilterResult,
+    PersonalityDoc,
+    WebDoc,
     WebMemoryMetadata,
 )
 from mr_data.online.page_extract import PageExtractor
@@ -73,9 +76,9 @@ class DialogueState(TypedDict, total=False):
     memory_query: str
     needs_web_search: bool
     search_query: Optional[str]
-    web_docs: list[dict]
-    personality_docs: list[dict]
-    memory_docs: list[dict]
+    web_docs: list[WebDoc]
+    personality_docs: list[PersonalityDoc]
+    memory_docs: list[MemoryDoc]
     messages: list[DialogueMessage]
     reply: str
     reply_blocks: list[ReplyBlock]
@@ -319,24 +322,22 @@ class DialogueGraph:
             return {**state, "web_docs": docs}
         extracted = []
         for doc in docs[:max_pages]:
-            url = doc.get("metadata", {}).get("url")
+            url = doc.metadata.url
             if not url:
                 extracted.append(doc)
                 continue
             result = self.page_extractor.extract(url)
             if result:
                 real_url = result.url
-                new_doc = {
-                    **doc,
+                new_doc = doc.model_copy(update={
                     "id": _stable_web_id(real_url),
-                    "page_content": f"{doc.get('metadata', {}).get('title', '')}\n{result.text}",
-                    "metadata": {
-                        **doc.get("metadata", {}),
+                    "page_content": f"{doc.metadata.title}\n{result.text}",
+                    "metadata": doc.metadata.model_copy(update={
                         "url": real_url,
                         "source_url": url,
                         "extracted": True,
-                    },
-                }
+                    }),
+                })
                 extracted.append(new_doc)
             else:
                 extracted.append(doc)
@@ -346,7 +347,7 @@ class DialogueGraph:
             extra={
                 "event": "retrieve.web_extracted",
                 "session_id": state["session_id"],
-                "details": {"attempted": len(docs[:max_pages]), "succeeded": sum(1 for d in extracted if d.get("metadata", {}).get("extracted"))},
+                "details": {"attempted": len(docs[:max_pages]), "succeeded": sum(1 for d in extracted if d.metadata.extracted)},
             },
         )
         return {**state, "web_docs": extracted}
@@ -389,18 +390,17 @@ class DialogueGraph:
             query, top_k=settings.memory_retrieval_top_k)
 
         dialogue_doc_ids = [
-            doc["id"] for doc in docs
-            if doc.get("metadata", {}).get("source_type") == "dialogue"
+            doc.id for doc in docs
+            if doc.metadata.source_type == "dialogue"
         ]
         if dialogue_doc_ids:
             now = datetime.now(timezone.utc).isoformat()
             self.chroma.increment_memory_recall(dialogue_doc_ids)
             # Reflect the updated recall_count in the state docs passed downstream.
             for doc in docs:
-                if doc.get("id") in dialogue_doc_ids:
-                    doc["metadata"]["recall_count"] = doc["metadata"].get(
-                        "recall_count", 0) + 1
-                    doc["metadata"]["last_recalled_at"] = now
+                if doc.id in dialogue_doc_ids:
+                    doc.metadata.recall_count += 1
+                    doc.metadata.last_recalled_at = now
         self.logger.info(
             "Retrieved memories",
             extra={
@@ -418,7 +418,7 @@ class DialogueGraph:
 
         user_input = state["user_input"]
         indexed_docs = [
-            (i, doc.get("page_content", "")[:1500]) for i, doc in enumerate(docs)
+            (i, doc.page_content[:1500]) for i, doc in enumerate(docs)
         ]
         items_text = "\n\n".join(
             f"[{idx}] {content}" for idx, content in indexed_docs
@@ -498,12 +498,11 @@ class DialogueGraph:
         user_input_text = f"用户说：{state['user_input']}"
 
         personality_text = "\n".join(
-            f"- [id: {d.get('id', 'unknown')}] [{d['metadata'].get(
-                'source_type', 'line')}] {d['page_content']}"
+            f"- [id: {d.id}] [{d.metadata.source_type}] {d.page_content}"
             for d in personality_docs
         )
         memory_text = "\n".join(
-            f"- [id: {d.get('id', 'unknown')}] {d['page_content']}"
+            f"- [id: {d.id}] {d.page_content}"
             for d in memory_docs
         )
         messages_text = "\n".join(
@@ -518,8 +517,7 @@ class DialogueGraph:
             for m in messages
         )
         web_text = "\n".join(
-            f"- [id: {d.get('id', 'unknown')
-                      }] [{d['metadata'].get('title', 'web')}] {d['page_content']}"
+            f"- [id: {d.id}] [{d.metadata.title or 'web'}] {d.page_content}"
             for d in web_docs
         )
 
@@ -545,13 +543,11 @@ class DialogueGraph:
 
         known_refs: dict[str, str] = {}
         for d in web_docs:
-            known_refs[d.get("id", "")] = "web"
+            known_refs[d.id] = "web"
         for d in personality_docs:
-            known_refs[d.get("id", "")] = d["metadata"].get(
-                "source_type", "line")
+            known_refs[d.id] = d.metadata.source_type
         for d in memory_docs:
-            known_refs[d.get("id", "")] = d["metadata"].get(
-                "source_type", "dialogue")
+            known_refs[d.id] = d.metadata.source_type
 
         guidance_text = (
             "你是助手，后续会出现多条 assistant 消息，其中包含给你参考的素材。"
@@ -676,19 +672,19 @@ class DialogueGraph:
             vector_refs = [
                 DialogueVectorRef(
                     dialogue_log_id=assistant_log_id,
-                    vector_doc_id=doc["id"],
-                    source_type=doc["metadata"].get("source_type", "line"),
-                    content=doc["page_content"],
-                    dimension_ids=doc["metadata"].get("dimension_ids", []),
+                    vector_doc_id=doc.id,
+                    source_type=doc.metadata.source_type,
+                    content=doc.page_content,
+                    dimension_ids=doc.metadata.dimension_ids,
                 )
                 for doc in personality_docs
             ]
             vector_refs += [
                 DialogueVectorRef(
                     dialogue_log_id=assistant_log_id,
-                    vector_doc_id=doc["id"],
+                    vector_doc_id=doc.id,
                     source_type="web",
-                    content=doc["page_content"],
+                    content=doc.page_content,
                     dimension_ids=[],
                 )
                 for doc in web_docs
@@ -699,15 +695,14 @@ class DialogueGraph:
         retrieval_query = state.get("retrieval_query", user_input)
         retrieved_at = datetime.now(timezone.utc).isoformat()
         for doc in web_docs:
-            metadata = doc.get("metadata", {})
-            title = metadata.get("title", "")
-            url = metadata.get("url", "")
-            content = doc.get("page_content", "")
+            title = doc.metadata.title
+            url = doc.metadata.url
+            content = doc.page_content
             memory_content = f"[网络资料] {title}\n{url}\n{content[:800]}"
             self.chroma.upsert_memory(
                 session_id="",
                 content=memory_content,
-                memory_id=doc["id"],
+                memory_id=doc.id,
                 metadata=WebMemoryMetadata(
                     url=url,
                     title=title,

@@ -1,4 +1,4 @@
-from mr_data.models import WebDocExtraction
+from mr_data.models import WebDoc, WebDocMetadata, WebDocExtraction
 from mr_data.online.web_filter import filter_web_docs
 
 
@@ -19,7 +19,7 @@ class FakeLLM:
 
 
 def make_doc(content, url="http://example.com"):
-    return {"page_content": content, "metadata": {"url": url}}
+    return WebDoc(page_content=content, metadata=WebDocMetadata(url=url))
 
 
 def test_relevant_doc_content_is_extracted():
@@ -29,9 +29,9 @@ def test_relevant_doc_content_is_extracted():
     result = filter_web_docs(llm, [doc], "用户输入")
 
     assert len(result) == 1
-    assert result[0]["page_content"] == "摘取后的内容"
-    assert result[0]["metadata"]["llm_extracted"] is True
-    assert result[0]["metadata"]["url"] == "http://example.com"
+    assert result[0].page_content == "摘取后的内容"
+    assert result[0].metadata.llm_extracted is True
+    assert result[0].metadata.url == "http://example.com"
 
 
 def test_irrelevant_doc_is_dropped():
@@ -45,7 +45,7 @@ def test_irrelevant_doc_is_dropped():
     result = filter_web_docs(llm, [relevant, irrelevant], "用户输入")
 
     assert len(result) == 1
-    assert result[0]["metadata"]["url"] == "http://a.com"
+    assert result[0].metadata.url == "http://a.com"
 
 
 def test_relevant_doc_with_empty_extraction_keeps_original():

@@ -5,6 +5,7 @@ import pytest
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore
+from mr_data.models import WebDoc, WebDocMetadata
 from mr_data.online import DialogueGraph
 from mr_data.online.page_extract import ExtractedPage
 from mr_data.online.search_providers import _stable_web_id
@@ -16,10 +17,10 @@ REAL_URL = "http://example.com/planets"
 
 
 class FakeWebSearch:
-    def __init__(self, docs: list[dict]):
+    def __init__(self, docs: list[WebDoc]):
         self._docs = docs
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         return self._docs
 
 
@@ -31,16 +32,12 @@ class FakePageExtractor:
         return self._result
 
 
-def _make_doc(url: str, title: str = "行星") -> dict:
-    return {
-        "id": _stable_web_id(url, "摘要", title),
-        "page_content": f"{title}\n摘要",
-        "metadata": {
-            "source_type": "web",
-            "url": url,
-            "title": title,
-        },
-    }
+def _make_doc(url: str, title: str = "行星") -> WebDoc:
+    return WebDoc(
+        id=_stable_web_id(url, "摘要", title),
+        page_content=f"{title}\n摘要",
+        metadata=WebDocMetadata(url=url, title=title),
+    )
 
 
 def _make_graph(pg, chroma_store, fake_llm, extractor, monkeypatch):
@@ -81,11 +78,11 @@ def test_extract_web_pages_reids_doc_with_real_url(
     )
 
     new_doc = state["web_docs"][0]
-    assert new_doc["id"] == _stable_web_id(REAL_URL)
-    assert new_doc["metadata"]["url"] == REAL_URL
-    assert new_doc["metadata"]["source_url"] == REDIRECT_URL
-    assert new_doc["metadata"]["extracted"] is True
-    assert new_doc["page_content"] == "行星\n全文内容"
+    assert new_doc.id == _stable_web_id(REAL_URL)
+    assert new_doc.metadata.url == REAL_URL
+    assert new_doc.metadata.source_url == REDIRECT_URL
+    assert new_doc.metadata.extracted is True
+    assert new_doc.page_content == "行星\n全文内容"
 
 
 def test_extract_web_pages_keeps_doc_when_extraction_fails(

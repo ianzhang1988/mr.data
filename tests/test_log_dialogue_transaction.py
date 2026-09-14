@@ -9,6 +9,12 @@
 import pytest
 
 from mr_data.db import PostgresStore
+from mr_data.models import (
+    PersonalityDoc,
+    PersonalityDocMetadata,
+    WebDoc,
+    WebDocMetadata,
+)
 from mr_data.online import DialogueGraph
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
@@ -24,22 +30,25 @@ def _build_state(pg: PostgresStore, session_id: str) -> dict:
         "dimensions": dimensions,
         "selected_dimension_ids": [d.id for d in dimensions if d.id is not None],
         "personality_docs": [
-            {
-                "id": "personality:tx-1",
-                "page_content": "人格素材内容",
-                "metadata": {"source_type": "line", "dimension_ids": [1]},
-            }
+            PersonalityDoc(
+                id="personality:tx-1",
+                page_content="人格素材内容",
+                metadata=PersonalityDocMetadata(
+                    utterance="人格素材内容",
+                    source_type="line",
+                    dimension_ids=[1],
+                ),
+            )
         ],
         "web_docs": [
-            {
-                "id": "web:tx-1",
-                "page_content": "网络资料内容",
-                "metadata": {
-                    "source_type": "web",
-                    "url": "http://example.com/tx",
-                    "title": "事务测试",
-                },
-            }
+            WebDoc(
+                id="web:tx-1",
+                page_content="网络资料内容",
+                metadata=WebDocMetadata(
+                    url="http://example.com/tx",
+                    title="事务测试",
+                ),
+            )
         ],
         "inner_monologue": "测试内心独白",
     }

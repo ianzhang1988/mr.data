@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 
 from mr_data.config import settings
 from mr_data.logging import get_logger
+from mr_data.models import WebDoc, WebDocMetadata
 
 logger = get_logger("mr_data.online")
 
@@ -45,22 +46,18 @@ def _stable_web_id(url: str, body: str = "", title: str = "") -> str:
     return f"web:{uuid.uuid4().hex}"
 
 
-def _to_doc_format(results: list[dict]) -> list[dict]:
+def _to_doc_format(results: list[dict]) -> list[WebDoc]:
     """Normalize provider-specific rows into the standard web-search doc format."""
     docs = []
     for r in results:
         title = r.get("title", "")
         body = r.get("body", "")
         url = r.get("url", "")
-        docs.append({
-            "id": _stable_web_id(url, body, title),
-            "page_content": f"{title}\n{body}",
-            "metadata": {
-                "source_type": "web",
-                "url": url,
-                "title": title,
-            },
-        })
+        docs.append(WebDoc(
+            id=_stable_web_id(url, body, title),
+            page_content=f"{title}\n{body}",
+            metadata=WebDocMetadata(url=url, title=title),
+        ))
     return docs
 
 
@@ -73,7 +70,7 @@ class SearchProvider(ABC):
         self.max_results = max_results or settings.web_search_max_results
 
     @abstractmethod
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         """Return a list of docs in the standard web-search format."""
         raise NotImplementedError
 
@@ -83,7 +80,7 @@ class DuckDuckGoProvider(SearchProvider):
 
     name = "duckduckgo"
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         try:
             from duckduckgo_search import DDGS
         except ImportError:
@@ -134,7 +131,7 @@ class SearxngProvider(SearchProvider):
         super().__init__(max_results)
         self.base_url = base_url or getattr(settings, "searxng_base_url", "")
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         if not self.base_url:
             logger.warning(
                 "SearXNG base URL is not configured",
@@ -189,7 +186,7 @@ class BraveProvider(SearchProvider):
         super().__init__(max_results)
         self.api_key = api_key or getattr(settings, "brave_api_key", "")
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         if not self.api_key:
             logger.warning(
                 "Brave API key is not configured",
@@ -247,7 +244,7 @@ class BingProvider(SearchProvider):
         super().__init__(max_results)
         self.api_key = api_key or getattr(settings, "bing_api_key", "")
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         if not self.api_key:
             logger.warning(
                 "Bing API key is not configured",
@@ -304,7 +301,7 @@ class GoogleCseProvider(SearchProvider):
         self.api_key = api_key or getattr(settings, "google_api_key", "")
         self.cse_id = cse_id or getattr(settings, "google_cse_id", "")
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         if not self.api_key or not self.cse_id:
             logger.warning(
                 "Google CSE API key or CSE ID is not configured",
@@ -355,7 +352,7 @@ class BaiduProvider(SearchProvider):
 
     BASE_URL = "https://www.baidu.com/s"
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         params = {"wd": query}
         try:
             resp = requests.get(
@@ -400,7 +397,7 @@ class Qihoo360Provider(SearchProvider):
 
     BASE_URL = "https://www.so.com/s"
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         params = {"q": query}
         try:
             resp = requests.get(

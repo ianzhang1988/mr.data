@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # 素材来源类型（source_type）唯一事实来源；详细约定见 doc/database-design.md
 # personality 集合：line / event / evidence；memories 集合：web / dialogue
@@ -246,7 +246,13 @@ class DialogueMemoryMetadata(BaseModel):
 
 
 class WebMemoryMetadata(BaseModel):
-    """Chroma `memories` 集合网络资料记忆的落库 metadata schema。"""
+    """Chroma `memories` 集合网络资料记忆的落库 metadata schema。
+
+    extra="allow"：落库时 add_memory 会并入位置参数 session_id（非本模型字段），
+    管道视图模型（MemoryDoc）validate 时保留该 key 供属性访问。
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     source_type: Literal["web"] = "web"
     url: str = ""
@@ -254,6 +260,65 @@ class WebMemoryMetadata(BaseModel):
     retrieved_at: str = ""
     retrieval_session_id: str = ""
     query: str = ""
+
+
+class WebDocMetadata(BaseModel):
+    """web 搜索文档在在线管道内流转时的 metadata schema。
+
+    extra="allow" 保留未来 Provider 扩展字段的兜底。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    source_type: Literal["web"] = "web"
+    url: str = ""
+    title: str = ""
+    source_url: Optional[str] = None  # extract 重定 id 前的原始跳转链接
+    extracted: bool = False
+    llm_extracted: bool = False
+
+
+class WebDoc(BaseModel):
+    """web 搜索文档的管道载体（LangChain Document 风格的三元组）。"""
+
+    id: str = ""  # web_filter 容忍无 id 的 doc
+    page_content: str = ""
+    metadata: WebDocMetadata = Field(default_factory=WebDocMetadata)
+
+
+class PersonalityDoc(BaseModel):
+    """Chroma `personality` 集合查询结果的管道载体。"""
+
+    id: str
+    page_content: str
+    metadata: PersonalityDocMetadata
+
+
+class MemoryDoc(BaseModel):
+    """Chroma `memories` 集合查询结果的管道载体（按 source_type 判别联合）。"""
+
+    id: str
+    page_content: str
+    metadata: DialogueMemoryMetadata | WebMemoryMetadata
+
+
+class CollectionMetadata(BaseModel):
+    """Chroma collection 级配置 metadata（维度/模型指纹）schema。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    hnsw_space: str = Field(default="cosine", alias="hnsw:space")
+    embedding_dim: Optional[int] = None
+    embedding_model: Optional[str] = None
+
+
+class DialogueChunk(BaseModel):
+    """离线归因对话记忆分块的中间态（字段名与 DialogueMemoryMetadata 对齐）。"""
+
+    content: str
+    chunk_index: int
+    first_dialogue_log_id: Optional[int] = None
+    last_dialogue_log_id: Optional[int] = None
 
 
 class AdjustmentLog(BaseModel):

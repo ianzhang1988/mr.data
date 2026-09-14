@@ -46,7 +46,7 @@ def test_attribution_failure_does_not_mark_processed(
 
     # No dialogue memories should have been written for the failed session.
     docs = chroma_store.query_memories("测试", session_id=test_session_id, top_k=10)
-    assert not any(d["metadata"].get("source_type") == "dialogue" for d in docs)
+    assert not any(d.metadata.source_type == "dialogue" for d in docs)
 
 
 def test_attribution_retry_after_failure(
@@ -84,6 +84,6 @@ def test_attribution_retry_after_failure(
 
     # Dialogue memories should now be persisted in chunked form.
     docs = chroma_store.query_memories("测试", session_id=test_session_id, top_k=10)
-    dialogue_docs = [d for d in docs if d["metadata"].get("source_type") == "dialogue"]
+    dialogue_docs = [d for d in docs if d.metadata.source_type == "dialogue"]
     assert dialogue_docs
-    assert all("chunk_index" in d["metadata"] for d in dialogue_docs)
+    assert all(hasattr(d.metadata, "chunk_index") for d in dialogue_docs)

@@ -15,6 +15,7 @@ from mr_data.llm import LLMClient
 from mr_data.logging import get_logger
 from mr_data.models import (
     AdjustmentLog,
+    DialogueChunk,
     DialogueLog,
     DialogueMemoryMetadata,
     DialogueVectorRef,
@@ -46,16 +47,15 @@ class AttributionResult(BaseModel):
 
 def chunk_dialogue_logs(
     logs: list[DialogueLog], max_chars: int, overlap_lines: int
-) -> list[dict]:
-    """把会话日志按字符预算分段，段间保留 overlap_lines 行重叠。
-    返回 [{"content", "chunk_index", "first_log_id", "last_log_id"}]。"""
+) -> list[DialogueChunk]:
+    """把会话日志按字符预算分段，段间保留 overlap_lines 行重叠。"""
     sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
     lines = [
         (f"{'user' if log.role == 'user' else 'assistant'}: {log.content}", log.id)
         for log in sorted_logs
     ]
 
-    chunks: list[dict] = []
+    chunks: list[DialogueChunk] = []
     cur_lines: list[str] = []  # 当前段的全部行（含 overlap 前缀）
     cur_ids: list[Any] = []  # 当前段实际覆盖的 log id（不含 overlap 行）
     cur_chars = 0  # 实际覆盖行的字符预算（不含 overlap 行）
@@ -65,12 +65,12 @@ def chunk_dialogue_logs(
         # 当前段为空（或仅剩 overlap 行）时该行直接成段，不截断内容。
         if cur_ids and cur_chars + len(line) > max_chars:
             chunks.append(
-                {
-                    "content": "\n".join(cur_lines),
-                    "chunk_index": len(chunks),
-                    "first_log_id": cur_ids[0],
-                    "last_log_id": cur_ids[-1],
-                }
+                DialogueChunk(
+                    content="\n".join(cur_lines),
+                    chunk_index=len(chunks),
+                    first_dialogue_log_id=cur_ids[0],
+                    last_dialogue_log_id=cur_ids[-1],
+                )
             )
             cur_lines = cur_lines[-overlap_lines:] if overlap_lines > 0 else []
             cur_ids = []
@@ -81,12 +81,12 @@ def chunk_dialogue_logs(
 
     if cur_ids:
         chunks.append(
-            {
-                "content": "\n".join(cur_lines),
-                "chunk_index": len(chunks),
-                "first_log_id": cur_ids[0],
-                "last_log_id": cur_ids[-1],
-            }
+            DialogueChunk(
+                content="\n".join(cur_lines),
+                chunk_index=len(chunks),
+                first_dialogue_log_id=cur_ids[0],
+                last_dialogue_log_id=cur_ids[-1],
+            )
         )
     return chunks
 
@@ -561,18 +561,18 @@ class AttributionEngine:
         for chunk in chunks:
             self.chroma.add_memory(
                 session_id,
-                chunk["content"],
+                chunk.content,
                 memory_id=dialogue_chunk_memory_id(
                     session_id,
-                    chunk["first_log_id"],
-                    chunk["last_log_id"],
-                    chunk["content"],
+                    chunk.first_dialogue_log_id,
+                    chunk.last_dialogue_log_id,
+                    chunk.content,
                 ),
                 metadata=DialogueMemoryMetadata(
                     session_id=session_id,
-                    chunk_index=chunk["chunk_index"],
-                    first_dialogue_log_id=chunk["first_log_id"],
-                    last_dialogue_log_id=chunk["last_log_id"],
+                    chunk_index=chunk.chunk_index,
+                    first_dialogue_log_id=chunk.first_dialogue_log_id,
+                    last_dialogue_log_id=chunk.last_dialogue_log_id,
                     added_at=now,
                 ),
             )

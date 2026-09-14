@@ -23,6 +23,7 @@
 55. ✅ **离线批处理会话级容错 + 在线维度选择幻觉 id 日志**：`run()` 的 `_apply` 事务段包 try/except——单会话崩溃回滚（transaction() 自动 rollback）留待重跑、记 warning（`offline.apply_failed`）并继续后续会话，`offline.completed` details 新增 `failed_sessions`；`run()` 不再传播单会话 apply 异常（两个既有 transaction 测试去 `pytest.raises` 改新语义），新增批处理容错用例（A 崩 B 正常、A 恢复重跑只应用一次）。在线侧经核实 `_select_dimensions` 白名单过滤**已存在**（graph.py:183-186），仅补 dropped ids warning（`personality.dimension_select_invalid_ids`）与幻觉 id 过滤测试。全量 136 passed, 1 skipped（基线 134 → +2）。
 56. ✅ **用户打分闭环（退出时会话级评分 → 离线归因参考）**：sessions 表新增 `rating`（-2..2）/ `rating_comment` 列与 `Session` 模型字段，`create_session` 同 id 复用时重置评分；新增 `update_session_rating`；cli.py 新增 `_ask_session_rating`（`/exit`/`/newsession`/Ctrl+C 退出时问一次评分+可选评论，空输入跳过、非法输入记 warning 跳过），移除 `--eval` 逐轮评分与无调用方的 `update_evaluation`；归因 `_build_context` 追加「用户对本会话的评价」段（无评分省略），system prompt 新增「用户评分是最直接成败信号」条款；新增 `tests/test_session_rating.py` 6 用例（全量 142 passed, 1 skipped）。
 57. ✅ **清理 dialogue_logs 逐轮评分残留列**：删除 `evaluation_score`/`evaluation_feedback`（改进 56 后只写 NULL、无人读取）——CREATE TABLE 定义、DROP COLUMN IF EXISTS 幂等迁移、`insert_dialogue` 列清单、`DialogueLog` 模型字段、test_e2e kwargs 全清；`doc/database-design.md` 同步（顺带补齐改进 56 的 sessions.rating/rating_comment 文档缺口）。全量 142 passed, 1 skipped 不变。
+58. ✅ **metadata schema 化残留收尾（web doc 管道 + collection metadata + recall 计数 + chunk log_id 改名）**：新增 `WebDocMetadata`/`WebDoc`/`PersonalityDoc`/`MemoryDoc`/`CollectionMetadata`/`DialogueChunk` 6 模型；web doc 管道（7 Provider→`_to_doc_format`→`filter_web_docs`→graph 各节点）与 DialogueState 三 doc 字段全部模型化，`model_copy` 不可变重建；collection 级 metadata 读写走 alias 模型；`increment_memory_recall`/`prune_stale_dialogue_memories` 走 `DialogueMemoryMetadata` 读-改-写；`chunk_dialogue_logs` 返回 `DialogueChunk`（字段名与落库 metadata 对齐，删改名映射）。全量 147 passed, 1 skipped。
 
 # 未来可选增强(计划中)
 
@@ -30,11 +31,10 @@
 - 更完善的日志查看/搜索 UI 或 CLI 命令。
 1. graph.py 中考虑到本地运行使用的模型，例如qwen3.5:9B，目前部分结构化输出对模型的压力可能太大了。我们需要一种兼容性的模式，根据配置来决定是否用复杂的结构化输出方式。（改进项 37 已落地 `llm_structured_mode` 配置与自动降级，剩余：复杂 schema 本身的精简，如块级引用嵌套结构的简化模式）, 我说的其实是model不能完成正确的json输出，甚至连格式都不能保证的情况下。要如何降级的问题。改进37没有处理这类问题的能力。
 2. 最后对话组装和生成的部分，是不是考虑做个独立codeagent？让他有更好的思考完成任务的机会，可以考虑再加上获取相关内容的能力
-3. 做成再cli命令/newsession时，触发 AttributionEngine.run(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
-2. 降级路径可加「解析失败重试一次」，本次未加
+3. 做成再cli命令/newsession时，触发 AttributionEngine.gun(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
 3. chat_structured 主路径可改用 message.pagsed 替代 json.loads，本次为控制 diff 保持现状
-4. metadata schema 化残留（改进 49 范围外）：web doc 管道流转裸 dict（search_providers/web_filter/graph）与 DialogueState 的 list[dict] 粒度；chunk_dialogue_logs 内部 chunk dict key 名（first_log_id）与落库 metadata（first_dialogue_log_id）不一致；collection 级配置 metadata 无类；increment_memory_recall 就地 dict 修改未走模型
 5. 检查现在配置和openapi调用，是否兼容deepseek
+4. 考虑性格向量库的更新问题
+  1. chroma性格库部分，增加召回时的记录，用来做淘汰等
 
-4. chroma性格库部分，增加召回时的记录，用来做淘汰等
-3. 读一下 review/group_reviews/G10_文档与配置.md 这里提到多处文档没有更新，发起子agent确认问题，属实的话发起子agent修复，你作为管理者，核验修复结果。
+3. .读一下 review/group_reviews/G10_文档与配置.md 这里提到多处文档没有更新，发起子agent确认问题，属实的话发起子agent修复，你作为管理者，核验修复结果。

@@ -1,5 +1,6 @@
 import pytest
 
+from mr_data.models import WebDoc, WebDocMetadata
 from mr_data.online.search_providers import SearchProvider
 from mr_data.online import web_search
 
@@ -10,17 +11,16 @@ class FakeSuccessProvider(SearchProvider):
     def __init__(self, max_results=None):
         self.max_results = max_results
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         return [
-            {
-                "id": "web:0",
-                "page_content": f"Success\n{query}",
-                "metadata": {
-                    "source_type": "web",
-                    "url": "https://example.com",
-                    "title": "Success",
-                },
-            }
+            WebDoc(
+                id="web:0",
+                page_content=f"Success\n{query}",
+                metadata=WebDocMetadata(
+                    url="https://example.com",
+                    title="Success",
+                ),
+            )
         ]
 
 
@@ -30,7 +30,7 @@ class FakeEmptyProvider(SearchProvider):
     def __init__(self, max_results=None):
         self.max_results = max_results
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         return []
 
 
@@ -40,7 +40,7 @@ class FakeErrorProvider(SearchProvider):
     def __init__(self, max_results=None):
         self.max_results = max_results
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         raise RuntimeError("boom")
 
 
@@ -65,21 +65,21 @@ def test_dispatcher_returns_first_successful_provider():
     tool = web_search.WebSearchTool(providers=["fake_success", "fake_empty"])
     results = tool.search("hello")
     assert len(results) == 1
-    assert results[0]["metadata"]["title"] == "Success"
+    assert results[0].metadata.title == "Success"
 
 
 def test_dispatcher_falls_back_when_first_is_empty():
     tool = web_search.WebSearchTool(providers=["fake_empty", "fake_success"])
     results = tool.search("hello")
     assert len(results) == 1
-    assert results[0]["metadata"]["title"] == "Success"
+    assert results[0].metadata.title == "Success"
 
 
 def test_dispatcher_falls_back_when_first_raises():
     tool = web_search.WebSearchTool(providers=["fake_error", "fake_success"])
     results = tool.search("hello")
     assert len(results) == 1
-    assert results[0]["metadata"]["title"] == "Success"
+    assert results[0].metadata.title == "Success"
 
 
 def test_dispatcher_skips_unknown_provider():
@@ -88,7 +88,7 @@ def test_dispatcher_skips_unknown_provider():
     )
     results = tool.search("hello")
     assert len(results) == 1
-    assert results[0]["metadata"]["title"] == "Success"
+    assert results[0].metadata.title == "Success"
 
 
 def test_dispatcher_returns_empty_when_all_fail():

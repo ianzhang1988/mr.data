@@ -2,6 +2,7 @@ from typing import Optional
 
 from mr_data.config import settings
 from mr_data.logging import get_logger
+from mr_data.models import WebDoc
 from mr_data.online.search_providers import (
     BaiduProvider,
     BingProvider,
@@ -43,7 +44,7 @@ class WebSearchTool:
             settings, "web_search_providers", ["duckduckgo"]
         )
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[WebDoc]:
         if not query or not query.strip():
             return []
 

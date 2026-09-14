@@ -31,6 +31,33 @@ def _ensure_session(pg: PostgresStore, session_id: Optional[str]) -> str:
     return pg.create_session()
 
 
+def _ask_session_rating(pg: PostgresStore, session_id: str) -> None:
+    """会话关闭前询问一次整体评分（-2..2）与可选评论，空输入跳过。"""
+    score_str = Prompt.ask(
+        "请为本会话评分：-2 很差 / -1 差 / 0 一般 / 1 好 / 2 很好（回车跳过）",
+        default="",
+    ).strip()
+    if not score_str:
+        return
+    try:
+        score = int(score_str)
+        if score not in (-2, -1, 0, 1, 2):
+            raise ValueError(score_str)
+    except ValueError:
+        rprint(f"[yellow]无效评分 {score_str!r}，已跳过记录。[/yellow]")
+        logger.warning(
+            "Invalid session rating input, skipped",
+            extra={
+                "event": "cli.session_rating_invalid",
+                "session_id": session_id,
+                "details": {"raw_input": score_str},
+            },
+        )
+        return
+    comment = Prompt.ask("评论（可选）", default="").strip()
+    pg.update_session_rating(session_id, score, comment or None)
+
+
 def _print_chat_help(pg: PostgresStore) -> None:
     current = pg.get_current_user_identity()
     current_text = f"{current.name}（{current.role}）" if current else "未设置"
@@ -40,9 +67,11 @@ def _print_chat_help(pg: PostgresStore) -> None:
   /newsession    结束当前会话并开始新会话
   /exit, /quit, /bye  退出对话
 
+  会话结束（/exit 或 /newsession）时会询问一次整体评分（-2..2）与可选评论，
+  供离线归因参考；直接回车可跳过。
+
 [bold]启动选项[/bold]
   --session-id TEXT    指定会话 ID
-  --eval               每轮回复后请求评价
   --web-search / --no-web-search  是否启用网络搜索 RAG
   --show-references / --hide-references  是否在回复后显示参考来源
 
@@ -64,7 +93,6 @@ def _print_chat_help(pg: PostgresStore) -> None:
 @app.command()
 def chat(
     session_id: str = typer.Option(None, "--session-id", help="Session ID for the conversation"),
-    eval_mode: bool = typer.Option(False, "--eval", help="Ask for evaluation feedback after each assistant reply"),
     web_search: bool = typer.Option(settings.enable_web_search, "--web-search/--no-web-search", help="Enable web search RAG"),
     show_references: bool = typer.Option(settings.show_references, "--show-references/--hide-references", help="Show reference sources after each reply"),
 ) -> None:
@@ -96,6 +124,7 @@ def chat(
                 continue
 
             if user_input.lower() == "/newsession":
+                _ask_session_rating(pg, current_session_id)
                 pg.close_session(current_session_id)
                 current_session_id = pg.create_session()
                 rprint(f"[dim]New session: {current_session_id}[/dim]\n")
@@ -116,28 +145,12 @@ def chat(
                 )
                 rprint()
 
-            if eval_mode:
-                score_str = Prompt.ask("Evaluate reply: -1 (bad) / 0 / 1 (good)", default="0")
-                feedback = Prompt.ask("Feedback (optional)", default="")
-                try:
-                    score = int(score_str)
-                except ValueError:
-                    score = None
-                    rprint(f"[yellow]Invalid score {score_str!r}, recorded as empty.[/yellow]")
-                    logger.warning(
-                        "Failed to parse evaluation score",
-                        extra={
-                            "event": "cli.eval_score_parse_failed",
-                            "session_id": current_session_id,
-                            "details": {"raw_input": score_str},
-                        },
-                    )
-                # Update the last assistant log with evaluation
-                recent = pg.get_recent_dialogues(session_id=current_session_id, limit=1)
-                if recent and recent[0].role == "assistant":
-                    pg.update_evaluation(recent[0].id, score, feedback)
     finally:
         # Ensure the active session is closed so offline attribution can process it.
+        try:
+            _ask_session_rating(pg, current_session_id)
+        except (EOFError, KeyboardInterrupt):
+            pass
         pg.close_session(current_session_id)
 
     rprint("[dim]Goodbye.[/dim]")

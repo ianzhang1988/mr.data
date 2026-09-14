@@ -23,6 +23,9 @@ from mr_data.models import (
     PersonalityDimension,
 )
 
+# 会话退出评分（-2..2）的文案映射，用于归因 prompt 展示
+_RATING_LABELS = {-2: "很差", -1: "差", 0: "一般", 1: "好", 2: "很好"}
+
 
 class DimensionDelta(BaseModel):
     dimension_id: Optional[int] = Field(default=None, description="已有维度 ID；为空且给出 new_dimension_description 时新建")
@@ -205,14 +208,27 @@ class AttributionEngine:
 {identity.base_prompt}
 """.strip()
 
-        return f"""{identity_text}
+        rating_text = ""
+        session = self.pg.get_session(session_id)
+        if session and session.rating is not None:
+            rating_label = _RATING_LABELS.get(session.rating, "未知")
+            rating_text = f"用户评分：{session.rating}（{rating_label}）"
+            if session.rating_comment:
+                rating_text += f"\n用户评论：{session.rating_comment}"
+            rating_text = f"用户对本会话的评价：\n{rating_text}"
+
+        parts = [
+            f"""{identity_text}
 
 本次会话中实际激活的性格维度：
 {activated_text}
 
 其余活跃的性格维度（新增维度前请先对照去重）：
-{remaining_text}
-""".strip()
+{remaining_text}""".strip()
+        ]
+        if rating_text:
+            parts.append(rating_text)
+        return "\n\n".join(parts)
 
     def _attribute_session(self, session_id: str, logs: list[DialogueLog]) -> Optional[AttributionResult]:
         transcript = self._build_transcript(logs)
@@ -226,6 +242,8 @@ class AttributionEngine:
 5. 如果某条对话值得记录为长期人格事件，请写 event_summary；否则留空。
 6. 使用 target_dialogue_log_id 标注该归因主要对应的 assistant 回复日志 ID（必须取自 transcript 中 assistant 行的 [#编号]，没有明确对应时留空）。
 7. 最终输出的 deltas 最多 3 条：只保留与本会话有强关联的维度变化，按关联强度降序排列；证据不足、牵强的关联不要输出。
+
+用户对本会话的评分与评论（如有）是最直接的成败信号：低分或批评性评论应更严格地归因失败维度；评论若点名某种性格表现，优先对照既有维度归因；高分且评论肯定时可强化对应维度的成功计数。没有评价时按对话内容自行判断。
 
 请严格按 JSON 格式返回，不要输出任何其他内容：
 {"deltas": [{"dimension_id": 1, "new_dimension_description": null, "new_dimension_reason": null, "delta_success": 1, "delta_failure": 0, "reason": "...", "event_summary": "...", "evidence_snippets": ["..."], "relation_to_personality": "体现", "target_dialogue_log_id": 123}]}

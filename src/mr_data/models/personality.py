@@ -156,6 +156,8 @@ class PersonalityDimension(BaseModel):
 class Session(BaseModel):
     id: str
     status: str = "active"  # 'active' | 'closed'
+    rating: Optional[int] = None  # -2..2，退出会话时采集
+    rating_comment: Optional[str] = None
     created_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 

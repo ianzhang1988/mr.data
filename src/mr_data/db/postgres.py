@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS rating INTEGER;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS rating_comment TEXT;
+
 CREATE TABLE IF NOT EXISTS dialogue_logs (
     id SERIAL PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -424,7 +427,8 @@ class PostgresStore:
                 """
                 INSERT INTO sessions (id, status)
                 VALUES (%s, 'active')
-                ON CONFLICT (id) DO UPDATE SET status = 'active', closed_at = NULL
+                ON CONFLICT (id) DO UPDATE SET status = 'active', closed_at = NULL,
+                    rating = NULL, rating_comment = NULL
                 RETURNING id
                 """,
                 (sid,),
@@ -519,11 +523,13 @@ class PostgresStore:
                 (dialogue_id,),
             )
 
-    def update_evaluation(self, dialogue_id: int, score: Optional[int], feedback: Optional[str]) -> None:
+    def update_session_rating(
+        self, session_id: str, rating: Optional[int], comment: Optional[str]
+    ) -> None:
         with self._cursor(commit=True) as cur:
             cur.execute(
-                "UPDATE dialogue_logs SET evaluation_score = %s, evaluation_feedback = %s WHERE id = %s",
-                (score, feedback, dialogue_id),
+                "UPDATE sessions SET rating = %s, rating_comment = %s WHERE id = %s",
+                (rating, comment, session_id),
             )
 
     def insert_dialogue_dimension_refs(

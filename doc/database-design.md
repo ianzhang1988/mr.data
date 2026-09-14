@@ -1,6 +1,6 @@
 # 数据库设计
 
-mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性格维度、会话、对话记录、对话引用和归因调整日志。
+mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、用户身份、性格维度、会话、对话记录、对话引用和归因调整日志。
 
 ---
 
@@ -9,9 +9,10 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | 表名 | 说明 |
 |------|------|
 | `fixed_identity` | 固定身份：名称、角色、基础设定；默认来自 `data/personalities/data.json` 的 Data 人设 |
+| `user_identities` | 用户身份：对话用户的名称/角色/描述，默认身份与保护标记；seed 写入 Picard（默认）与 User 两个受保护身份，CLI `mr-data identity` 管理 |
 | `personality_dimensions` | 性格维度：描述性自白、成功/失败计数、核心标记 |
 | `sessions` | 会话：标记对话的语义边界 |
-| `dialogue_logs` | 对话记录：用户与助手的每轮消息及评估反馈 |
+| `dialogue_logs` | 对话记录：用户与助手的每轮消息 |
 | `dialogue_dimension_refs` | 对话引用的基础性格维度 |
 | `dialogue_vector_refs` | 对话检索到的向量素材快照 |
 | `adjustment_logs` | 归因调整日志：离线任务对维度的每次调整 |
@@ -30,6 +31,33 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | `base_prompt` | TEXT | 基础系统提示词 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 | `updated_at` | TIMESTAMPTZ | 更新时间 |
+
+---
+
+## `user_identities`
+
+保存对话用户的身份（名称、角色、描述）。seed 时写入两个受保护身份：Picard（默认）与 User（普通用户），通过 CLI `mr-data identity` 管理（list/add/select/edit/delete）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | SERIAL PK | 自增主键 |
+| `name` | TEXT UNIQUE | 身份名称，唯一 |
+| `role` | TEXT | 角色描述 |
+| `description` | TEXT | 身份详细描述（并入 system prompt 的文本） |
+| `is_default` | BOOLEAN | 是否为默认身份，全局至多一条 |
+| `is_protected` | BOOLEAN | 是否受保护；受保护身份不可删除 |
+| `created_at` | TIMESTAMPTZ | 创建时间 |
+| `updated_at` | TIMESTAMPTZ | 更新时间 |
+
+- 默认身份（`is_default = TRUE`）在对话时并入 system prompt；无默认身份时回退到首个受保护身份。
+- `is_protected = TRUE` 的身份不可删除（`delete_user_identity` 直接报错）。
+- 设置新默认身份时自动清除其他身份的 `is_default` 标记，保证全局唯一。
+
+### 索引
+
+```sql
+CREATE INDEX idx_user_identities_default ON user_identities(is_default);
+```
 
 ---
 
@@ -86,6 +114,12 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 
 - 用户通过 `/newsession` 或退出 CLI 结束当前会话，旧会话标记为 `closed`。
 - 离线归因只处理状态为 `closed` 且包含未处理对话的会话。
+
+### 索引
+
+```sql
+CREATE INDEX idx_sessions_status ON sessions(status);
+```
 
 ---
 
@@ -183,7 +217,9 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 
 ## 落库 metadata schema
 
-存储边界的裸 dict metadata 已全部类化，schema 定义在 `src/mr_data/models/personality.py`，读写两端的序列化/解析规则由模型方法收敛：
+存储边界的裸 dict metadata 已全部类化，schema 定义在 `src/mr_data/models/personality.py`，读写两端的序列化/解析规则由模型方法收敛。
+
+**存储边界模型**：
 
 | schema 类 | 存储位置 | 写入路径 | 说明 |
 |------|------|----------|------|
@@ -192,11 +228,20 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 | `DialogueMemoryMetadata` | Chroma `memories` 集合 | `attribution._persist_session_memories` | `source_type="dialogue"` + `session_id/chunk_index/first/last_dialogue_log_id/recall_count/added_at/last_recalled_at` |
 | `WebMemoryMetadata` | Chroma `memories` 集合 | `graph.py _log_dialogue`（web 资料落库） | `source_type="web"` + `url/title/retrieved_at/retrieval_session_id/query` |
 
+**管道/集合模型**（不落库，仅在内存管道与集合配置中流转）：
+
+| schema 类 | 流转位置 | 使用路径 | 说明 |
+|------|------|----------|------|
+| `WebDocMetadata` / `WebDoc` | web 检索管道 | `search_providers._to_doc_format` → `web_filter` → `graph` | `WebDoc` 为 LangChain Document 风格三元组（`id/page_content/metadata`）；`extra="allow"` 容纳可选字段（如 extract 重定 id 前的原始跳转链接 `source_url`） |
+| `PersonalityDoc` / `MemoryDoc` | Chroma 查询结果的管道载体 | `chroma.query_personality` / `query_memories` 的返回类型 | `MemoryDoc.metadata` 为 `DialogueMemoryMetadata \| WebMemoryMetadata` 判别联合（按 `source_type` 判别） |
+| `CollectionMetadata` | collection 级配置 metadata | `chroma._ensure_collection` 读写 | 维度/模型指纹；`hnsw:space` 走 alias（`populate_by_name=True`），另有 `embedding_dim/embedding_model` |
+| `DialogueChunk` | 离线归因对话记忆分块中间态 | `attribution.chunk_dialogue_logs` 返回 | 字段名与 `DialogueMemoryMetadata` 对齐（`content/chunk_index/first/last_dialogue_log_id`） |
+
 规则：
 
 1. **存储侧强校验**：`add_memory`/`upsert_memory` 的 `metadata` 参数只接受 `DialogueMemoryMetadata | WebMemoryMetadata`，传裸 dict 在序列化时即报错；`DialogueLog.metadata` 类型为 `Optional[DialogueLogMetadata]`。
 2. **落库内容不变**：模型字段默认值与旧裸 dict 形态逐项对齐（如 `recall_count=0`、`last_recalled_at=""`），Chroma 落库 dict 的 key 集合与改造前一致；`model_dump(exclude_none=True)` 剔除未设置的 Optional 字段（Chroma 拒绝 None 值）。
-3. **范围只到存储边界**：web doc 管道流转的裸 dict（`search_providers`/`web_filter`/`graph` 中的 doc 字典）与 collection 级配置 metadata（embedding_dim/embedding_model）不做 schema 化。
+3. **覆盖两层**：模型化已覆盖存储边界与管道流转两层——web doc 管道流转与 collection 级配置 metadata 均已 schema 化；仅 `increment_memory_recall`/`prune_stale_dialogue_memories` 中非 dialogue source_type 的历史数据保留裸 dict 兜底。
 
 ---
 
@@ -241,6 +286,12 @@ Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等�
 - 不再记录 `delta_value`（已移除 `current_value`）。
 - `session_id` 用于追溯一次归因来自哪个已关闭会话。
 
+### 索引
+
+```sql
+CREATE INDEX idx_adjustment_session ON adjustment_logs(session_id);
+```
+
 ---
 
 ## 关系图
@@ -252,6 +303,17 @@ erDiagram
         text name
         text role
         text base_prompt
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    user_identities {
+        int id PK
+        text name
+        text role
+        text description
+        boolean is_default
+        boolean is_protected
         timestamptz created_at
         timestamptz updated_at
     }
@@ -338,4 +400,4 @@ erDiagram
 6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
 7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词（schema 见上文「落库 metadata schema」），供后续对话检索。`memories` 使用 BGE-base-zh-v1.5（768 维）。
 8. **人格素材向量库**：`personality` 集合使用 Nomic Embed Text v1.5 截断至 512 维；新增文档自动加 `search_document:` 前缀，查询自动加 `search_query:` 前缀。
-8. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。
+9. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。

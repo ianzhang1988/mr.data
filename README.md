@@ -16,7 +16,7 @@ mr.data 需要性格子程序：
 flowchart TB
     subgraph Offline["离线定时任务层（独立进程）"]
         direction LR
-        OFF1["拉取已关闭会话的最近对话 + 评估数据"]
+        OFF1["拉取已关闭会话的最近对话 + 会话评分"]
         OFF2["LLM归因分析 (成功率分析)"]
         OFF3["更新人格参数 (PostgreSQL)"]
         OFF1 --> OFF2 --> OFF3
@@ -24,10 +24,10 @@ flowchart TB
 
     subgraph Online["LangGraph 对话编排层（在线请求）"]
         direction TB
-        ON1["加载人格: 从 PostgreSQL 读取 current_personality"]
+        ON1["加载人格: 读取固定身份与活跃性格维度"]
         ON1b["选择维度: LLM 选出本次应起作用的核心/活跃性格"]
         ON2["Think: 生成语义解释 (用于向量检索)"]
-        ON2b["检索网络资料: DuckDuckGo (可选)"]
+        ON2b["检索网络资料: 多 Provider (可选)"]
         ON2c["提取网页正文 (可选)"]
         ON2d["LLM 相关性过滤 (可选)"]
         ON3["检索人格素材: 查询 personality 向量库"]
@@ -42,7 +42,7 @@ flowchart TB
     subgraph Data["数据层"]
         direction LR
         DB1["PostgreSQL: 人格维度表 / 调整日志表 / 固定身份表 / 会话表"]
-        DB2["Chroma: personality 人格素材向量库 (line + event)"]
+        DB2["Chroma: personality 人格素材向量库 (line + event + evidence)"]
         DB3["Chroma: memories 对话记忆向量库 (episodic memory)"]
     end
 
@@ -50,7 +50,7 @@ flowchart TB
     ON7 -->|"供离线任务分析"| OFF1
 
     ON1 -.->|"读取"| DB1
-    ON2b -.->|"搜索"| WEB["DuckDuckGo"]
+    ON2b -.->|"搜索"| WEB["搜索引擎（多 Provider）"]
     ON3 -.->|"查询"| DB2
     ON4 -.->|"查询"| DB3
     ON7 -.->|"写入"| DB1
@@ -77,9 +77,10 @@ flowchart TB
 * 归因结果不仅更新维度计数，还会把关键证据片段写回 `personality` 向量库（`source_type="evidence"`），并标记证据与基础性格的关系；同时在 `dialogue_vector_refs` 记录反向引用。
 * `personality` 向量库采用"场景上下文 embedding + agent 台词 utterance"的存储方式：检索时按完整场景匹配，注入 prompt 时只返回 agent 相关台词。
 * 当某个非核心维度的失败次数达到阈值（`MR_DATA_FAILURE_THRESHOLD`）时，自动将该维度标记为失效，并清理 `personality` 向量库中对应的相关证据文档。
+* 网络搜索采用多 Provider 体系：DuckDuckGo（默认）/ SearXNG / Brave / Bing / Google CSE / 百度 / 360，通过 `MR_DATA_WEB_SEARCH_PROVIDERS` 配置启用的 Provider 及顺序，前一个失败时按顺序降级。
 * 网络资料不仅用于当前回复，还会作为世界知识写入 `memories` 向量库，附带 URL、标题、检索时间等 metadata。
 * 结构化日志：所有关键操作（对话、检索、归因、维度失效）以 JSONL 写入 `./logs/mr-data.log`，默认滚动保留，可用 [logdy](https://logdy.dev/) 等工具查看。
-* CLI `chat` 支持 `/newsession` 切换会话；退出时自动关闭当前会话。
+* CLI `chat` 支持 `/newsession` 切换会话、`/help` 查看全部命令；会话结束时询问整体评分供离线归因参考；退出时自动关闭当前会话。
 
 ## 环境要求
 
@@ -93,9 +94,8 @@ flowchart TB
 
 ```bash
 cd mr.data
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv sync
+source .venv/bin/activate   # 或者后续命令统一加 uv run 前缀
 ```
 
 ### 2. 配置环境变量
@@ -123,8 +123,7 @@ MR_DATA_CHROMA_PERSIST_DIR=./data/chroma
 # 网络搜索 RAG（默认开启）
 MR_DATA_ENABLE_WEB_SEARCH=true
 MR_DATA_WEB_SEARCH_MAX_RESULTS=3
-MR_DATA_ENABLE_WEB_PAGE_EXTRACTION=true
-MR_DATA_ENABLE_WEB_RELEVANCE_FILTER=false
+MR_DATA_ENABLE_WEB_DOC_EXTRACTION=true
 
 # 人格文件（默认 Data）
 MR_DATA_PERSONALITY_FILE=./data/personalities/data.json
@@ -134,6 +133,8 @@ MR_DATA_PERSONALITY_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
 MR_DATA_PERSONALITY_EMBEDDING_DIM=512
 MR_DATA_MEMORY_EMBEDDING_MODEL=BAAI/bge-base-zh-v1.5
 MR_DATA_MEMORY_EMBEDDING_DIM=768
+
+# 完整配置项（日志/离线归因/记忆保留/token 预算等）见 .env.example
 ```
 
 本地模型示例（Ollama）：
@@ -173,9 +174,19 @@ mr-data ingest
 mr-data chat
 ```
 
-对话中输入 `/newsession` 可结束当前会话并开始新会话。
+对话中可用的斜杠命令：
+
+* `/newsession`：结束当前会话并开始新会话；
+* `/exit`、`/quit`、`/bye`：退出对话；
+* `/help`、`/?`：显示帮助信息。
 
 会话结束（`/exit`、`/newsession` 或 Ctrl+C）时会询问一次整体评分（-2 很差 ~ 2 很好）与可选评论，供离线归因参考；直接回车可跳过。
+
+显示每条回复的参考来源（人格素材 / 记忆 / 网络资料引用；默认关闭，可用 `--hide-references` 显式关闭）：
+
+```bash
+mr-data chat --show-references
+```
 
 临时关闭网络搜索：
 
@@ -188,6 +199,26 @@ mr-data chat --no-web-search
 ```bash
 mr-data offline
 ```
+
+### 7. 管理用户身份
+
+```bash
+mr-data identity list              # 列出全部用户身份
+mr-data identity add               # 交互式添加身份（--default 可同时设为默认）
+mr-data identity edit <id|name>    # 编辑身份（--name/--role/--description）
+mr-data identity delete <id|name>  # 删除身份（受保护身份不可删除）
+mr-data identity select <id|name>  # 切换默认身份
+```
+
+默认身份（初始为 Picard）会并入 system prompt，让 mr.data 知道正在与谁对话；受保护（protected）身份只能编辑 description 且不可删除。
+
+### 8. 恢复向量库备份
+
+```bash
+mr-data chroma-restore <backup.json>
+```
+
+从集合重建时自动导出的备份 JSON 恢复 `personality` / `memories` 向量数据：用当前 embedding 模型重算向量，已存在的 id 自动跳过；目标集合非空时会先确认（可用 `--force` 跳过确认）。
 
 ## 运行测试
 
@@ -211,16 +242,28 @@ mr.data/
 ├── pyproject.toml
 ├── .env.example
 ├── src/mr_data/
-│   ├── config.py              # 配置
+│   ├── config.py              # 配置（Settings，MR_DATA_ 前缀环境变量）
+│   ├── embeddings.py          # fastembed 向量嵌入封装
+│   ├── logging.py             # JSONL 结构化日志
 │   ├── db/
 │   │   ├── postgres.py        # PostgreSQL 封装
 │   │   ├── chroma.py          # Chroma 向量库封装
-│   │   └── pgembed_manager.py # 嵌入式 PostgreSQL 管理
-│   ├── models/                # Pydantic 模型
-│   ├── llm/                   # 统一 LLM 客户端
+│   │   ├── pgembed_manager.py # 嵌入式 PostgreSQL 管理
+│   │   └── personality_loader.py # 人格文件加载
+│   ├── models/
+│   │   └── personality.py     # Pydantic 模型（人格/身份/对话/网络文档等）
+│   ├── llm/
+│   │   ├── client.py          # 统一 LLM 客户端
+│   │   └── tokenizer.py       # token 计数与预算
 │   ├── online/                # LangGraph 在线对话
-│   │   └── web_search.py      # 网络搜索 RAG
-│   ├── offline/               # 离线归因引擎
+│   │   ├── graph.py           # 对话编排图
+│   │   ├── web_search.py      # 网络搜索调度（多 Provider 降级）
+│   │   ├── search_providers.py # 搜索 Provider 实现
+│   │   ├── web_filter.py      # LLM 相关性过滤
+│   │   ├── page_extract.py    # 网页正文提取
+│   │   └── prompt_assembly.py # 上下文组装
+│   ├── offline/
+│   │   └── attribution.py     # 离线归因引擎
 │   └── cli.py                 # 命令行入口
 ├── scripts/                   # 独立脚本
 └── tests/                     # 测试

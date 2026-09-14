@@ -79,6 +79,8 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 |------|------|------|
 | `id` | TEXT PK | 会话 ID（UUID 字符串） |
 | `status` | TEXT | `active` 或 `closed` |
+| `rating` | INTEGER | 退出时会话整体评分：-2（很差）~ 2（很好），可为空 |
+| `rating_comment` | TEXT | 退出时可选评论，可为空 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 | `closed_at` | TIMESTAMPTZ | 关闭时间 |
 
@@ -97,8 +99,6 @@ mr.data 使用 PostgreSQL 作为结构化数据存储，保存固定身份、性
 | `session_id` | TEXT FK → `sessions(id)` | 会话 ID |
 | `role` | TEXT | 角色：`user` 或 `assistant` |
 | `content` | TEXT | 消息内容 |
-| `evaluation_score` | INTEGER | 评估分数：-1（差）、0（中）、1（好），可为空 |
-| `evaluation_feedback` | TEXT | 评估反馈文字，可为空 |
 | `processed_for_attribution` | BOOLEAN | 是否已被离线归因处理，默认 FALSE |
 | `metadata` | JSONB | 助手回复的结构化元数据（仅 assistant 行），schema 见下文「落库 metadata schema」 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
@@ -270,6 +270,8 @@ erDiagram
     sessions {
         text id PK
         text status
+        int rating
+        text rating_comment
         timestamptz created_at
         timestamptz closed_at
     }
@@ -279,8 +281,6 @@ erDiagram
         text session_id FK
         text role
         text content
-        int evaluation_score
-        text evaluation_feedback
         boolean processed_for_attribution
         jsonb metadata
         timestamptz created_at
@@ -332,7 +332,7 @@ erDiagram
 2. **记录引用**：助手回复写入后，同时写入：
    - `dialogue_dimension_refs`：本次加载了哪些基础维度。
    - `dialogue_vector_refs`：从 Chroma 或网络检索到了哪些素材及其文本快照。
-3. **评估反馈**：用户或自动评估为助手回复打分，更新 `evaluation_score` 和 `evaluation_feedback`。
+3. **退出评分**：会话结束（`/exit`、`/newsession` 或 Ctrl+C）时询问一次整体评分（-2~2）与可选评论，写入 `sessions.rating` 和 `sessions.rating_comment`；离线归因将其作为最直接的成败信号参考。
 4. **会话结束**：用户输入 `/newsession` 或退出 CLI 时，当前 `sessions` 记录标记为 `closed`。
 5. **离线归因**：只读取状态为 `closed` 且包含未处理对话的会话，按会话分析后更新 `personality_dimensions`。
 6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。

@@ -114,8 +114,6 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_sto
             session_id=test_session_id,
             role="assistant",
             content="测试回复",
-            evaluation_score=1,
-            evaluation_feedback="不错",
             metadata=DialogueLogMetadata(inner_monologue="用户似乎在测试我"),
         )
     )

@@ -87,14 +87,15 @@ CREATE TABLE IF NOT EXISTS dialogue_logs (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
-    evaluation_score INTEGER,
-    evaluation_feedback TEXT,
     processed_for_attribution BOOLEAN DEFAULT FALSE,
     metadata JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE dialogue_logs ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT NULL;
+
+ALTER TABLE dialogue_logs DROP COLUMN IF EXISTS evaluation_score;
+ALTER TABLE dialogue_logs DROP COLUMN IF EXISTS evaluation_feedback;
 
 CREATE INDEX IF NOT EXISTS idx_dialogue_session ON dialogue_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
@@ -477,12 +478,12 @@ class PostgresStore:
             cur.execute(
                 """
                 INSERT INTO dialogue_logs
-                (session_id, role, content, evaluation_score, evaluation_feedback, processed_for_attribution, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (session_id, role, content, processed_for_attribution, metadata)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (log.session_id, log.role, log.content, log.evaluation_score,
-                 log.evaluation_feedback, log.processed_for_attribution,
+                (log.session_id, log.role, log.content,
+                 log.processed_for_attribution,
                  json.dumps(log.metadata.model_dump(mode="json")) if log.metadata is not None else None),
             )
             return cur.fetchone()["id"]

@@ -174,8 +174,6 @@ class DialogueLog(BaseModel):
     session_id: str
     role: str  # 'user' | 'assistant'
     content: str
-    evaluation_score: Optional[int] = None  # -1, 0, 1
-    evaluation_feedback: Optional[str] = None
     processed_for_attribution: bool = False
     metadata: Optional[DialogueLogMetadata] = None
     created_at: Optional[datetime] = None

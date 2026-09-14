@@ -1,16 +1,6 @@
 
 # 未来可选增强(计划中)
 
-- 自动关闭长期未活动的会话（session timeout policy）。
-- 超长会话分片处理，避免超出 LLM 上下文窗口。
-- 更完善的日志查看/搜索 UI 或 CLI 命令。
-1. _assemble_and_generate 函数中，考虑结构化输出。让输出内容中，能保留参考数据的信息（例如对应向量库或数据库id，并附加这个id对应内容的一句话总结）。
-  - 在chat的cli中，可以通过配置选择是否显示输出内容中参考的信息
-2. 在 DialogueState 里加 messages, 保留最近 10 轮对话(默认值，配置中增加配置项)。
-  - 保留用户输入, agent助手的输出, inner_monologue
-  - 保留上面提到的id和内容概括在到messages中（agent后续可以自己去取，后续计划，可以先保留数据，不做对应功能）。
-  - 入库的不需要保留。
-3. _assemble_and_generate 做成个codeagent的方式,给他获取相关内容的能力
 4. 确定ollama调用方式
 ``` python
 from openai import OpenAI
@@ -45,5 +35,14 @@ response = client.chat.completions.create(
 
 print(response.choices[0].message.content)
 ```
-```
-```
+
+1. 自动关闭长期未活动的会话（session timeout policy）。
+2. 更完善的日志查看/搜索 UI 或 CLI 命令。
+3. graph.py 中考虑到本地运行使用的模型，例如qwen3.5:9B，目前部分结构化输出对模型的压力可能太大了。我们需要一种兼容性的模式，根据配置来决定是否用复杂的结构化输出方式。（改进项 37 已落地 `llm_structured_mode` 配置与自动降级，剩余：复杂 schema 本身的精简，如块级引用嵌套结构的简化模式）, 我说的其实是model不能完成正确的json输出，甚至连格式都不能保证的情况下。要如何降级的问题。改进37没有处理这类问题的能力。
+4. 最后对话组装和生成的部分，是不是考虑做个独立codeagent？让他有更好的思考完成任务的机会，可以考虑再加上获取相关内容的能力
+5. 做成再cli命令/newsession时，触发 AttributionEngine.gun(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
+6. chat_structured 主路径可改用 message.pagsed 替代 json.loads，本次为控制 diff 保持现状
+7. 检查现在配置和openapi调用，是否兼容deepseek
+8. 考虑性格向量库的更新问题
+   1. chroma性格库部分，增加召回时的记录，用来做淘汰等
+9. 调查代码中对list进行截断的地方，是否都合适

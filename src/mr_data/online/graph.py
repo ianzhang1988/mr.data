@@ -184,6 +184,16 @@ class DialogueGraph:
                     dim.id for dim in dimensions if dim.id is not None}
                 selected_ids = [
                     x for x in selection.dimension_ids if x in valid_ids]
+                dropped = [x for x in selection.dimension_ids if x not in valid_ids]
+                if dropped:
+                    self.logger.warning(
+                        "LLM returned invalid dimension ids, dropped",
+                        extra={
+                            "event": "personality.dimension_select_invalid_ids",
+                            "session_id": state["session_id"],
+                            "details": {"dropped_ids": dropped},
+                        },
+                    )
             except Exception as exc:
                 self.logger.warning(
                     "Dimension selection failed; falling back to all dimensions",

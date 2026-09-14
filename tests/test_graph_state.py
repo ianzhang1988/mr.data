@@ -15,6 +15,8 @@ from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog, DialogueLogMetadata
 from mr_data.online import DialogueGraph
 
+from conftest import FakeLLMClient
+
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 
@@ -268,3 +270,42 @@ def test_assemble_uses_only_selected_dimensions(
     assert selected_dim.description in identity_section.text
     for dim in unselected_dims:
         assert dim.description not in identity_section.text
+
+
+class _HallucinatingSelectionLLM(FakeLLMClient):
+    """DimensionSelection 返回混有幻觉 id 的选择结果。"""
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        if response_format.__name__ == "DimensionSelection":
+            return {"dimension_ids": [1, 999]}
+        return super().structured_chat(messages, response_format, temperature)
+
+
+def test_select_dimensions_drops_hallucinated_ids(
+    test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    """改进 55：_select_dimensions 白名单过滤幻觉 id 的行为锁定。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+    dimensions = pg.list_dimensions(active_only=True)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=_HallucinatingSelectionLLM(),
+        enable_web_search=False,
+    )
+    state = {
+        "session_id": test_session_id,
+        "user_input": "测试输入",
+        "dimensions": dimensions,
+    }
+    result = graph._select_dimensions(state)
+
+    assert result["selected_dimension_ids"] == [1]

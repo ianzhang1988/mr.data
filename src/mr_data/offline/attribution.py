@@ -111,6 +111,7 @@ class AttributionEngine:
 
         total_sessions = 0
         total_deltas = 0
+        failed_sessions = 0
         for session in sessions:
             logs = self.pg.get_recent_dialogues(
                 session_id=session.id,
@@ -128,10 +129,20 @@ class AttributionEngine:
                     extra={"event": "offline.session_failed", "session_id": session.id},
                 )
                 continue
-            with self.pg.transaction():
-                applied = self._apply(result, session.id, logs)
-                for log in logs:
-                    self.pg.mark_dialogue_processed(log.id)
+            try:
+                with self.pg.transaction():
+                    applied = self._apply(result, session.id, logs)
+                    for log in logs:
+                        self.pg.mark_dialogue_processed(log.id)
+            except Exception:
+                # 事务已回滚（transaction() 自动 rollback），会话保持 unprocessed，
+                # 下次 run() 重试；Chroma 侧已写文档靠确定性 doc id 重放幂等自愈。
+                self.logger.warning(
+                    "Session apply failed and rolled back, will retry next run",
+                    extra={"event": "offline.apply_failed", "session_id": session.id},
+                )
+                failed_sessions += 1
+                continue
 
             total_sessions += 1
             total_deltas += applied
@@ -148,6 +159,7 @@ class AttributionEngine:
                 "details": {
                     "session_count": total_sessions,
                     "delta_count": total_deltas,
+                    "failed_sessions": failed_sessions,
                     "pruned_memories": pruned_count,
                 },
             },

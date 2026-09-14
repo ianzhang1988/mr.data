@@ -57,8 +57,8 @@ def test_apply_crash_rolls_back_and_retry_applies_once(
 
     monkeypatch.setattr(pg, "insert_adjustment", _failing_insert_adjustment)
 
-    with pytest.raises(RuntimeError):
-        engine.run()
+    # 改进 55：run() 会话级容错——单会话 apply 失败不再传播，断言回滚状态。
+    engine.run()
 
     # 事务回滚：维度计数未变化、adjustment_logs 无新增、对话仍 unprocessed。
     dim = pg.get_dimension(1)
@@ -107,14 +107,56 @@ def test_crash_on_vector_refs_rolls_back_pg_writes(
 
     monkeypatch.setattr(pg, "insert_dialogue_vector_refs", _failing_insert_vector_refs)
 
-    with pytest.raises(RuntimeError):
-        engine.run()
+    # 改进 55：run() 会话级容错——崩溃会话回滚留待重跑，不再中断传播。
+    engine.run()
 
     dim = pg.get_dimension(1)
     assert dim.success_count == base_success
     assert _adjustment_count(pg) == 0
     unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
     assert len(unprocessed) == 2
+
+
+def test_failed_session_does_not_abort_batch(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+):
+    """改进 55：单会话 apply 崩溃回滚留待重跑，不中断批处理后续会话。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    session_a = test_session_id
+    session_b = f"{test_session_id}-b"
+    _setup_closed_session(pg, session_a)
+    _setup_closed_session(pg, session_b)
+
+    real_insert = pg.insert_adjustment
+
+    def _failing_for_a(adj):
+        if adj.session_id == session_a:
+            raise RuntimeError("模拟会话 A 写入崩溃")
+        return real_insert(adj)
+
+    monkeypatch.setattr(pg, "insert_adjustment", _failing_for_a)
+
+    engine = AttributionEngine(
+        pg_store=pg, chroma_store=chroma_store, llm=fake_llm
+    )
+    engine.run()
+
+    # 会话 B 正常处理完成；会话 A 回滚、对话仍 unprocessed。
+    assert _adjustment_count(pg) == 1
+    assert pg.get_recent_dialogues(session_id=session_b, unprocessed_only=True) == []
+    assert len(pg.get_recent_dialogues(session_id=session_a, unprocessed_only=True)) == 2
+
+    # 恢复后重跑：会话 A 成功，且只应用一次。
+    monkeypatch.undo()
+    engine.run()
+    assert _adjustment_count(pg) == 2
+    assert pg.get_recent_dialogues(session_id=session_a, unprocessed_only=True) == []
 
 
 def test_non_transactional_writes_still_autocommit(pg_available):

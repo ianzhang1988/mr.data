@@ -123,7 +123,7 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_sto
     # Close the session before running attribution
     pg.close_session(test_session_id)
 
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
     engine.run()
 
     # Both should be marked processed

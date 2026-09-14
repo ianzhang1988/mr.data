@@ -26,6 +26,8 @@ from .personality import (
     DimensionSelection,
     WebDocExtraction,
     MemoryRelevanceFilterResult,
+    DimensionDedupMatch,
+    DimensionDedupResult,
 )
 
 __all__ = [
@@ -48,6 +50,8 @@ __all__ = [
     "DimensionSelection",
     "WebDocExtraction",
     "MemoryRelevanceFilterResult",
+    "DimensionDedupMatch",
+    "DimensionDedupResult",
     "AssistantReply",
     "ReplyReference",
     "ReplyBlock",

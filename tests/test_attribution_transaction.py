@@ -47,7 +47,7 @@ def test_apply_crash_rolls_back_and_retry_applies_once(
     base_success, base_failure = dim.success_count, dim.failure_count
 
     engine = AttributionEngine(
-        pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir
+        pg_store=pg, chroma_store=chroma_store, llm=fake_llm
     )
 
     # 模拟 _apply 中途崩溃：update_dimension 之后 insert_adjustment 抛错。
@@ -95,7 +95,7 @@ def test_crash_on_vector_refs_rolls_back_pg_writes(
     base_success = dim.success_count
 
     engine = AttributionEngine(
-        pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir
+        pg_store=pg, chroma_store=chroma_store, llm=fake_llm
     )
 
     # 崩溃点更靠后：计数与审计已写入，仅 vector refs 插入失败。

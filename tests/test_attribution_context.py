@@ -16,8 +16,8 @@ from mr_data.offline import AttributionEngine
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 
-def _make_engine(pg: PostgresStore, chroma_store, fake_llm, temp_log_dir) -> AttributionEngine:
-    return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir)
+def _make_engine(pg: PostgresStore, chroma_store, fake_llm) -> AttributionEngine:
+    return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
 
 
 def _insert_turn(pg: PostgresStore, session_id: str, monologue: str | None = None) -> int:
@@ -44,7 +44,7 @@ def test_context_splits_dimensions_by_session_activation(
     assistant_id = _insert_turn(pg, test_session_id)
     pg.insert_dialogue_dimension_refs(assistant_id, [1, 3])
 
-    engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
+    engine = _make_engine(pg, chroma_store, fake_llm)
     context = engine._build_context(test_session_id)
 
     activated_section = context.split("本次会话中实际激活的性格维度：")[1].split("其余活跃的性格维度")[0]
@@ -67,7 +67,7 @@ def test_context_without_dimension_refs_puts_all_in_remaining(
     pg = PostgresStore()
     _insert_turn(pg, test_session_id)
 
-    engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
+    engine = _make_engine(pg, chroma_store, fake_llm)
     context = engine._build_context(test_session_id)
 
     activated_section = context.split("本次会话中实际激活的性格维度：")[1].split("其余活跃的性格维度")[0]
@@ -88,7 +88,7 @@ def test_transcript_inlines_inner_monologue(
     _insert_turn(pg, test_session_id, monologue="用户似乎在测试我")
     logs = pg.get_recent_dialogues(session_id=test_session_id)
 
-    engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
+    engine = _make_engine(pg, chroma_store, fake_llm)
     transcript = engine._build_transcript(logs)
 
     assert "assistant（内心独白：用户似乎在测试我）: 测试回复" in transcript

@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     offline_batch_size: int = 50
     offline_lookback_days: int = 7
     offline_max_session_logs: int = 100
+    # 单会话归因落库的最大 delta 条数（prompt 收敛 + 代码截断兜底）
+    offline_max_deltas_per_session: int = 3
+    # 新建性格维度前的 LLM 重合判断（防维度膨胀）；失败时按允许新建降级
+    enable_dimension_dedup: bool = True
     personality_retrieval_top_k: int = 5
     failure_threshold: int = 5
 

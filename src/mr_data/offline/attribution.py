@@ -18,13 +18,16 @@ from mr_data.models import (
     DialogueLog,
     DialogueMemoryMetadata,
     DialogueVectorRef,
+    DimensionDedupResult,
     PersonalityEvent,
+    PersonalityDimension,
 )
 
 
 class DimensionDelta(BaseModel):
-    dimension_id: Optional[int] = Field(default=None, description="已有维度 ID；为空时按 description 新建")
-    description: Optional[str] = Field(default=None, description="新建维度时的描述；与 dimension_id 二选一")
+    dimension_id: Optional[int] = Field(default=None, description="已有维度 ID；为空且给出 new_dimension_description 时新建")
+    new_dimension_description: Optional[str] = Field(default=None, description="新建维度时的第一人称描述性自白；仅当所有既有维度都无法对应时填写，与 dimension_id 二选一")
+    new_dimension_reason: Optional[str] = Field(default=None, description="新建维度时必填：为什么既有维度都无法涵盖该性格表现，须引用具体对话证据")
     delta_success: int = Field(default=0, ge=0, description="成功计数增加量")
     delta_failure: int = Field(default=0, ge=0, description="失败计数增加量")
     reason: str = Field(description="变化原因")
@@ -91,12 +94,10 @@ class AttributionEngine:
         pg_store: Optional[PostgresStore] = None,
         chroma_store: Optional[ChromaStore] = None,
         llm: Optional[LLMClient] = None,
-        log_dir: Optional[str] = None,
     ):
         self.pg = pg_store or PostgresStore()
         self.chroma = chroma_store or ChromaStore()
         self.llm = llm or LLMClient()
-        self.log_dir = log_dir
         self.logger = get_logger("mr_data.offline")
 
     def run(self, lookback_days: Optional[int] = None, batch_size: Optional[int] = None) -> None:
@@ -205,14 +206,15 @@ class AttributionEngine:
 
         system = """你是对话归因分析器。请阅读下面提供的完整会话记录（assistant 行附该轮的内心独白），并结合人设、性格维度分组（本次会话激活/其余活跃），完成以下任务：
 1. 判断哪些性格维度促成了成功或失败。
-2. 如果维度已存在，给出其 dimension_id（整数）；如果是新维度，给出 description（描述性自白）。
+2. 如果维度已存在，给出其 dimension_id（整数）；仅当所有既有维度都明显无法涵盖该性格表现时才新建维度：给出 new_dimension_description（第一人称描述性自白）和 new_dimension_reason（为什么既有维度都不能覆盖它，须引用具体对话证据）；新建前必须先逐条对照“其余活跃的性格维度”列表，拿不准就归入既有维度。
 3. 给出每个维度的 delta_success、delta_failure 和变化原因 reason。
 4. 针对每个维度变化，提取 0-N 条关键证据片段 evidence_snippets（原始对话、内心独白原文），并说明该证据与基础性格的关系 relation_to_personality（例如：体现、强化、违背、修正）。
 5. 如果某条对话值得记录为长期人格事件，请写 event_summary；否则留空。
 6. 使用 target_dialogue_log_id 标注该归因主要对应的 assistant 回复日志 ID（可选）。
+7. 最终输出的 deltas 最多 3 条：只保留与本会话有强关联的维度变化，按关联强度降序排列；证据不足、牵强的关联不要输出。
 
 请严格按 JSON 格式返回，不要输出任何其他内容：
-{"deltas": [{"dimension_id": 1, "description": null, "delta_success": 1, "delta_failure": 0, "reason": "...", "event_summary": "...", "evidence_snippets": ["..."], "relation_to_personality": "体现", "target_dialogue_log_id": 123}]}
+{"deltas": [{"dimension_id": 1, "new_dimension_description": null, "new_dimension_reason": null, "delta_success": 1, "delta_failure": 0, "reason": "...", "event_summary": "...", "evidence_snippets": ["..."], "relation_to_personality": "体现", "target_dialogue_log_id": 123}]}
 """
         prompt = f"""{context}
 
@@ -225,7 +227,7 @@ class AttributionEngine:
             result = self.llm.chat_structured(
                 system, prompt, response_format=AttributionResult, temperature=0.2
             )
-            return AttributionResult.model_validate(result)
+            parsed = AttributionResult.model_validate(result)
         except Exception:
             self.logger.warning(
                 "Failed to parse attribution response",
@@ -235,6 +237,107 @@ class AttributionEngine:
                 },
             )
             return None
+
+        # 事务外：新维度重合判断（防维度膨胀），随后按配置截断为最强 N 条。
+        self._dedup_new_dimensions(session_id, parsed)
+        parsed.deltas = parsed.deltas[: settings.offline_max_deltas_per_session]
+        return parsed
+
+    def _dedup_new_dimensions(self, session_id: str, result: AttributionResult) -> None:
+        """对候选新维度做一次批量 LLM 重合判断（事务外调用）。
+
+        命中既有活跃维度时把 delta 改挂到该维度（改写 dimension_id、清空
+        new_dimension_*）；LLM 调用失败或返回幻觉 id 时按“允许新建”降级，
+        不阻断离线批处理。
+        """
+        candidates = [
+            delta
+            for delta in result.deltas
+            if delta.dimension_id is None and delta.new_dimension_description
+        ]
+        if not candidates:
+            return
+        if not settings.enable_dimension_dedup:
+            self.logger.debug(
+                "Dimension dedup disabled by config",
+                extra={"event": "offline.dimension_dedup_skipped", "session_id": session_id},
+            )
+            return
+
+        dimensions: list[PersonalityDimension] = self.pg.list_dimensions(active_only=True)
+        valid_ids = {d.id for d in dimensions if d.id is not None}
+        if not valid_ids:
+            return
+
+        candidate_blocks = []
+        for idx, delta in enumerate(candidates):
+            evidence = "；".join(delta.evidence_snippets[:3]) or "（无）"
+            candidate_blocks.append(
+                f"[{idx}] 描述：{delta.new_dimension_description}\n"
+                f"    新增理由：{delta.new_dimension_reason or '（未给出）'}\n"
+                f"    证据：{evidence}"
+            )
+        dimension_lines = "\n".join(
+            f"- [{dim.id}] {dim.description} (成功 {dim.success_count} / 失败 {dim.failure_count})"
+            for dim in dimensions
+            if dim.id is not None
+        )
+
+        system = """你是性格维度归并判断器。给你若干“候选新维度”和一份“既有活跃维度”列表，请逐一判断候选是否与某个既有维度语义重合（描述的是同一种性格特质，只是措辞不同也算重合）。
+判断从严：只有明显重合才给出 matched_dimension_id；确实涵盖不了才允许新建（matched_dimension_id 为 null）。
+请严格按 JSON 格式返回，不要输出任何其他内容：
+{"matches": [{"candidate_index": 0, "matched_dimension_id": null}]}
+"""
+        prompt = f"""既有活跃维度：
+{dimension_lines}
+
+候选新维度：
+{chr(10).join(candidate_blocks)}
+
+请按 JSON 格式返回判断结果。"""
+
+        try:
+            raw = self.llm.chat_structured(
+                system, prompt, response_format=DimensionDedupResult, temperature=0.0
+            )
+            dedup = DimensionDedupResult.model_validate(raw)
+        except Exception:
+            self.logger.warning(
+                "Dimension dedup LLM call failed, fallback to allowing new dimensions",
+                extra={"event": "offline.dimension_dedup_failed", "session_id": session_id},
+            )
+            return
+
+        for match in dedup.matches:
+            if match.matched_dimension_id is None:
+                continue
+            if not 0 <= match.candidate_index < len(candidates):
+                continue
+            if match.matched_dimension_id not in valid_ids:
+                self.logger.warning(
+                    "Dimension dedup returned unknown dimension id, ignored",
+                    extra={
+                        "event": "offline.dimension_dedup_invalid_id",
+                        "session_id": session_id,
+                        "details": {"matched_dimension_id": match.matched_dimension_id},
+                    },
+                )
+                continue
+            delta = candidates[match.candidate_index]
+            self.logger.info(
+                "New dimension merged into existing one",
+                extra={
+                    "event": "offline.dimension_dedup_merged",
+                    "session_id": session_id,
+                    "details": {
+                        "matched_dimension_id": match.matched_dimension_id,
+                        "description": delta.new_dimension_description,
+                    },
+                },
+            )
+            delta.dimension_id = match.matched_dimension_id
+            delta.new_dimension_description = None
+            delta.new_dimension_reason = None
 
     def _apply(self, result: AttributionResult, session_id: str, logs: list[DialogueLog]) -> int:
         # Precompute a fallback assistant log id for evidence that lacks an explicit target.
@@ -248,8 +351,20 @@ class AttributionEngine:
         applied = 0
         for delta in result.deltas:
             dim_id = delta.dimension_id
-            if dim_id is None and delta.description:
-                dim_id = self.pg.insert_dimension(delta.description)
+            if dim_id is None and delta.new_dimension_description:
+                dim_id = self.pg.insert_dimension(delta.new_dimension_description)
+                self.logger.info(
+                    "New personality dimension created",
+                    extra={
+                        "event": "offline.dimension_created",
+                        "session_id": session_id,
+                        "details": {
+                            "dimension_id": dim_id,
+                            "description": delta.new_dimension_description,
+                            "new_dimension_reason": delta.new_dimension_reason,
+                        },
+                    },
+                )
 
             if dim_id is None:
                 continue

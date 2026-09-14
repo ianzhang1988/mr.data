@@ -4,7 +4,6 @@ import logging.handlers
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
 from mr_data.config import settings
 
@@ -75,38 +74,3 @@ def get_logger(name: str) -> logging.Logger:
 
     _CONFIGURED.add(name)
     return logger
-
-
-def read_session_events(
-    session_id: str,
-    event_prefix: Optional[str] = None,
-    log_dir: Optional[str] = None,
-) -> list[dict[str, Any]]:
-    """Read JSONL log events for a specific session.
-
-    If `event_prefix` is provided, only events whose `event` field starts with
-    the prefix are returned (e.g. ``"think."``).
-    """
-    directory = Path(log_dir or settings.log_dir)
-    log_file = directory / "mr-data.log"
-    if not log_file.exists():
-        return []
-
-    events: list[dict[str, Any]] = []
-    with log_file.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if data.get("session_id") != session_id:
-                continue
-            if event_prefix is not None:
-                ev = data.get("event", "")
-                if not isinstance(ev, str) or not ev.startswith(event_prefix):
-                    continue
-            events.append(data)
-    return events

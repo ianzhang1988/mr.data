@@ -124,7 +124,7 @@ def test_apply_replay_does_not_duplicate_chroma_docs(
             )
         ]
     )
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
 
     engine._apply(result, test_session_id, logs)
     personality_count = chroma_store.personality.count()

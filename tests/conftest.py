@@ -90,6 +90,9 @@ class FakeLLMClient(LLMClient):
         if name == "MemoryRelevanceFilterResult":
             # Returning empty results causes the node to fall back to keeping all docs.
             return {"results": []}
+        if name == "DimensionDedupResult":
+            # Empty matches means: no duplicate found, allow creating new dimensions.
+            return {"matches": []}
         return {"deltas": []}
 
 

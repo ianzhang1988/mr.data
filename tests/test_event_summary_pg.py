@@ -56,7 +56,7 @@ def test_apply_persists_event_summary_to_adjustment_logs(
         ]
     )
     engine = AttributionEngine(
-        pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir
+        pg_store=pg, chroma_store=chroma_store, llm=fake_llm
     )
 
     engine._apply(result, test_session_id, logs)
@@ -86,7 +86,7 @@ def test_apply_without_event_summary_persists_null(
         ]
     )
     engine = AttributionEngine(
-        pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=temp_log_dir
+        pg_store=pg, chroma_store=chroma_store, llm=fake_llm
     )
 
     engine._apply(result, test_session_id, logs)

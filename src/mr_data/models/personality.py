@@ -103,6 +103,25 @@ class MemoryRelevanceFilterResult(BaseModel):
     )
 
 
+class DimensionDedupMatch(BaseModel):
+    """单个候选新维度与既有活跃维度的重合判断。"""
+
+    candidate_index: int = Field(description="输入候选序号（从 0 开始）")
+    matched_dimension_id: Optional[int] = Field(
+        default=None,
+        description="语义重合的既有维度 ID；None 表示不重合，允许新建",
+    )
+
+
+class DimensionDedupResult(BaseModel):
+    """批量新维度重合判断结果。"""
+
+    matches: list[DimensionDedupMatch] = Field(
+        default_factory=list,
+        description="每个候选新维度的重合判断结果",
+    )
+
+
 class FixedIdentity(BaseModel):
     id: Optional[int] = None
     name: str

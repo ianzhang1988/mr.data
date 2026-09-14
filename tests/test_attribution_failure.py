@@ -16,8 +16,8 @@ def _setup_closed_session(pg: PostgresStore, session_id: str) -> None:
     pg.close_session(session_id)
 
 
-def _make_engine(pg, chroma_store, fake_llm, log_dir) -> AttributionEngine:
-    return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, log_dir=log_dir)
+def _make_engine(pg, chroma_store, fake_llm) -> AttributionEngine:
+    return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
 
 
 def test_attribution_failure_does_not_mark_processed(
@@ -37,7 +37,7 @@ def test_attribution_failure_does_not_mark_processed(
 
     monkeypatch.setattr(fake_llm, "chat_structured", _failing_structured_chat)
 
-    engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
+    engine = _make_engine(pg, chroma_store, fake_llm)
     engine.run()
 
     # Attribution failed, so the dialogues must stay unprocessed for a retry.
@@ -66,7 +66,7 @@ def test_attribution_retry_after_failure(
 
     monkeypatch.setattr(fake_llm, "chat_structured", _failing_structured_chat)
 
-    engine = _make_engine(pg, chroma_store, fake_llm, temp_log_dir)
+    engine = _make_engine(pg, chroma_store, fake_llm)
     engine.run()
 
     unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)

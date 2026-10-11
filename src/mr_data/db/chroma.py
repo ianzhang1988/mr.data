@@ -407,15 +407,22 @@ class ChromaStore:
         return WebMemoryMetadata.model_validate(raw)
 
     def increment_memory_recall(self, doc_ids: list[str]) -> None:
-        """Increment recall_count and update last_recalled_at for dialogue memories."""
+        """Increment recall_count and update last_recalled_at for dialogue memories.
+
+        Chroma ``get(ids=[...])`` returns documents in storage order, not request
+        order, so metadatas must be aligned with the returned ids (``found_ids``)
+        rather than the requested ``unique_ids``. Requested ids that no longer
+        exist are skipped with a warning instead of crashing the chat turn.
+        """
         if not doc_ids:
             return
         # Deduplicate while preserving order; Chroma update expects unique ids.
         unique_ids = list(dict.fromkeys(doc_ids))
         result = self.memories.get(ids=unique_ids, include=["metadatas"])
         now = datetime.now(timezone.utc).isoformat()
+        found_ids: list[str] = []
         new_metadatas = []
-        for metadata in result.get("metadatas", []):
+        for found_id, metadata in zip(result.get("ids", []), result.get("metadatas", [])):
             if metadata is None:
                 metadata = {}
             if metadata.get("source_type") == "dialogue":
@@ -440,8 +447,18 @@ class ChromaStore:
                 metadata["recall_count"] = count
                 metadata["last_recalled_at"] = now
                 new_metadatas.append(metadata)
+            found_ids.append(found_id)
+        missing_ids = [doc_id for doc_id in unique_ids if doc_id not in found_ids]
+        if missing_ids:
+            logger.warning(
+                "Some memory ids were not found during recall increment, skipped",
+                extra={
+                    "event": "chroma.recall_increment_missing_ids",
+                    "details": {"missing_ids": missing_ids},
+                },
+            )
         if new_metadatas:
-            self.memories.update(ids=unique_ids, metadatas=new_metadatas)
+            self.memories.update(ids=found_ids, metadatas=new_metadatas)
 
     def prune_stale_dialogue_memories(
         self, cutoff_days: int, min_recall_count: int

@@ -11,11 +11,12 @@
 - 完成修改后，更新本文档
 
 # 待改进
-
-（暂无）
+（当前为空；新任务请追加在此）
 
 # 已完成的改进项
 （保留最近几条，完成的条目放到 finished_improvement.md 中归档；35-59 已迁移归档）
+
+60. ✅ recall 计数按返回 id 对齐写回（`chroma.py` `increment_memory_recall` 存储序错位修复 + 缺失 id 跳过不抛异常；新增 `tests/test_memory_recall.py` 3 用例；全量 150 passed, 1 skipped）。详见 finished_improvement.md #60。
 
 # 未来可选增强（计划中）
 

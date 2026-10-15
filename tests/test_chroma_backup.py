@@ -46,8 +46,7 @@ def _seed_personality(store: ChromaStore, n: int = 3) -> list[str]:
 
 
 def _recreate_with_new_dim(tmp_path, monkeypatch, dim: int = 16) -> ChromaStore:
-    monkeypatch.setattr(settings, "personality_embedding_dim", dim)
-    monkeypatch.setattr(settings, "memory_embedding_dim", dim)
+    monkeypatch.setattr(settings, "embedding_dim", dim)
     monkeypatch.setattr(settings, "chroma_recreate_on_mismatch", True)
     return _make_store(tmp_path / "chroma", dim)
 
@@ -79,11 +78,11 @@ def test_mismatch_exports_backup_before_recreate(tmp_path, monkeypatch):
 
     payload = json.loads(by_name["personality"].read_text(encoding="utf-8"))
     assert payload["count"] == 3
-    assert payload["collection_metadata"]["embedding_dim"] == 512  # 备份记录的是旧集合的 metadata
+    assert payload["collection_metadata"]["embedding_dim"] == 768  # 备份记录的是旧集合的 metadata
     docs = {d["id"]: d for d in payload["documents"]}
     assert set(docs) == set(ids)
     for entry in docs.values():
-        assert entry["document"].startswith("search_document: ")
+        assert entry["document"] == entry["metadata"]["context"]
         assert entry["metadata"]["source_type"] == "event"
 
     mem_payload = json.loads(by_name["memories"].read_text(encoding="utf-8"))

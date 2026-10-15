@@ -5,7 +5,7 @@ import pytest
 import fastembed
 
 from mr_data.db import ChromaStore
-from mr_data.embeddings import NomicPersonalityEmbedding, BGEMemoryEmbedding
+from mr_data.embeddings import JinaEmbedding
 from mr_data.models import PersonalityEvent
 
 
@@ -34,31 +34,14 @@ def fake_fastembed(monkeypatch):
     monkeypatch.setattr(fastembed, "TextEmbedding", _FakeTextEmbedding)
 
 
-def test_nomic_truncates_to_dim(fake_fastembed):
-    embedding = NomicPersonalityEmbedding(dim=4)
+def test_jina_returns_full_model_output(fake_fastembed):
+    # Jina v2 output is used as-is: no matryoshka truncation.
+    embedding = JinaEmbedding(dim=4)
     result = embedding(["test"])
     assert len(result) == 1
-    assert len(result[0]) == 4
-    assert result[0] == [0.0, 1.0, 2.0, 3.0]
-
-
-def test_bge_returns_full_model_output(fake_fastembed):
-    # BGE should NOT truncate, even if the model returns more dims than configured.
-    embedding = BGEMemoryEmbedding(dim=8)
-    result = embedding(["test"])
-    assert len(result) == 1
-    # _FakeTextEmbedding default output_dim is 8, so base class returns all 8.
+    # _FakeTextEmbedding default output_dim is 8, so the full 8 dims are returned.
     assert len(result[0]) == 8
     assert result[0] == [float(i) for i in range(8)]
-
-
-def test_bge_does_not_truncate_when_model_output_exceeds_dim(fake_fastembed):
-    embedding = BGEMemoryEmbedding(dim=4)
-    # Override the fake model to produce 6 dims, proving BGE keeps them all.
-    embedding._model = _FakeTextEmbedding(output_dim=6)
-    result = embedding(["test"])
-    assert len(result[0]) == 6
-    assert result[0] == [float(i) for i in range(6)]
 
 
 class _RecordingEmbedding:
@@ -81,7 +64,7 @@ class _RecordingEmbedding:
         return self._dim
 
 
-def test_personality_document_prefix_on_add():
+def test_personality_document_no_prefix_on_add():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
         ephemeral=True,
@@ -94,12 +77,13 @@ def test_personality_document_prefix_on_add():
         dimension_ids=[1],
         source_type="line",
     )
-    store.add_personality_event(event)
-    assert any(item.startswith("search_document: ") for item in recorder.recorded)
-    assert any("测试场景" in item for item in recorder.recorded)
+    doc_id = store.add_personality_event(event)
+    # Jina v2 requires no document prefix: the raw context is embedded and stored.
+    assert recorder.recorded == ["测试场景"]
+    assert store.personality.get(ids=[doc_id])["documents"] == ["测试场景"]
 
 
-def test_personality_query_prefix():
+def test_personality_query_no_prefix():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
         ephemeral=True,
@@ -113,10 +97,10 @@ def test_personality_query_prefix():
     recorder.recorded.clear()
 
     store.query_personality("测试查询")
-    assert any(item.startswith("search_query: ") for item in recorder.recorded)
+    assert recorder.recorded == ["测试查询"]
 
 
-def test_memory_query_prefix():
+def test_memory_query_no_prefix():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
         ephemeral=True,
@@ -127,13 +111,10 @@ def test_memory_query_prefix():
     recorder.recorded.clear()
 
     store.query_memories("你好", session_id="s1")
-    assert any(
-        item.startswith("Represent this sentence for searching relevant passages: ")
-        for item in recorder.recorded
-    )
+    assert recorder.recorded == ["你好"]
 
 
-def test_memory_documents_not_prefixed():
+def test_memory_documents_no_prefix():
     recorder = _RecordingEmbedding(dim=8)
     store = ChromaStore(
         ephemeral=True,
@@ -141,11 +122,11 @@ def test_memory_documents_not_prefixed():
         memory_embedding_fn=recorder,
     )
     store.add_memory("s1", "用户：你好")
-    assert any(item == "用户：你好" for item in recorder.recorded)
+    assert recorder.recorded == ["用户：你好"]
 
 
 @pytest.mark.slow
-@pytest.mark.skip(reason="Requires downloading Nomic/BGE models; run manually with --run-slow")
+@pytest.mark.skip(reason="Requires downloading the Jina model; run manually with --run-slow")
 def test_real_embedding_dimensions(tmp_path):
     store = ChromaStore(persist_dir=str(tmp_path / "chroma"))
     event = PersonalityEvent(content="测试", dimension_ids=[1], source_type="line")
@@ -154,5 +135,7 @@ def test_real_embedding_dimensions(tmp_path):
 
     personality_meta = store.personality.metadata or {}
     memories_meta = store.memories.metadata or {}
-    assert personality_meta.get("embedding_dim") == 512
+    assert personality_meta.get("embedding_dim") == 768
     assert memories_meta.get("embedding_dim") == 768
+    assert personality_meta.get("embedding_model") == "jinaai/jina-embeddings-v2-base-zh"
+    assert memories_meta.get("embedding_model") == "jinaai/jina-embeddings-v2-base-zh"

@@ -5,17 +5,12 @@ class FastembedEmbedding:
     """Lightweight ONNX-based embedding wrapper around ``fastembed.TextEmbedding``.
 
     This avoids pulling in PyTorch while still supporting high-quality local
-    models such as Nomic and BGE.
+    models such as Jina.
 
-    The base class returns the full model output unchanged. Subclasses that
-    rely on matryoshka truncation (e.g. Nomic) should override ``__call__`` to
-    slice the vectors to the desired dimension.
+    The base class returns the full model output unchanged (no truncation).
 
-    Callers are responsible for adding model-specific prefixes:
-
-    - Nomic documents: ``search_document: <text>``
-    - Nomic queries: ``search_query: <text>``
-    - BGE queries: ``Represent this sentence for searching relevant passages: <text>``
+    The embedding function itself is transparent to input text: callers store
+    and query raw text directly (Jina v2 requires no query/document prefixes).
     """
 
     def __init__(
@@ -58,28 +53,16 @@ class FastembedEmbedding:
         return self._model_name
 
 
-class NomicPersonalityEmbedding(FastembedEmbedding):
-    """Nomic Embed Text v1.5 truncated to 512 dims (matryoshka)."""
+class JinaEmbedding(FastembedEmbedding):
+    """Jina Embeddings v2 base zh — bilingual Chinese/English, 768 dims.
+
+    Jina v2 models require no query/document prefixes; texts are embedded
+    as-is.
+    """
 
     def __init__(
         self,
-        model_name: str = "nomic-ai/nomic-embed-text-v1.5",
-        dim: int = 512,
-        **kwargs: Any,
-    ):
-        super().__init__(model_name=model_name, dim=dim, **kwargs)
-
-    def __call__(self, input: list[str]) -> list[list[float]]:
-        embeddings = list(self._model.embed(input))
-        return [emb[: self._dim].tolist() for emb in embeddings]
-
-
-class BGEMemoryEmbedding(FastembedEmbedding):
-    """BGE-base-zh-v1.5 for Chinese/English memory retrieval (768 dims)."""
-
-    def __init__(
-        self,
-        model_name: str = "BAAI/bge-base-zh-v1.5",
+        model_name: str = "jinaai/jina-embeddings-v2-base-zh",
         dim: int = 768,
         **kwargs: Any,
     ):

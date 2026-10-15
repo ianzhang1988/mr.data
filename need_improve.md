@@ -12,16 +12,16 @@
 
 # 待改进
 
-1. 修改项目中的embeding为jina-v2-base-v2, 原来使用的bge fastembed不支持， nomic对中文支持不好。别忘记要使用jina的prefix要求，也就是不需要prefix。
+（暂无）
 
 # 已完成的改进项
-（保留最近几条，完成的条目放到 finished_improvement.md 中归档；35-59 已迁移归档）
-
-60. ✅ recall 计数按返回 id 对齐写回（`chroma.py` `increment_memory_recall` 存储序错位修复 + 缺失 id 跳过不抛异常；新增 `tests/test_memory_recall.py` 3 用例；全量 150 passed, 1 skipped）。详见 finished_improvement.md #60。
+（保留最近几条，完成的条目放到 finished_improvement.md 中归档；35-60 已迁移归档）
 
 61. ✅ ingest 幂等（`line_doc_id` 稳定 id + added/skipped 统计）、离线归因 Chroma 写/删移出 PG 事务（提交后 `_flush_post_commit_chroma` 统一执行、逐条故障隔离）、web 资料 upsert 逐条故障隔离（`chat.web_memory_upsert_failed`）。详见 finished_improvement.md #61。
 
 62. ✅ 移除 sample_lines 与 dimension 的关联（删 `PersonalitySampleLine.dimension_descriptions` 及 ingest 中按描述补插维度逻辑；全量 155 passed, 1 skipped 不变）。详见 finished_improvement.md #62。
+
+63. ✅ embedding 统一替换为 jina-embeddings-v2-base-zh（fastembed 栈保留，两集合共用单实例 768 维不截断；删除全部 query/document 前缀逻辑；配置合并为 `embedding_model`/`embedding_dim`；全量 153 passed, 1 skipped）。详见 finished_improvement.md #63。
 
 # 未来可选增强（计划中）
 

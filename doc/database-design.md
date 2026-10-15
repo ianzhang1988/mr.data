@@ -398,6 +398,6 @@ erDiagram
 4. **会话结束**：用户输入 `/newsession` 或退出 CLI 时，当前 `sessions` 记录标记为 `closed`。
 5. **离线归因**：只读取状态为 `closed` 且包含未处理对话的会话，按会话分析后更新 `personality_dimensions`。
 6. **动态创建维度**：LLM 归因发现新性格时，插入新的 `personality_dimensions` 记录。
-7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词（schema 见上文「落库 metadata schema」），供后续对话检索。`memories` 使用 BGE-base-zh-v1.5（768 维）。
-8. **人格素材向量库**：`personality` 集合使用 Nomic Embed Text v1.5 截断至 512 维；新增文档自动加 `search_document:` 前缀，查询自动加 `search_query:` 前缀。
+7. **世界知识记忆**：从网络检索并提取的 `web_docs` 会同步写入 Chroma `memories` 集合，metadata 包含 `source_type=web`、URL、标题、检索时间与查询词（schema 见上文「落库 metadata schema」），供后续对话检索。
+8. **人格素材向量库与记忆库**：`personality` 与 `memories` 集合统一使用 jina-embeddings-v2-base-zh（768 维）；jina v2 无前缀要求，文档与查询均按原文嵌入。
 9. **审计**：每次更新写入 `adjustment_logs`，并记录 `session_id`。

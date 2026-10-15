@@ -62,16 +62,16 @@ def test_webdoc_metadata_allows_unknown_extra_keys():
 
 
 def test_collection_metadata_alias_roundtrip():
-    meta = CollectionMetadata(embedding_dim=512, embedding_model="nomic")
+    meta = CollectionMetadata(embedding_dim=768, embedding_model="jinaai/jina-embeddings-v2-base-zh")
     dumped = meta.model_dump(by_alias=True, exclude_none=True)
     assert dumped == {
         "hnsw:space": "cosine",
-        "embedding_dim": 512,
-        "embedding_model": "nomic",
+        "embedding_dim": 768,
+        "embedding_model": "jinaai/jina-embeddings-v2-base-zh",
     }
     parsed = CollectionMetadata.model_validate(dumped)
-    assert parsed.embedding_dim == 512
-    assert parsed.embedding_model == "nomic"
+    assert parsed.embedding_dim == 768
+    assert parsed.embedding_model == "jinaai/jina-embeddings-v2-base-zh"
     assert parsed.hnsw_space == "cosine"
     # 空 metadata（旧 collection 无指纹）可 validate，字段全默认
     empty = CollectionMetadata.model_validate({})

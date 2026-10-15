@@ -48,11 +48,10 @@ class Settings(BaseSettings):
     # 人格文件配置（默认 <data_dir>/personalities/data.json）
     personality_file: str | None = None
 
-    # 向量库 embedding 配置
-    personality_embedding_model: str = "nomic-ai/nomic-embed-text-v1.5"
-    personality_embedding_dim: int = 512
-    memory_embedding_model: str = "BAAI/bge-base-zh-v1.5"
-    memory_embedding_dim: int = 768
+    # 向量库 embedding 配置（personality / memories 集合共用同一模型；
+    # jina v2 无 query/document 前缀要求，文本原样嵌入）
+    embedding_model: str = "jinaai/jina-embeddings-v2-base-zh"
+    embedding_dim: int = 768
     chroma_recreate_on_mismatch: bool = True
 
     # 网络搜索 RAG 配置

@@ -9,7 +9,7 @@ import chromadb
 from pydantic import ValidationError
 
 from mr_data.config import settings
-from mr_data.embeddings import BGEMemoryEmbedding, NomicPersonalityEmbedding
+from mr_data.embeddings import JinaEmbedding
 from mr_data.logging import get_logger
 from mr_data.models import (
     CollectionMetadata,
@@ -83,13 +83,16 @@ class ChromaStore:
             self.persist_dir.mkdir(parents=True, exist_ok=True)
             self._client = chromadb.PersistentClient(path=str(self.persist_dir))
 
-        self._personality_embedding_fn = personality_embedding_fn or NomicPersonalityEmbedding(
-            model_name=settings.personality_embedding_model,
-            dim=settings.personality_embedding_dim,
-        )
-        self._memory_embedding_fn = memory_embedding_fn or BGEMemoryEmbedding(
-            model_name=settings.memory_embedding_model,
-        )
+        # Both collections share one embedding model; a single default instance
+        # avoids loading the model twice.
+        default_embedding_fn = None
+        if personality_embedding_fn is None or memory_embedding_fn is None:
+            default_embedding_fn = JinaEmbedding(
+                model_name=settings.embedding_model,
+                dim=settings.embedding_dim,
+            )
+        self._personality_embedding_fn = personality_embedding_fn or default_embedding_fn
+        self._memory_embedding_fn = memory_embedding_fn or default_embedding_fn
 
         # Trigger collection initialization / migration checks.
         _ = self.personality
@@ -206,10 +209,8 @@ class ChromaStore:
         """Restore a JSON backup (see _export_collection_backup) into this store.
 
         Embeddings are recomputed with the currently configured embedding function.
-        Documents are embedded exactly as stored: personality documents already
-        carry the "search_document: " prefix (added by add_personality_event before
-        calling the embedding fn, which itself adds no prefix), so no prefix is
-        added here. Documents whose id already exists are skipped, so repeated
+        Documents are embedded exactly as stored (the embedding model requires
+        no prefixes). Documents whose id already exists are skipped, so repeated
         restores never duplicate. Metadatas (recall_count/added_at etc.) are
         restored verbatim via collection.add.
 
@@ -261,16 +262,16 @@ class ChromaStore:
     def personality(self):
         return self._ensure_collection(
             "personality",
-            settings.personality_embedding_dim,
-            settings.personality_embedding_model,
+            settings.embedding_dim,
+            settings.embedding_model,
         )
 
     @property
     def memories(self):
         return self._ensure_collection(
             "memories",
-            settings.memory_embedding_dim,
-            settings.memory_embedding_model,
+            settings.embedding_dim,
+            settings.embedding_model,
         )
 
     def add_personality_event(self, event: PersonalityEvent) -> str:
@@ -281,13 +282,12 @@ class ChromaStore:
         if event.id and self.personality.get(ids=[doc_id])["ids"]:
             return doc_id
         # Embed the full context if available; otherwise fall back to the utterance.
+        # Jina v2 requires no document prefix; the stored document is the raw text.
         embedding_text = event.context if event.context else event.content
-        # Nomic expects a document prefix for retrieval alignment.
-        prefixed_embedding_text = f"search_document: {embedding_text}"
-        embedding = self._personality_embedding_fn([prefixed_embedding_text])[0]
+        embedding = self._personality_embedding_fn([embedding_text])[0]
         self.personality.add(
             ids=[doc_id],
-            documents=[prefixed_embedding_text],
+            documents=[embedding_text],
             embeddings=[embedding],
             metadatas=[PersonalityDocMetadata(
                 utterance=event.content,
@@ -319,8 +319,7 @@ class ChromaStore:
         return doc_ids
 
     def query_personality(self, query: str, top_k: int = 5) -> list[PersonalityDoc]:
-        prefixed_query = f"search_query: {query}"
-        query_embedding = self._personality_embedding_fn([prefixed_query])[0]
+        query_embedding = self._personality_embedding_fn([query])[0]
         result = self.personality.query(query_embeddings=[query_embedding], n_results=top_k)
         docs = []
         for i in range(len(result["ids"][0])):
@@ -384,8 +383,7 @@ class ChromaStore:
 
     def query_memories(self, query: str, session_id: Optional[str] = None, top_k: int = 5) -> list[MemoryDoc]:
         where = {"session_id": session_id} if session_id else None
-        prefixed_query = f"Represent this sentence for searching relevant passages: {query}"
-        query_embedding = self._memory_embedding_fn([prefixed_query])[0]
+        query_embedding = self._memory_embedding_fn([query])[0]
         result = self.memories.query(query_embeddings=[query_embedding], n_results=top_k, where=where)
         docs = []
         for i in range(len(result["ids"][0])):

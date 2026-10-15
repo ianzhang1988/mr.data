@@ -3,7 +3,8 @@
 覆盖：
 - insert_dialogue_vector_refs 崩溃 → 事务回滚：本回合 user/assistant 行及
   dialogue_dimension_refs/dialogue_vector_refs 均无残留；
-- 正常路径：事务提交后 user+assistant 行、维度 refs、向量 refs 齐全。
+- 正常路径：事务提交后 user+assistant 行、维度 refs、向量 refs 齐全；
+- 网络资料写入 Chroma 单条失败被隔离：不影响本回合 PG 提交，也不中断对话。
 """
 
 import pytest
@@ -146,3 +147,55 @@ def test_log_dialogue_commits_all_rows(
         "SELECT COUNT(*) AS c FROM dialogue_vector_refs WHERE dialogue_log_id = %s",
         (assistant_log_id,),
     ) == 2
+
+
+def test_web_memory_upsert_failure_does_not_abort_turn(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+    state = _build_state(pg, test_session_id)
+
+    def _failing_upsert_memory(*args, **kwargs):
+        raise RuntimeError("模拟 Chroma 故障")
+
+    monkeypatch.setattr(chroma_store, "upsert_memory", _failing_upsert_memory)
+
+    result = graph._log_dialogue(state)
+    assistant_log_id = result["assistant_log_id"]
+    assert assistant_log_id is not None
+
+    with pg._cursor() as cur:
+        cur.execute(
+            "SELECT role FROM dialogue_logs WHERE session_id = %s ORDER BY id",
+            (test_session_id,),
+        )
+        roles = [row["role"] for row in cur.fetchall()]
+    assert roles == ["user", "assistant"]
+
+    expected_dim_ids = set(state["selected_dimension_ids"])
+    assert _count(
+        pg,
+        "SELECT COUNT(*) AS c FROM dialogue_dimension_refs WHERE dialogue_log_id = %s",
+        (assistant_log_id,),
+    ) == len(expected_dim_ids)
+    assert _count(
+        pg,
+        "SELECT COUNT(*) AS c FROM dialogue_vector_refs WHERE dialogue_log_id = %s",
+        (assistant_log_id,),
+    ) == 2
+
+    assert chroma_store.memories.count() == 0

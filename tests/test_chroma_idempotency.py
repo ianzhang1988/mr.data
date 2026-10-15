@@ -2,7 +2,7 @@
 
 覆盖：
 - personality / memories 稳定 id 的「已存在则跳过」语义；
-- 归因 _apply 重放不产生重复文档；
+- 归因 _apply + _flush_post_commit_chroma 后重放幂等，不产生重复文档；
 - _stable_web_id 各 fallback 分支与跳转链接（洞 1、洞 2）。
 """
 
@@ -126,14 +126,16 @@ def test_apply_replay_does_not_duplicate_chroma_docs(
     )
     engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
 
-    engine._apply(result, test_session_id, logs)
+    applied, events, purge = engine._apply(result, test_session_id, logs)
+    engine._flush_post_commit_chroma(test_session_id, logs, events, purge)
     personality_count = chroma_store.personality.count()
     memories_count = chroma_store.memories.count()
     assert personality_count == 3  # 2 evidence + 1 event_summary
     assert memories_count >= 1  # 至少一个对话分块
 
     # 模拟崩溃后重放：Chroma 侧文档数不变
-    engine._apply(result, test_session_id, logs)
+    applied, events, purge = engine._apply(result, test_session_id, logs)
+    engine._flush_post_commit_chroma(test_session_id, logs, events, purge)
     assert chroma_store.personality.count() == personality_count
     assert chroma_store.memories.count() == memories_count
 

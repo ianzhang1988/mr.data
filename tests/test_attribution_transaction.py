@@ -9,8 +9,9 @@
 
 import pytest
 
+from mr_data.config import settings
 from mr_data.db import PostgresStore
-from mr_data.models import DialogueLog
+from mr_data.models import DialogueLog, DialogueVectorRef, PersonalityEvent
 from mr_data.offline import AttributionEngine
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
@@ -186,3 +187,161 @@ def test_nested_transaction_rejected(pg_available):
         with pytest.raises(RuntimeError, match="nested transactions"):
             with pg.transaction():
                 pass
+
+
+def test_rollback_does_not_touch_chroma(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    # Pre-seed an evidence doc tied to dimension 1 so we can verify rollback leaves it alone.
+    dummy_id = pg.insert_dialogue(
+        DialogueLog(session_id=test_session_id, role="assistant", content="legacy")
+    )
+    event = PersonalityEvent(
+        content="即将被清理的旧证据",
+        dimension_ids=[1],
+        source_type="evidence",
+        source_id="legacy",
+    )
+    doc_id = chroma_store.add_personality_event(event)
+    pg.insert_dialogue_vector_refs(
+        dummy_id,
+        [
+            DialogueVectorRef(
+                dialogue_log_id=dummy_id,
+                vector_doc_id=doc_id,
+                source_type="evidence",
+                content=event.content,
+                dimension_ids=[1],
+            )
+        ],
+    )
+
+    threshold = settings.failure_threshold
+    with pg._cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE personality_dimensions SET core = FALSE, failure_count = %s WHERE id = 1",
+            (threshold,),
+        )
+
+    assistant_id = _setup_closed_session(pg, test_session_id)
+
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
+
+    def _failing_insert_adjustment(adj):
+        raise RuntimeError("模拟 _apply 中途崩溃")
+
+    monkeypatch.setattr(pg, "insert_adjustment", _failing_insert_adjustment)
+
+    engine.run()
+
+    dim = pg.get_dimension(1)
+    assert dim is not None
+    assert dim.active is True
+    assert len(pg.get_dialogue_vector_refs_by_dimension(1)) > 0
+    assert doc_id in chroma_store.get_personality_event_ids_by_dimension(1)
+
+    monkeypatch.undo()
+    engine.run()
+
+    dim = pg.get_dimension(1)
+    assert dim is not None
+    assert dim.active is False
+    assert len(pg.get_dialogue_vector_refs_by_dimension(1)) == 0
+    assert doc_id not in chroma_store.get_personality_event_ids_by_dimension(1)
+
+
+def test_purge_failure_does_not_fail_committed_session(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    dummy_id = pg.insert_dialogue(
+        DialogueLog(session_id=test_session_id, role="assistant", content="legacy")
+    )
+    event = PersonalityEvent(
+        content="即将被清理的旧证据",
+        dimension_ids=[1],
+        source_type="evidence",
+        source_id="legacy",
+    )
+    doc_id = chroma_store.add_personality_event(event)
+    pg.insert_dialogue_vector_refs(
+        dummy_id,
+        [
+            DialogueVectorRef(
+                dialogue_log_id=dummy_id,
+                vector_doc_id=doc_id,
+                source_type="evidence",
+                content=event.content,
+                dimension_ids=[1],
+            )
+        ],
+    )
+
+    threshold = settings.failure_threshold
+    with pg._cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE personality_dimensions SET core = FALSE, failure_count = %s WHERE id = 1",
+            (threshold,),
+        )
+
+    _setup_closed_session(pg, test_session_id)
+
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
+
+    def _failing_delete_personality_events(doc_ids):
+        raise RuntimeError("模拟 Chroma purge 失败")
+
+    monkeypatch.setattr(chroma_store, "delete_personality_events", _failing_delete_personality_events)
+
+    engine.run()
+
+    unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
+    assert len(unprocessed) == 0
+    dim = pg.get_dimension(1)
+    assert dim is not None
+    assert dim.active is False
+    assert _adjustment_count(pg) == 1
+
+
+def test_chroma_write_failure_after_commit_does_not_fail_session(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+):
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    assistant_id = _setup_closed_session(pg, test_session_id)
+    fake_llm.attribution_target_log_id = assistant_id
+
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
+
+    def _failing_add_personality_event(event):
+        raise RuntimeError("模拟 Chroma 写入失败")
+
+    monkeypatch.setattr(chroma_store, "add_personality_event", _failing_add_personality_event)
+
+    engine.run()
+
+    unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
+    assert len(unprocessed) == 0
+    assert _adjustment_count(pg) == 1

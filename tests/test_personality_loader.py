@@ -34,7 +34,6 @@ def test_load_personality_pack_from_file(tmp_path, monkeypatch):
                 "content": "正在运行测试。",
                 "context": "用户要求测试时。",
                 "speaker": "TestBot",
-                "dimension_descriptions": ["我喜欢测试。"],
             }
         ],
     }

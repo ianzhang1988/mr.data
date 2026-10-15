@@ -29,10 +29,7 @@
     {
       "content": "我无法确定这是否是一个玩笑。",
       "context": "用户讲了一个双关语后，Data 坦诚自己的局限。",
-      "speaker": "Data",
-      "dimension_descriptions": [
-        "我倾向于逻辑、字面、精确地表达..."
-      ]
+      "speaker": "Data"
     }
   ]
 }
@@ -60,7 +57,6 @@
 | `content` | 角色台词（注入 prompt 时使用的 utterance） |
 | `context` | 前置场景，用于向量检索 embedding |
 | `speaker` | 说话者标识，默认 `assistant` |
-| `dimension_descriptions` | 该台词对应哪些维度，按 `dimensions` 中的 `description` 精确匹配 |
 
 ## 切换人格
 

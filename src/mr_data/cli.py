@@ -184,29 +184,26 @@ def ingest() -> None:
     pg.init_schema()
     pg.seed()
 
-    existing = pg.list_dimensions()
-    desc_to_id = {dim.description: dim.id for dim in existing}
-
-    # Ensure all dimensions referenced by sample lines exist.
-    for desc in pack.sample_lines:
-        for dim_desc in desc.dimension_descriptions:
-            if dim_desc not in desc_to_id:
-                dim_to_id = pg.insert_dimension(dim_desc)
-                desc_to_id[dim_desc] = dim_to_id
-
     store = ChromaStore()
-    count = 0
+    existing_ids = set(store.personality.get()["ids"])
+    added = 0
+    skipped = 0
     for line in pack.sample_lines:
+        doc_id = line_doc_id(line.speaker, line.content, line.context)
+        if doc_id in existing_ids:
+            skipped += 1
+            continue
         event = PersonalityEvent(
+            id=doc_id,
             content=line.content,
             context=line.context,
             speaker=line.speaker,
-            dimension_ids=[desc_to_id[d] for d in line.dimension_descriptions if d in desc_to_id],
             source_type="line",
         )
         store.add_personality_event(event)
-        count += 1
-    rprint(f"[green]Ingested {count} personality lines.[/green]")
+        existing_ids.add(doc_id)
+        added += 1
+    rprint(f"[green]Ingested {added} personality lines ({skipped} skipped, already present).[/green]")
 
 
 @identity_app.command("list")

@@ -134,18 +134,21 @@ class AttributionEngine:
                 continue
             try:
                 with self.pg.transaction():
-                    applied = self._apply(result, session.id, logs)
+                    applied, pending_events, pending_purge = self._apply(result, session.id, logs)
                     for log in logs:
                         self.pg.mark_dialogue_processed(log.id)
             except Exception:
                 # 事务已回滚（transaction() 自动 rollback），会话保持 unprocessed，
-                # 下次 run() 重试；Chroma 侧已写文档靠确定性 doc id 重放幂等自愈。
+                # 下次 run() 重试；Chroma 写/删均在提交成功后执行，回滚时不产生
+                # 任何 Chroma 副作用，无需自愈。
                 self.logger.warning(
                     "Session apply failed and rolled back, will retry next run",
                     extra={"event": "offline.apply_failed", "session_id": session.id},
                 )
                 failed_sessions += 1
                 continue
+
+            self._flush_post_commit_chroma(session.id, logs, pending_events, pending_purge)
 
             total_sessions += 1
             total_deltas += applied
@@ -414,12 +417,17 @@ class AttributionEngine:
             delta.new_dimension_description = None
             delta.new_dimension_reason = None
 
-    def _apply(self, result: AttributionResult, session_id: str, logs: list[DialogueLog]) -> int:
+    def _apply(
+        self, result: AttributionResult, session_id: str, logs: list[DialogueLog]
+    ) -> tuple[int, list[PersonalityEvent], list[int]]:
         # 不再提供 fallback target：无有效 target 时证据/事件不写向量库，
         # 避免 doc id 哈希原料与 source_id 被 "None" 污染（改进 54）。
+        # Chroma 副作用只收集不执行，由 run() 在 PG 事务提交成功后统一 flush。
         sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
 
         applied = 0
+        pending_events: list[PersonalityEvent] = []
+        pending_purge: list[int] = []
         for delta in result.deltas:
             dim_id = delta.dimension_id
             if dim_id is None and delta.new_dimension_description:
@@ -468,16 +476,18 @@ class AttributionEngine:
             if delta.evidence_snippets and target_log_id is not None:
                 context = self._build_evidence_context(logs, target_log_id)
                 for snippet in delta.evidence_snippets:
-                    event = PersonalityEvent(
-                        id=evidence_doc_id(target_log_id, dim_id, snippet),
-                        content=snippet,
-                        context=context,
-                        speaker="assistant",
-                        dimension_ids=[dim_id],
-                        source_type="evidence",
-                        source_id=str(target_log_id),
+                    doc_id = evidence_doc_id(target_log_id, dim_id, snippet)
+                    pending_events.append(
+                        PersonalityEvent(
+                            id=doc_id,
+                            content=snippet,
+                            context=context,
+                            speaker="assistant",
+                            dimension_ids=[dim_id],
+                            source_type="evidence",
+                            source_id=str(target_log_id),
+                        )
                     )
-                    doc_id = self.chroma.add_personality_event(event)
                     self.pg.insert_dialogue_vector_refs(
                         target_log_id,
                         [
@@ -503,14 +513,15 @@ class AttributionEngine:
             # Persist high-level event summary if provided.
             # 这里是对pg中存在的维度，记录了维度的实际使用过程，作为后续性格的参考
             if delta.event_summary and target_log_id is not None:
-                event = PersonalityEvent(
-                    id=event_doc_id(target_log_id, dim_id, delta.event_summary),
-                    content=delta.event_summary,
-                    dimension_ids=[dim_id],
-                    source_type="event",
-                    source_id=str(target_log_id),
+                pending_events.append(
+                    PersonalityEvent(
+                        id=event_doc_id(target_log_id, dim_id, delta.event_summary),
+                        content=delta.event_summary,
+                        dimension_ids=[dim_id],
+                        source_type="event",
+                        source_id=str(target_log_id),
+                    )
                 )
-                self.chroma.add_personality_event(event)
             elif delta.event_summary:
                 self.logger.info(
                     "Event summary skipped: no valid target dialogue log id",
@@ -525,7 +536,7 @@ class AttributionEngine:
             dim = self.pg.get_dimension(dim_id)
             if dim and not dim.core and dim.failure_count >= settings.failure_threshold:
                 self.pg.deactivate_dimension(dim_id)
-                self._purge_dimension_vectors(dim_id)
+                pending_purge.append(dim_id)
                 self.logger.info(
                     "Deactivated dimension due to failure threshold",
                     extra={
@@ -535,9 +546,6 @@ class AttributionEngine:
                     },
                 )
 
-        # Persist session dialogue chunks to the memory vector store for future recall.
-        self._persist_session_memories(session_id, sorted_logs)
-
         self.logger.info(
             "Session attribution applied",
             extra={
@@ -546,7 +554,42 @@ class AttributionEngine:
                 "details": {"delta_count": applied},
             },
         )
-        return applied
+        return applied, pending_events, pending_purge
+
+    def _flush_post_commit_chroma(
+        self,
+        session_id: str,
+        logs: list[DialogueLog],
+        events: list[PersonalityEvent],
+        purge_dimension_ids: list[int],
+    ) -> None:
+        for event in events:
+            try:
+                self.chroma.add_personality_event(event)
+            except Exception as exc:
+                self.logger.warning(
+                    "Chroma personality event write failed after PG commit",
+                    extra={
+                        "event": "offline.chroma_write_failed",
+                        "session_id": session_id,
+                        "details": {"doc_id": event.id, "source_type": event.source_type, "error": str(exc)},
+                    },
+                )
+
+        self._persist_session_memories(session_id, logs)
+
+        for dim_id in purge_dimension_ids:
+            try:
+                self._purge_dimension_vectors(dim_id)
+            except Exception as exc:
+                self.logger.warning(
+                    "Dimension vector purge failed after PG commit",
+                    extra={
+                        "event": "offline.dimension_purge_failed",
+                        "session_id": session_id,
+                        "details": {"dimension_id": dim_id, "error": str(exc)},
+                    },
+                )
 
     def _persist_session_memories(self, session_id: str, logs: list[DialogueLog]) -> None:
         """Chunk session dialogue logs and persist them to the memory vector store."""
@@ -558,24 +601,34 @@ class AttributionEngine:
             settings.memory_dialogue_chunk_overlap_lines,
         )
         now = datetime.now(timezone.utc).isoformat()
-        for chunk in chunks:
-            self.chroma.add_memory(
-                session_id,
-                chunk.content,
-                memory_id=dialogue_chunk_memory_id(
+        for idx, chunk in enumerate(chunks):
+            try:
+                self.chroma.add_memory(
                     session_id,
-                    chunk.first_dialogue_log_id,
-                    chunk.last_dialogue_log_id,
                     chunk.content,
-                ),
-                metadata=DialogueMemoryMetadata(
-                    session_id=session_id,
-                    chunk_index=chunk.chunk_index,
-                    first_dialogue_log_id=chunk.first_dialogue_log_id,
-                    last_dialogue_log_id=chunk.last_dialogue_log_id,
-                    added_at=now,
-                ),
-            )
+                    memory_id=dialogue_chunk_memory_id(
+                        session_id,
+                        chunk.first_dialogue_log_id,
+                        chunk.last_dialogue_log_id,
+                        chunk.content,
+                    ),
+                    metadata=DialogueMemoryMetadata(
+                        session_id=session_id,
+                        chunk_index=chunk.chunk_index,
+                        first_dialogue_log_id=chunk.first_dialogue_log_id,
+                        last_dialogue_log_id=chunk.last_dialogue_log_id,
+                        added_at=now,
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Session memory persist failed after PG commit",
+                    extra={
+                        "event": "offline.memory_persist_failed",
+                        "session_id": session_id,
+                        "details": {"chunk_index": idx, "error": str(exc)},
+                    },
+                )
 
     def _build_evidence_context(self, logs: list[DialogueLog], target_log_id: int) -> str:
         """Build a short transcript context around the target dialogue log."""

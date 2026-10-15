@@ -347,7 +347,6 @@ class PersonalitySampleLine(BaseModel):
     content: str
     context: Optional[str] = None
     speaker: str = "assistant"
-    dimension_descriptions: list[str] = Field(default_factory=list)
 
 
 class PersonalityPack(BaseModel):

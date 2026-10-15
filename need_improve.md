@@ -11,12 +11,17 @@
 - 完成修改后，更新本文档
 
 # 待改进
-（当前为空；新任务请追加在此）
+
+1. 修改项目中的embeding为jina-v2-base-v2, 原来使用的bge fastembed不支持， nomic对中文支持不好。别忘记要使用jina的prefix要求，也就是不需要prefix。
 
 # 已完成的改进项
 （保留最近几条，完成的条目放到 finished_improvement.md 中归档；35-59 已迁移归档）
 
 60. ✅ recall 计数按返回 id 对齐写回（`chroma.py` `increment_memory_recall` 存储序错位修复 + 缺失 id 跳过不抛异常；新增 `tests/test_memory_recall.py` 3 用例；全量 150 passed, 1 skipped）。详见 finished_improvement.md #60。
+
+61. ✅ ingest 幂等（`line_doc_id` 稳定 id + added/skipped 统计）、离线归因 Chroma 写/删移出 PG 事务（提交后 `_flush_post_commit_chroma` 统一执行、逐条故障隔离）、web 资料 upsert 逐条故障隔离（`chat.web_memory_upsert_failed`）。详见 finished_improvement.md #61。
+
+62. ✅ 移除 sample_lines 与 dimension 的关联（删 `PersonalitySampleLine.dimension_descriptions` 及 ingest 中按描述补插维度逻辑；全量 155 passed, 1 skipped 不变）。详见 finished_improvement.md #62。
 
 # 未来可选增强（计划中）
 
@@ -30,3 +35,4 @@
 8. 考虑性格向量库的更新问题
    1. chroma性格库部分，增加召回时的记录，用来做淘汰等
 9. 调查代码中对list进行截断的地方，是否都合适
+

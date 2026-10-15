@@ -699,18 +699,28 @@ class DialogueGraph:
             url = doc.metadata.url
             content = doc.page_content
             memory_content = f"[网络资料] {title}\n{url}\n{content[:800]}"
-            self.chroma.upsert_memory(
-                session_id="",
-                content=memory_content,
-                memory_id=doc.id,
-                metadata=WebMemoryMetadata(
-                    url=url,
-                    title=title,
-                    retrieved_at=retrieved_at,
-                    retrieval_session_id=session_id,
-                    query=retrieval_query,
-                ),
-            )
+            try:
+                self.chroma.upsert_memory(
+                    session_id="",
+                    content=memory_content,
+                    memory_id=doc.id,
+                    metadata=WebMemoryMetadata(
+                        url=url,
+                        title=title,
+                        retrieved_at=retrieved_at,
+                        retrieval_session_id=session_id,
+                        query=retrieval_query,
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Web memory upsert failed, skipped",
+                    extra={
+                        "event": "chat.web_memory_upsert_failed",
+                        "session_id": session_id,
+                        "details": {"doc_id": doc.id, "url": url, "error": str(exc)},
+                    },
+                )
 
         self.logger.info(
             "Logged dialogue turn",

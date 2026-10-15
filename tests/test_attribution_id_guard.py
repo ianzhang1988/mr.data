@@ -165,7 +165,11 @@ def test_valid_target_persists_evidence_and_refs(
     logs, _, assistant_id = _setup_session(pg, test_session_id)
     llm = DedupFakeLLM(deltas=[_delta(target_dialogue_log_id=assistant_id)])
 
-    _attribute_and_apply(pg, chroma_store, llm, test_session_id, logs)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=llm)
+    result = engine._attribute_session(test_session_id, logs)
+    assert result is not None
+    applied, events, purge = engine._apply(result, test_session_id, logs)
+    engine._flush_post_commit_chroma(test_session_id, logs, events, purge)
 
     rows = _fetch_adjustments(pg)
     assert len(rows) == 1 and rows[0]["dialogue_log_id"] == assistant_id

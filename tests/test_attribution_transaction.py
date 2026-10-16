@@ -225,11 +225,10 @@ def test_rollback_does_not_touch_chroma(
         ],
     )
 
-    threshold = settings.failure_threshold
     with pg._cursor(commit=True) as cur:
         cur.execute(
-            "UPDATE personality_dimensions SET core = FALSE, failure_count = %s WHERE id = 1",
-            (threshold,),
+            "UPDATE personality_dimensions SET core = FALSE, success_count = 0, failure_count = %s WHERE id = 1",
+            (settings.failure_min_samples,),
         )
 
     assistant_id = _setup_closed_session(pg, test_session_id)
@@ -294,11 +293,10 @@ def test_purge_failure_does_not_fail_committed_session(
         ],
     )
 
-    threshold = settings.failure_threshold
     with pg._cursor(commit=True) as cur:
         cur.execute(
-            "UPDATE personality_dimensions SET core = FALSE, failure_count = %s WHERE id = 1",
-            (threshold,),
+            "UPDATE personality_dimensions SET core = FALSE, success_count = 0, failure_count = %s WHERE id = 1",
+            (settings.failure_min_samples,),
         )
 
     _setup_closed_session(pg, test_session_id)

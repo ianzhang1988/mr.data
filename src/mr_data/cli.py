@@ -130,7 +130,19 @@ def chat(
                 rprint(f"[dim]New session: {current_session_id}[/dim]\n")
                 continue
 
-            result = graph.chat(current_session_id, user_input)
+            try:
+                result = graph.chat(current_session_id, user_input)
+            except Exception as exc:
+                logger.warning(
+                    "Chat turn failed",
+                    extra={
+                        "event": "cli.chat_turn_failed",
+                        "session_id": current_session_id,
+                        "details": {"error": str(exc)},
+                    },
+                )
+                rprint(f"[red]本轮对话出错：{exc}[/red]\n")
+                continue
             rprint(f"[bold cyan]mr.data:[/bold cyan] {result.text}\n")
             if show_references and result.blocks:
                 import json
@@ -149,9 +161,26 @@ def chat(
         # Ensure the active session is closed so offline attribution can process it.
         try:
             _ask_session_rating(pg, current_session_id)
-        except (EOFError, KeyboardInterrupt):
-            pass
-        pg.close_session(current_session_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to ask session rating",
+                extra={
+                    "event": "cli.session_rating_failed",
+                    "session_id": current_session_id,
+                    "details": {"error": str(exc)},
+                },
+            )
+        try:
+            pg.close_session(current_session_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to close session",
+                extra={
+                    "event": "cli.close_session_failed",
+                    "session_id": current_session_id,
+                    "details": {"error": str(exc)},
+                },
+            )
 
     rprint("[dim]Goodbye.[/dim]")
 

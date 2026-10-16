@@ -2,6 +2,10 @@ from datetime import datetime
 from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
+from mr_data.logging import get_logger
+
+logger = get_logger("mr_data.models.personality")
+
 # 素材来源类型（source_type）唯一事实来源；详细约定见 doc/database-design.md
 # personality 集合：line / event / evidence；memories 集合：web / dialogue
 PersonalitySourceType = Literal["line", "event", "evidence"]
@@ -221,12 +225,34 @@ class PersonalityDocMetadata(BaseModel):
     def from_chroma_metadata(cls, meta: dict) -> "PersonalityDocMetadata":
         """从 Chroma 读回的 dict 解析（dimension_ids CSV 还原为 list[int]）。"""
         meta = meta or {}
-        dim_ids_str = meta.get("dimension_ids", "")
+        dim_ids_str = meta.get("dimension_ids", "") or ""
+        dimension_ids: list[int] = []
+        skipped: list[str] = []
+        for token in dim_ids_str.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                dimension_ids.append(int(token))
+            except ValueError:
+                skipped.append(token)
+        if skipped:
+            logger.warning(
+                "Skipped non-numeric dimension_ids tokens from Chroma metadata",
+                extra={
+                    "event": "personality.metadata_dimension_ids_skipped",
+                    "details": {
+                        "source_id": meta.get("source_id", ""),
+                        "skipped_tokens": skipped,
+                        "raw_value": dim_ids_str,
+                    },
+                },
+            )
         return cls(
             utterance=meta.get("utterance", ""),
             context=meta.get("context", ""),
             speaker=meta.get("speaker", "assistant"),
-            dimension_ids=[int(x) for x in dim_ids_str.split(",") if x],
+            dimension_ids=dimension_ids,
             source_type=meta.get("source_type", "line"),
             source_id=meta.get("source_id", ""),
         )

@@ -76,7 +76,7 @@ flowchart TB
 * 离线定时任务只分析**已关闭会话**中的对话，按时间顺序拼接完整 transcript 后交给 LLM 归因；提示词中注入基础人设、当前性格维度、历史人格素材以及助手思考过程。
 * 归因结果不仅更新维度计数，还会把关键证据片段写回 `personality` 向量库（`source_type="evidence"`），并标记证据与基础性格的关系；同时在 `dialogue_vector_refs` 记录反向引用。
 * `personality` 向量库采用"场景上下文 embedding + agent 台词 utterance"的存储方式：检索时按完整场景匹配，注入 prompt 时只返回 agent 相关台词。
-* 当某个非核心维度的失败次数达到阈值（`MR_DATA_FAILURE_THRESHOLD`）时，自动将该维度标记为失效，并清理 `personality` 向量库中对应的相关证据文档。
+* 当某个非核心维度的失败样本量与失败比率同时达到阈值（`MR_DATA_FAILURE_MIN_SAMPLES`、`MR_DATA_FAILURE_RATIO_THRESHOLD`）时，自动将该维度标记为失效，并清理 `personality` 向量库中对应的相关证据文档。
 * 网络搜索采用多 Provider 体系：DuckDuckGo（默认）/ SearXNG / Brave / Bing / Google CSE / 百度 / 360，通过 `MR_DATA_WEB_SEARCH_PROVIDERS` 配置启用的 Provider 及顺序，前一个失败时按顺序降级。
 * 网络资料不仅用于当前回复，还会作为世界知识写入 `memories` 向量库，附带 URL、标题、检索时间等 metadata。
 * 结构化日志：所有关键操作（对话、检索、归因、维度失效）以 JSONL 写入 `./logs/mr-data.log`，默认滚动保留，可用 [logdy](https://logdy.dev/) 等工具查看。

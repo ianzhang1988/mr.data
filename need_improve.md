@@ -23,6 +23,8 @@
 
 63. ✅ embedding 统一替换为 jina-embeddings-v2-base-zh（fastembed 栈保留，两集合共用单实例 768 维不截断；删除全部 query/document 前缀逻辑；配置合并为 `embedding_model`/`embedding_dim`；全量 153 passed, 1 skipped）。详见 finished_improvement.md #63。
 
+64. ✅ 维度淘汰改比率 + 最小样本量（`failure_min_samples`/`failure_ratio_threshold` 替换 `failure_threshold`）、在线链路三处兜底（回退二次失败静态文案、人格检索回退空列表、脏 CSV 容错）、CLI 两处异常保护（REPL 单轮故障不退出、finally 评分/关闭独立 try）。全量 167 passed, 1 skipped。详见 finished_improvement.md #64。
+
 # 未来可选增强（计划中）
 
 1. 自动关闭长期未活动的会话（session timeout policy）。

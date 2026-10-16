@@ -80,7 +80,10 @@ class Settings(BaseSettings):
     # 新建性格维度前的 LLM 重合判断（防维度膨胀）；失败时按允许新建降级
     enable_dimension_dedup: bool = True
     personality_retrieval_top_k: int = 5
-    failure_threshold: int = 5
+    # 性格维度淘汰参数：总样本量达到 failure_min_samples 后，
+    # 若失败比率 failure_count/(success_count+failure_count) 超过该阈值则停用维度。
+    failure_min_samples: int = 10
+    failure_ratio_threshold: float = 0.33
 
     # 网页正文提取与相关性过滤配置
     web_extract_max_pages: int = 2

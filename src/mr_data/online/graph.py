@@ -39,6 +39,9 @@ from mr_data.online.prompt_assembly import (
 )
 from mr_data.online.web_search import WebSearchTool
 
+# 当结构化回复与纯文本回退均失败时使用的静态兜底文案。
+_STATIC_FALLBACK_REPLY = "我的处理回路暂时受到干扰，无法组织回复。"
+
 
 @dataclass
 class ChatResult:
@@ -373,7 +376,18 @@ class DialogueGraph:
 
     def _retrieve_personality(self, state: DialogueState) -> DialogueState:
         query = state.get("personality_query") or state["user_input"]
-        docs = self.chroma.query_personality(query, top_k=5)
+        try:
+            docs = self.chroma.query_personality(query, top_k=5)
+        except Exception as exc:
+            self.logger.warning(
+                "Personality retrieval failed; returning empty docs",
+                extra={
+                    "event": "retrieve.personality_failed",
+                    "session_id": state["session_id"],
+                    "details": {"error": str(exc)},
+                },
+            )
+            docs = []
         self.logger.info(
             "Retrieved personality docs",
             extra={
@@ -609,10 +623,22 @@ class DialogueGraph:
                     "details": {"error": str(exc)},
                 },
             )
-            fallback_text = self.llm.chat_with_messages(
-                llm_messages, temperature=0.8)
-            reply = fallback_text
-            blocks = [ReplyBlock(text=fallback_text, references=[])]
+            try:
+                fallback_text = self.llm.chat_with_messages(
+                    llm_messages, temperature=0.8)
+                reply = fallback_text
+                blocks = [ReplyBlock(text=fallback_text, references=[])]
+            except Exception as fallback_exc:
+                self.logger.warning(
+                    "Plain text reply fallback also failed; using static fallback",
+                    extra={
+                        "event": "chat.reply_fallback_failed",
+                        "session_id": state["session_id"],
+                        "details": {"error": str(fallback_exc)},
+                    },
+                )
+                reply = _STATIC_FALLBACK_REPLY
+                blocks = [ReplyBlock(text=_STATIC_FALLBACK_REPLY, references=[])]
 
         all_refs = []
         seen_ids: set[str] = set()

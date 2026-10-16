@@ -78,7 +78,7 @@ CREATE INDEX idx_user_identities_default ON user_identities(is_default);
 
 - 没有 `name` 字段：避免 LLM 归因产生同名不同义的性格时无法入库。
 - 没有 `current_value`：后续只参考成功/失败数据。
-- 没有 `failure_threshold`：淘汰阈值是系统级设置，放在 `.env` / `config.py` 中。
+- 没有 `failure_threshold`：淘汰规则是系统级设置，放在 `.env` / `config.py` 中；总样本量达到阈值且失败比率超过设定值时停用非核心维度。
 - `core` 用于保持角色稳定性：核心维度即使多次失败也会保持 `active = TRUE`。
 
 ### 默认维度示例（Data）

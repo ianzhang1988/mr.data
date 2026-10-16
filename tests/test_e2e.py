@@ -294,13 +294,12 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
         )],
     )
 
-    # Ensure dimension 1 is not core and set it to exactly the threshold so the
-    # incoming attribution triggers pruning.
-    threshold = settings.failure_threshold
+    # Ensure dimension 1 is not core and set it to the minimum sample count
+    # of failures so the incoming attribution triggers pruning.
     with pg._cursor(commit=True) as cur:
         cur.execute(
-            "UPDATE personality_dimensions SET core = FALSE, failure_count = %s WHERE id = 1",
-            (threshold,),
+            "UPDATE personality_dimensions SET core = FALSE, success_count = 0, failure_count = %s WHERE id = 1",
+            (settings.failure_min_samples,),
         )
 
     # Insert a dialogue pair for the closed session.

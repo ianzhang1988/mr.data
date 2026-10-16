@@ -534,17 +534,28 @@ class AttributionEngine:
 
             # Check pruning threshold. Core dimensions stay active for stability.
             dim = self.pg.get_dimension(dim_id)
-            if dim and not dim.core and dim.failure_count >= settings.failure_threshold:
-                self.pg.deactivate_dimension(dim_id)
-                pending_purge.append(dim_id)
-                self.logger.info(
-                    "Deactivated dimension due to failure threshold",
-                    extra={
-                        "event": "offline.dimension_deactivated",
-                        "session_id": session_id,
-                        "details": {"dimension_id": dim_id, "failure_count": dim.failure_count},
-                    },
-                )
+            if dim and not dim.core:
+                total = dim.success_count + dim.failure_count
+                ratio = dim.failure_count / total if total > 0 else 0.0
+                if (
+                    total >= settings.failure_min_samples
+                    and ratio > settings.failure_ratio_threshold
+                ):
+                    self.pg.deactivate_dimension(dim_id)
+                    pending_purge.append(dim_id)
+                    self.logger.info(
+                        "Deactivated dimension due to failure threshold",
+                        extra={
+                            "event": "offline.dimension_deactivated",
+                            "session_id": session_id,
+                            "details": {
+                                "dimension_id": dim_id,
+                                "success_count": dim.success_count,
+                                "failure_count": dim.failure_count,
+                                "ratio": ratio,
+                            },
+                        },
+                    )
 
         self.logger.info(
             "Session attribution applied",

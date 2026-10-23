@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -142,7 +142,7 @@ class SearxngProvider(SearchProvider):
             )
             return []
 
-        url = urljoin(self.base_url.rstrip("/"), "/search")
+        url = f"{self.base_url.rstrip('/')}/search"
         params = {"q": query, "format": "json"}
         try:
             resp = requests.get(url, params=params, timeout=10)

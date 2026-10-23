@@ -25,6 +25,8 @@
 
 64. ✅ 维度淘汰改比率 + 最小样本量（`failure_min_samples`/`failure_ratio_threshold` 替换 `failure_threshold`）、在线链路三处兜底（回退二次失败静态文案、人格检索回退空列表、脏 CSV 容错）、CLI 两处异常保护（REPL 单轮故障不退出、finally 评分/关闭独立 try）。全量 167 passed, 1 skipped。详见 finished_improvement.md #64。
 
+65. ✅ 对话排序补 id tiebreaker（SQL `ORDER BY created_at DESC, id DESC` + Python 5 处排序键统一）、`_extract_web_pages` 保留 max_pages 之后的 snippet 级结果、SearXNG URL 保留子路径前缀、`personality_retrieval_top_k` 接线生效、删除死配置 `offline_lookback_days` 及 `lookback_days` 参数链（待改进项 1/2 经核实为 #64 重复条目，零改动）；追加 `_retrieve_memories` 两处 try 保护（检索失败回退空列表、recall 计数失败保留文档）。全量 175 passed, 1 skipped。详见 finished_improvement.md #65。
+
 # 未来可选增强（计划中）
 
 1. 自动关闭长期未活动的会话（session timeout policy）。

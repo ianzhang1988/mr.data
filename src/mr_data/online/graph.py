@@ -345,12 +345,16 @@ class DialogueGraph:
             else:
                 extracted.append(doc)
 
+        # max_pages 之后的搜索结果不抓正文，但以 snippet 级内容保留，
+        # 继续参与后续相关性过滤与 prompt 组装。
+        extracted.extend(docs[max_pages:])
+
         self.logger.info(
             "Extracted web pages",
             extra={
                 "event": "retrieve.web_extracted",
                 "session_id": state["session_id"],
-                "details": {"attempted": len(docs[:max_pages]), "succeeded": sum(1 for d in extracted if d.metadata.extracted)},
+                "details": {"attempted": len(docs[:max_pages]), "succeeded": sum(1 for d in extracted if d.metadata.extracted), "passthrough": len(docs) - len(docs[:max_pages])},
             },
         )
         return {**state, "web_docs": extracted}
@@ -377,7 +381,7 @@ class DialogueGraph:
     def _retrieve_personality(self, state: DialogueState) -> DialogueState:
         query = state.get("personality_query") or state["user_input"]
         try:
-            docs = self.chroma.query_personality(query, top_k=5)
+            docs = self.chroma.query_personality(query, top_k=settings.personality_retrieval_top_k)
         except Exception as exc:
             self.logger.warning(
                 "Personality retrieval failed; returning empty docs",
@@ -400,8 +404,19 @@ class DialogueGraph:
 
     def _retrieve_memories(self, state: DialogueState) -> DialogueState:
         query = state.get("memory_query") or state["user_input"]
-        docs = self.chroma.query_memories(
-            query, top_k=settings.memory_retrieval_top_k)
+        try:
+            docs = self.chroma.query_memories(
+                query, top_k=settings.memory_retrieval_top_k)
+        except Exception as exc:
+            self.logger.warning(
+                "Memory retrieval failed; returning empty docs",
+                extra={
+                    "event": "retrieve.memory_failed",
+                    "session_id": state["session_id"],
+                    "details": {"error": str(exc)},
+                },
+            )
+            docs = []
 
         dialogue_doc_ids = [
             doc.id for doc in docs
@@ -409,12 +424,23 @@ class DialogueGraph:
         ]
         if dialogue_doc_ids:
             now = datetime.now(timezone.utc).isoformat()
-            self.chroma.increment_memory_recall(dialogue_doc_ids)
-            # Reflect the updated recall_count in the state docs passed downstream.
-            for doc in docs:
-                if doc.id in dialogue_doc_ids:
-                    doc.metadata.recall_count += 1
-                    doc.metadata.last_recalled_at = now
+            try:
+                self.chroma.increment_memory_recall(dialogue_doc_ids)
+                # Reflect the updated recall_count in the state docs passed downstream.
+                for doc in docs:
+                    if doc.id in dialogue_doc_ids:
+                        doc.metadata.recall_count += 1
+                        doc.metadata.last_recalled_at = now
+            except Exception as exc:
+                # 召回计数是辅助信号，失败不影响已检索到的记忆参与本轮对话。
+                self.logger.warning(
+                    "Memory recall increment failed; keeping retrieved docs",
+                    extra={
+                        "event": "retrieve.memory_recall_increment_failed",
+                        "session_id": state["session_id"],
+                        "details": {"error": str(exc), "doc_ids": dialogue_doc_ids},
+                    },
+                )
         self.logger.info(
             "Retrieved memories",
             extra={
@@ -773,7 +799,7 @@ class DialogueGraph:
         limit = settings.dialogue_state_message_turns * 2
         logs = self.pg.get_recent_dialogues(session_id=session_id, limit=limit)
         messages: list[DialogueMessage] = []
-        for log in sorted(logs, key=lambda x: x.created_at or 0):
+        for log in sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0)):
             meta = log.metadata
             if log.role == "user":
                 messages.append(DialogueMessage(

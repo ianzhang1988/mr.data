@@ -15,7 +15,7 @@
 | 机器负载高时 | 可能放大到 3–5 倍 | 用 600s |
 
 - Shell 工具默认 timeout 是 60s，**跑全量测试必须显式设置 timeout ≥ 300s**，否则会被误杀。
-- 基线：**167 passed, 1 skipped**（skip 的是需下载真实 embedding 模型的手动测试）。
+- 基线：**175 passed, 1 skipped**（skip 的是需下载真实 embedding 模型的手动测试）。
 - 单文件测试可能仍需支付 pgembed 启动（热 ~0.1s / 冷 ~15s）。
 
 ## 测试基建要点

@@ -49,7 +49,7 @@ def chunk_dialogue_logs(
     logs: list[DialogueLog], max_chars: int, overlap_lines: int
 ) -> list[DialogueChunk]:
     """把会话日志按字符预算分段，段间保留 overlap_lines 行重叠。"""
-    sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
+    sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))
     lines = [
         (f"{'user' if log.role == 'user' else 'assistant'}: {log.content}", log.id)
         for log in sorted_logs
@@ -103,7 +103,7 @@ class AttributionEngine:
         self.llm = llm or LLMClient()
         self.logger = get_logger("mr_data.offline")
 
-    def run(self, lookback_days: Optional[int] = None, batch_size: Optional[int] = None) -> None:
+    def run(self, batch_size: Optional[int] = None) -> None:
         limit = batch_size or settings.offline_batch_size
 
         sessions = self.pg.list_closed_sessions_with_unprocessed(limit=limit)
@@ -120,7 +120,6 @@ class AttributionEngine:
                 session_id=session.id,
                 unprocessed_only=True,
                 limit=settings.offline_max_session_logs,
-                lookback_days=lookback_days,
             )
             if not logs:
                 continue
@@ -173,7 +172,7 @@ class AttributionEngine:
         print(f"Processed {total_sessions} closed sessions.")
 
     def _build_transcript(self, logs: list[DialogueLog]) -> str:
-        sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
+        sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))
         lines = []
         for log in sorted_logs:
             label = "user" if log.role == "user" else "assistant"
@@ -423,7 +422,7 @@ class AttributionEngine:
         # 不再提供 fallback target：无有效 target 时证据/事件不写向量库，
         # 避免 doc id 哈希原料与 source_id 被 "None" 污染（改进 54）。
         # Chroma 副作用只收集不执行，由 run() 在 PG 事务提交成功后统一 flush。
-        sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
+        sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))
 
         applied = 0
         pending_events: list[PersonalityEvent] = []
@@ -643,7 +642,7 @@ class AttributionEngine:
 
     def _build_evidence_context(self, logs: list[DialogueLog], target_log_id: int) -> str:
         """Build a short transcript context around the target dialogue log."""
-        sorted_logs = sorted(logs, key=lambda x: x.created_at or 0)
+        sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))
         try:
             idx = next(i for i, log in enumerate(sorted_logs) if log.id == target_log_id)
         except StopIteration:

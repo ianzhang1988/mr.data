@@ -2,7 +2,6 @@ import json
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 from typing import Optional
 
 import psycopg
@@ -493,7 +492,6 @@ class PostgresStore:
         session_id: Optional[str] = None,
         unprocessed_only: bool = False,
         limit: int = 50,
-        lookback_days: Optional[int] = None,
     ) -> list[DialogueLog]:
         with self._cursor() as cur:
             conditions: list[str] = []
@@ -503,15 +501,11 @@ class PostgresStore:
                 params.append(session_id)
             if unprocessed_only:
                 conditions.append("processed_for_attribution = FALSE")
-            if lookback_days:
-                conditions.append("created_at >= %s")
-                params.append(datetime.utcnow() -
-                              timedelta(days=lookback_days))
 
             sql = "SELECT * FROM dialogue_logs"
             if conditions:
                 sql += " WHERE " + " AND ".join(conditions)
-            sql += " ORDER BY created_at DESC LIMIT %s"
+            sql += " ORDER BY created_at DESC, id DESC LIMIT %s"
             params.append(limit)
 
             cur.execute(sql, params)

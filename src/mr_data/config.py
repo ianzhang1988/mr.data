@@ -73,7 +73,6 @@ class Settings(BaseSettings):
 
     # 离线任务参数
     offline_batch_size: int = 50
-    offline_lookback_days: int = 7
     offline_max_session_logs: int = 100
     # 单会话归因落库的最大 delta 条数（prompt 收敛 + 代码截断兜底）
     offline_max_deltas_per_session: int = 3

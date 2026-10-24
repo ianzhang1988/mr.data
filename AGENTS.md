@@ -27,5 +27,5 @@
 ## 工作流约定
 
 - 改进任务由 `need_improve.md` 驱动；完成后更新该文件与 `finished_improvement.md`。
-- **提交前需用户明确指示**；`need_improve_tmp_dont_delete_change.md` 与 `review/` 永不提交。
+- **提交前需用户明确指示**；`need_improve_tmp_dont_delete_change.md` 与 `review/` 永不提交（`review/do_review.md` 除外，该文件已跟踪、需要提交）。
 - 日志统一用 `mr_data.logging.get_logger(name)`，结构化 extra 只含 `event`/`session_id`/`details`。

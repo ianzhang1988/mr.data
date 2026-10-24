@@ -95,3 +95,15 @@
     - **项 6（死配置接线/清理）**：①`personality_retrieval_top_k` 此前无读取点、`graph.py` `_retrieve_personality` 硬编码 `top_k=5`——改为 `settings.personality_retrieval_top_k` 接线生效；②`offline_lookback_days` 确认无任何读取点（`AttributionEngine.run(lookback_days=...)` 参数链无人传非 None 值）——按条目指示删除：`config.py` 配置项、`.env.example` 对应行、`run()` 的 `lookback_days` 参数及传参、`get_recent_dialogues` 的 `lookback_days` 参数与 SQL 分支（顺带移除随之失效的 `datetime.utcnow()`/`timedelta` import）。
     - 测试：新增 `tests/test_dialogue_ordering.py`（同事务同刻两行按 id DESC 返回、chunk 同刻按 id 升序、None created_at 容错）与 `tests/test_retrieval_pipeline.py`（SearXNG 子路径拼接、extract 后第 3 条 snippet 级保留、`query_personality` 收到配置的 top_k），共 6 用例。全量回归 **173 passed, 1 skipped**（基线 167 → +6）。
     - **追加（用户指示）**：`_retrieve_memories` 补 try 保护——`query_memories` 失败记 `retrieve.memory_failed` 回退空列表；`increment_memory_recall` 失败记 `retrieve.memory_recall_increment_failed`，已检索到的记忆照常返回（recall 计数是辅助信号）。新增 2 用例（检索失败回退空列表、计数失败保留文档且 recall_count 不变），全量 **175 passed, 1 skipped**。范围外建议（未改）：`cli.py:2` 的 `import uuid` 与 `cli.py:148` 函数体内重复 `import json` 可清理。
+
+
+66. ✅ **记忆分段预算对齐嵌入截断上限（项 1 为过期条目，零改动）**：
+    - **项 1（`datetime.utcnow()` 对比 TIMESTAMPTZ）**：经核实该代码（postgres.py lookback 分支）已在改进 65 随 `offline_lookback_days` 死配置一并删除，条目过期，零改动。
+    - **项 2（分段预算字符口径 vs 嵌入 token 静默截断）**：问题为 `memory_dialogue_chunk_chars=1200` 按字符计，而 fastembed 0.8 的 `load_tokenizer`（common/preprocessor_utils.py:39-52）读取模型自带 `tokenizer_config.json` 的 `model_max_length` 并 `enable_truncation` 静默截断——jina-embeddings-v2-base-zh 经 hf-mirror 拉取 tokenizer_config.json 核实为 **512**，满预算段（≈960~1200 token）段尾被静默砍掉。附属问题：`embeddings.py` 的 `max_length` 形参被 `TextEmbedding(**kwargs)` 吞掉是死参数；`chunk_dialogue_logs` 单行超预算时整行成段不截断，预算失效。实现（按条目 4 项建议 + 死参数清理）：
+      1. `config.py` 新增 `embedding_max_tokens: int = 512`，注释固化由来（截断在 fastembed 内部、换模型或 patch tokenizer_config 须同步改）；
+      2. `memory_dialogue_chunk_chars` 1200 → 400，注释固化口径（中文保守 1 字 ≈ 1 token + 段首 overlap 行余量，取窗口 ~75%）；
+      3. `Settings` 新增 `model_validator`：`memory_dialogue_chunk_chars > embedding_max_tokens` 抛 `ValueError`，报错信息说明保守口径与两配置关联（校验信息即文档）；
+      4. `attribution.py` 新增 `_split_overlong_line`：超预算行在预算窗口内最后一个句号/换行（兼顾！？）处下刀（标点保留在前段），无句读按预算硬切；主循环前预切分为多个 (piece, 同一 log_id)，切出的段自然获得 `first==last==该 log id`，后续段照常享受 overlap，"整行成段超预算"路径不复存在；
+      5. `embeddings.py` 删除 `FastembedEmbedding.__init__` 的 `max_length` 死形参与透传（docstring 说明截断由 fastembed 内部决定，预算控制见 `embedding_max_tokens`）。
+    - 测试：`test_session_memory_chunks.py` 新增 3 用例（句读切分各段 ≤ 预算且共享 log id + 拼接还原、无句读硬切、切分后 overlap 正常）；`test_config_paths.py` 新增 2 用例（超限抛 ValueError、默认 400 ≤ 512 通过）。全量回归 **180 passed, 1 skipped**（基线 175 → +5）。
+    - 范围外建议（未改）：段首 overlap 行不计入字符预算（既有设计），实际嵌入文本略超 chunk 预算——400/512 留了 ~112 token 余量覆盖，调高 chunk 预算时需留意；token 级精确预算（TokenCounter 替代字符口径）是更彻底方案，条目已指定保守字符口径故不采用。

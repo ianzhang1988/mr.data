@@ -11,13 +11,16 @@ class FastembedEmbedding:
 
     The embedding function itself is transparent to input text: callers store
     and query raw text directly (Jina v2 requires no query/document prefixes).
+
+    注意：输入长度上限由 fastembed 读取模型 tokenizer_config.json 的
+    model_max_length 决定并静默截断，本类不提供 max_length 参数（传了也会被
+    fastembed 的 **kwargs 吞掉）。预算控制见 config.embedding_max_tokens。
     """
 
     def __init__(
         self,
         model_name: str,
         dim: int,
-        max_length: int = 512,
         cache_dir: Optional[str] = None,
         threads: Optional[int] = None,
         **kwargs: Any,
@@ -32,7 +35,6 @@ class FastembedEmbedding:
 
         self._model = TextEmbedding(
             model_name=model_name,
-            max_length=max_length,
             cache_dir=cache_dir,
             threads=threads,
             **kwargs,

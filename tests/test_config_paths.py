@@ -75,3 +75,21 @@ def test_explicit_relative_value_preserved(clean_path_env):
     s = make_settings()
     # 显式相对值原样保留（相对 CWD）
     assert s.log_dir == "./mylogs"
+
+
+def test_chunk_chars_must_not_exceed_embedding_max_tokens(clean_path_env):
+    """分段字符预算 > 嵌入截断上限时启动即拒绝（校验信息即文档）。"""
+    clean_path_env.delenv("MR_DATA_MEMORY_DIALOGUE_CHUNK_CHARS", raising=False)
+    clean_path_env.delenv("MR_DATA_EMBEDDING_MAX_TOKENS", raising=False)
+    with pytest.raises(ValueError, match="embedding_max_tokens"):
+        Settings(_env_file=None, memory_dialogue_chunk_chars=600,
+                 embedding_max_tokens=512)
+
+
+def test_chunk_chars_default_within_embedding_limit(clean_path_env):
+    """默认 400 ≤ 512 通过校验。"""
+    clean_path_env.delenv("MR_DATA_MEMORY_DIALOGUE_CHUNK_CHARS", raising=False)
+    clean_path_env.delenv("MR_DATA_EMBEDDING_MAX_TOKENS", raising=False)
+    s = make_settings()
+    assert s.memory_dialogue_chunk_chars == 400
+    assert s.embedding_max_tokens == 512

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # jina v2 无 query/document 前缀要求，文本原样嵌入）
     embedding_model: str = "jinaai/jina-embeddings-v2-base-zh"
     embedding_dim: int = 768
+    # 嵌入截断上限（token）。截断发生在 fastembed 内部：load_tokenizer 读取模型
+    # 自带 tokenizer_config.json 的 model_max_length（jina-embeddings-v2-base-zh
+    # 为 512）并静默截断超长输入，本项目 embeddings.py 无法覆盖它。
+    # 若日后换模型或 patch tokenizer_config，须同步修改此配置。
+    embedding_max_tokens: int = 512
     chroma_recreate_on_mismatch: bool = True
 
     # 网络搜索 RAG 配置
@@ -96,7 +101,9 @@ class Settings(BaseSettings):
     enable_memory_relevance_filter: bool = False
 
     # 对话记忆分段（离线写入记忆向量库）
-    memory_dialogue_chunk_chars: int = 1200        # 每段字符预算
+    # 字符预算口径：中文保守估计 1 字 ≈ 1 token，且需容纳段首 overlap 行
+    # （约一轮对话），故预算取嵌入截断窗口 embedding_max_tokens 的 ~75%。
+    memory_dialogue_chunk_chars: int = 400         # 每段字符预算
     memory_dialogue_chunk_overlap_lines: int = 2   # 段间重叠行数（约一轮对话）
 
     # 是否在 CLI 回复后显示参考来源
@@ -108,6 +115,21 @@ class Settings(BaseSettings):
     # LLM 上下文 tokenizer 与 token 预算
     tokenizer_model: str = "cl100k_base"
     llm_context_token_limit: int = 30000
+
+    @model_validator(mode="after")
+    def _check_chunk_budget_within_embedding_limit(self) -> "Settings":
+        """分段字符预算不得超过嵌入截断上限。
+
+        按 1 字 ≈ 1 token 保守口径，memory_dialogue_chunk_chars 超过
+        embedding_max_tokens 时段尾会被嵌入模型静默截断，直接拒绝启动。
+        """
+        if self.memory_dialogue_chunk_chars > self.embedding_max_tokens:
+            raise ValueError(
+                f"memory_dialogue_chunk_chars ({self.memory_dialogue_chunk_chars}) "
+                f"不得超过 embedding_max_tokens ({self.embedding_max_tokens})："
+                "按 1 字 ≈ 1 token 保守口径，超出的内容会被嵌入模型静默截断。"
+            )
+        return self
 
     @model_validator(mode="after")
     def _fill_default_paths(self) -> "Settings":

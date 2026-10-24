@@ -77,3 +77,46 @@ def test_zero_overlap_lines():
 
 def test_empty_logs():
     assert chunk_dialogue_logs([], max_chars=100, overlap_lines=2) == []
+
+
+def test_overlong_single_line_split_at_sentence_boundary():
+    """单行超预算且有句读：在预算内最后一个句号处下刀，各段 ≤ 预算且共享原 log id。"""
+    content = "第一句。" * 20  # 80 字符，加 "assistant: " 前缀整行 91 > 50
+    logs = _make_logs(["短问", content])
+    chunks = chunk_dialogue_logs(logs, max_chars=50, overlap_lines=0)
+
+    assert len(chunks) == 3  # log1 一段 + log2 切两段
+    assert (chunks[0].first_dialogue_log_id, chunks[0].last_dialogue_log_id) == (1, 1)
+    for chunk in chunks[1:]:
+        assert (chunk.first_dialogue_log_id, chunk.last_dialogue_log_id) == (2, 2)
+        assert len(chunk.content) <= 50
+    # 按句号下刀：第一段以句号结尾，拼接后还原原始行
+    assert chunks[1].content.endswith("。")
+    assert chunks[1].content + chunks[2].content == f"assistant: {content}"
+
+
+def test_overlong_single_line_hard_cut_without_punctuation():
+    """单行超预算且无句读：按预算硬切，各段 ≤ 预算且共享原 log id。"""
+    content = "x" * 120
+    logs = _make_logs([content])
+    chunks = chunk_dialogue_logs(logs, max_chars=50, overlap_lines=0)
+
+    assert len(chunks) == 3  # "user: " + 120 = 126 → 50/50/26
+    for chunk in chunks:
+        assert len(chunk.content) <= 50
+        assert (chunk.first_dialogue_log_id, chunk.last_dialogue_log_id) == (1, 1)
+    assert "".join(c.content for c in chunks) == f"user: {content}"
+
+
+def test_overlong_split_still_overlaps_into_next_chunk():
+    """切分后的后续段照常享受 overlap：段首携带前段末行。"""
+    logs = _make_logs(["x" * 120, "后续"])
+    chunks = chunk_dialogue_logs(logs, max_chars=50, overlap_lines=1)
+
+    last = chunks[-1]
+    last_lines = last.content.split("\n")
+    assert last.last_dialogue_log_id == 2
+    assert last_lines[-1] == "assistant: 后续"
+    # 段首为前段末行（overlap）
+    prev_lines = chunks[-2].content.split("\n")
+    assert last_lines[0] == prev_lines[-1]

@@ -333,7 +333,9 @@ class DialogueGraph:
             if result:
                 real_url = result.url
                 new_doc = doc.model_copy(update={
-                    "id": _stable_web_id(real_url),
+                    # real_url 为空或仍是跳转链接时以正文+标题哈希兜底，
+                    # 保证同页同 id（upsert 去重），避免退化为随机 id 重复入库
+                    "id": _stable_web_id(real_url, body=result.text, title=doc.metadata.title),
                     "page_content": f"{doc.metadata.title}\n{result.text}",
                     "metadata": doc.metadata.model_copy(update={
                         "url": real_url,
@@ -418,18 +420,18 @@ class DialogueGraph:
             )
             docs = []
 
-        dialogue_doc_ids = [
-            doc.id for doc in docs
-            if doc.metadata.source_type == "dialogue"
-        ]
-        if dialogue_doc_ids:
+        recall_doc_ids = [doc.id for doc in docs]
+        if recall_doc_ids:
             now = datetime.now(timezone.utc).isoformat()
             try:
-                self.chroma.increment_memory_recall(dialogue_doc_ids)
+                # dialogue 与 web 记忆统一计数：recall_count+1 并刷新
+                # last_recalled_at（prune 超时基准）；web 的这两个字段是
+                # WebMemoryMetadata extra 字段，用 getattr 容错缺失场景。
+                self.chroma.increment_memory_recall(recall_doc_ids)
                 # Reflect the updated recall_count in the state docs passed downstream.
                 for doc in docs:
-                    if doc.id in dialogue_doc_ids:
-                        doc.metadata.recall_count += 1
+                    if doc.id in recall_doc_ids:
+                        doc.metadata.recall_count = getattr(doc.metadata, "recall_count", 0) + 1
                         doc.metadata.last_recalled_at = now
             except Exception as exc:
                 # 召回计数是辅助信号，失败不影响已检索到的记忆参与本轮对话。
@@ -438,7 +440,7 @@ class DialogueGraph:
                     extra={
                         "event": "retrieve.memory_recall_increment_failed",
                         "session_id": state["session_id"],
-                        "details": {"error": str(exc), "doc_ids": dialogue_doc_ids},
+                        "details": {"error": str(exc), "doc_ids": recall_doc_ids},
                     },
                 )
         self.logger.info(

@@ -159,10 +159,16 @@ class AttributionEngine:
 
             result = self._attribute_session(session.id, logs)
             if result is None:
-                self.logger.info(
-                    "Session attribution failed, will retry next run",
-                    extra={"event": "offline.session_failed", "session_id": session.id},
-                )
+                attempts = self._count_failure_and_dead_letter(session.id)
+                if attempts < settings.offline_max_attribution_attempts:
+                    self.logger.info(
+                        "Session attribution failed, will retry next run",
+                        extra={
+                            "event": "offline.session_failed",
+                            "session_id": session.id,
+                            "details": {"attempts": attempts},
+                        },
+                    )
                 continue
             try:
                 with self.pg.transaction():
@@ -173,10 +179,16 @@ class AttributionEngine:
                 # 事务已回滚（transaction() 自动 rollback），会话保持 unprocessed，
                 # 下次 run() 重试；Chroma 写/删均在提交成功后执行，回滚时不产生
                 # 任何 Chroma 副作用，无需自愈。
-                self.logger.warning(
-                    "Session apply failed and rolled back, will retry next run",
-                    extra={"event": "offline.apply_failed", "session_id": session.id},
-                )
+                attempts = self._count_failure_and_dead_letter(session.id)
+                if attempts < settings.offline_max_attribution_attempts:
+                    self.logger.warning(
+                        "Session apply failed and rolled back, will retry next run",
+                        extra={
+                            "event": "offline.apply_failed",
+                            "session_id": session.id,
+                            "details": {"attempts": attempts},
+                        },
+                    )
                 failed_sessions += 1
                 continue
 
@@ -185,7 +197,7 @@ class AttributionEngine:
             total_sessions += 1
             total_deltas += applied
 
-        pruned_count = self.chroma.prune_stale_dialogue_memories(
+        pruned_count = self.chroma.prune_stale_memories(
             settings.memory_dialogue_retention_days,
             settings.memory_min_recall_count,
         )
@@ -203,6 +215,22 @@ class AttributionEngine:
             },
         )
         print(f"Processed {total_sessions} closed sessions.")
+
+    def _count_failure_and_dead_letter(self, session_id: str) -> int:
+        """归因失败计数 +1 并返回累计次数；达 offline_max_attribution_attempts
+        时把会话未处理日志置为已处理（死信），避免无限重试。"""
+        attempts = self.pg.increment_attribution_attempts(session_id)
+        if attempts >= settings.offline_max_attribution_attempts:
+            marked = self.pg.mark_session_dialogues_processed(session_id)
+            self.logger.warning(
+                "Session attribution attempts exhausted, dead-lettered",
+                extra={
+                    "event": "offline.session_dead_lettered",
+                    "session_id": session_id,
+                    "details": {"attempts": attempts, "marked_dialogues": marked},
+                },
+            )
+        return attempts
 
     def _build_transcript(self, logs: list[DialogueLog]) -> str:
         sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))

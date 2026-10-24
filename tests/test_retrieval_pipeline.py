@@ -163,3 +163,39 @@ def test_retrieve_memories_recall_increment_failure_keeps_docs(
 
     assert result["memory_docs"] == [doc]
     assert result["memory_docs"][0].metadata.recall_count == 0
+
+
+def test_retrieve_memories_counts_web_recall(chroma_store, monkeypatch):
+    """web 记忆命中同样接入召回计数：increment 收到 web id，state 内 doc 的
+    recall_count/last_recalled_at 被刷新（prune 超时基准）。"""
+    from mr_data.models import MemoryDoc, WebMemoryMetadata
+
+    graph = _make_graph(chroma_store)
+    doc = MemoryDoc(
+        id="web:abc",
+        page_content="[网络资料] 标题\n内容",
+        metadata=WebMemoryMetadata(url="https://example.com", title="标题"),
+    )
+
+    monkeypatch.setattr(chroma_store, "query_memories", lambda *a, **k: [doc])
+
+    captured = {}
+    original = chroma_store.increment_memory_recall
+
+    def _spy(doc_ids):
+        captured["doc_ids"] = list(doc_ids)
+
+    monkeypatch.setattr(chroma_store, "increment_memory_recall", _spy)
+
+    state = {
+        "session_id": "test-session",
+        "user_input": "测试输入",
+        "memory_query": "测试记忆查询",
+        "retrieval_query": "测试记忆查询",
+    }
+    result = graph._retrieve_memories(state)
+
+    assert captured["doc_ids"] == ["web:abc"]
+    meta = result["memory_docs"][0].metadata
+    assert meta.recall_count == 1
+    assert meta.last_recalled_at

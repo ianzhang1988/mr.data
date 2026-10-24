@@ -458,15 +458,20 @@ class ChromaStore:
         if new_metadatas:
             self.memories.update(ids=found_ids, metadatas=new_metadatas)
 
-    def prune_stale_dialogue_memories(
+    def prune_stale_memories(
         self, cutoff_days: int, min_recall_count: int
     ) -> int:
-        """Remove dialogue memories that are older than cutoff_days and recalled fewer than min_recall_count times."""
+        """Remove memories (dialogue and web) older than cutoff_days and recalled fewer than min_recall_count times.
+
+        时间基准：dialogue 取 last_recalled_at 回退 added_at；web 取
+        last_recalled_at 回退 retrieved_at（recall 字段由 increment_memory_recall
+        的裸 dict 路径写入，缺失按 0 计）。metadata 无法解析的条目跳过不删。
+        """
         try:
-            result = self.memories.get(where={"source_type": "dialogue"}, include=["metadatas"])
+            result = self.memories.get(include=["metadatas"])
         except Exception as exc:
             logger.warning(
-                "Failed to fetch dialogue memories for pruning",
+                "Failed to fetch memories for pruning",
                 extra={
                     "event": "chroma.prune_failed",
                     "details": {
@@ -487,20 +492,26 @@ class ChromaStore:
                 count = int(metadata.get("recall_count", 0))
             except (TypeError, ValueError):
                 count = 0
-            try:
-                meta = DialogueMemoryMetadata.model_validate(
-                    {**metadata, "recall_count": count}
+            if metadata.get("source_type") == "dialogue":
+                try:
+                    meta = DialogueMemoryMetadata.model_validate(
+                        {**metadata, "recall_count": count}
+                    )
+                except ValidationError:
+                    continue
+                last_recalled = meta.last_recalled_at or meta.added_at
+            else:
+                # web 及未来其他形态：宽松取时间字段，缺失则跳过不删
+                last_recalled = (
+                    metadata.get("last_recalled_at") or metadata.get("retrieved_at") or ""
                 )
-            except ValidationError:
-                continue
-            last_recalled = meta.last_recalled_at or meta.added_at
             try:
                 last_dt = datetime.fromisoformat(last_recalled)
                 if last_dt.tzinfo is None:
                     last_dt = last_dt.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
                 continue
-            if last_dt < cutoff and meta.recall_count < min_recall_count:
+            if last_dt < cutoff and count < min_recall_count:
                 ids_to_delete.append(doc_id)
 
         if ids_to_delete:

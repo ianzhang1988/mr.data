@@ -29,6 +29,10 @@
 
 66. ✅ 记忆分段预算对齐嵌入截断上限：新增 `embedding_max_tokens=512`（jina-zh 经 hf-mirror 核实 model_max_length=512，fastembed 静默截断不可覆盖）、`memory_dialogue_chunk_chars` 1200→400、Settings 启动校验（chunk_chars > max_tokens 抛 ValueError）、`chunk_dialogue_logs` 单行超预算改为行内切分（句号/换行优先、无句读硬切、切分段共享原 log id）、删除 `FastembedEmbedding.__init__` 的死参数 `max_length`（待改进项 1 的 `datetime.utcnow()` 问题经核实已被 #65 删除，零改动）。全量 180 passed, 1 skipped。详见 finished_improvement.md #66。
 
+67. ✅ web 记忆清理 + 同页去重 + 归因失败死信：`_extract_web_pages` re-id 加正文+标题哈希兜底（同页同 id，upsert 去重，不再退化随机 id）；`prune_stale_dialogue_memories` 泛化为 `prune_stale_memories` 覆盖 web 记忆（web 时间基准 `last_recalled_at` 回退 `retrieved_at`）；`sessions` 加 `attribution_attempts` 列 + 新配置 `offline_max_attribution_attempts=3`，归因失败两分支统一计数，达阈值会话死信（未处理日志置 processed + `offline.session_dead_lettered`）。全量 184 passed, 1 skipped。详见 finished_improvement.md #67。
+
+68. ✅ web 记忆接入在线召回计数（`_retrieve_memories` 去掉 dialogue-only 过滤，dialogue/web 统一递增 recall_count + 刷新 `last_recalled_at`，web 侧 getattr 容错 extra 字段）、召回免疫阈值 `memory_min_recall_count` 默认 1→3（核实确认 `last_recalled_at` 即 update 时间，recall 刷新与 prune 超时对比均已存在，不新增 updated_at 字段）。全量 185 passed, 1 skipped。详见 finished_improvement.md #68。
+
 # 未来可选增强（计划中）
 
 1. 自动关闭长期未活动的会话（session timeout policy）。

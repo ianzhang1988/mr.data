@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # 离线任务参数
     offline_batch_size: int = 50
     offline_max_session_logs: int = 100
+    # 单会话归因失败重试上限：达到后该会话未处理日志置为已处理（死信），
+    # 记 offline.session_dead_lettered，不再无限重试
+    offline_max_attribution_attempts: int = 3
     # 单会话归因落库的最大 delta 条数（prompt 收敛 + 代码截断兜底）
     offline_max_deltas_per_session: int = 3
     # 新建性格维度前的 LLM 重合判断（防维度膨胀）；失败时按允许新建降级
@@ -94,9 +97,10 @@ class Settings(BaseSettings):
     web_extract_max_length: int = 4000
     enable_web_doc_extraction: bool = True
 
-    # 对话记忆保留策略
+    # 记忆保留策略（dialogue 与 web 记忆共用；配置名保留 dialogue 前缀以兼容存量 .env）
     memory_dialogue_retention_days: int = 90
-    memory_min_recall_count: int = 1
+    # 召回免疫门槛：recall_count 达到该次数的记忆不因超期被 prune 删除
+    memory_min_recall_count: int = 3
     memory_retrieval_top_k: int = 5
     enable_memory_relevance_filter: bool = False
 

@@ -71,5 +71,7 @@ def test_increment_mixed_dialogue_and_web_keeps_metadata_shape(chroma_store):
     web_meta = _get_metadata(chroma_store, "web:x")
     assert web_meta["source_type"] == "web"
     assert web_meta["url"] == "https://example.com"
+    assert web_meta["recall_count"] == 1
+    assert web_meta["last_recalled_at"]
     # web 文档不被注入 dialogue 形态字段（如 added_at）
     assert "added_at" not in web_meta

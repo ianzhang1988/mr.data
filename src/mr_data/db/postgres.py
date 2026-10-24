@@ -80,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS rating INTEGER;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS rating_comment TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS attribution_attempts INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS dialogue_logs (
     id SERIAL PRIMARY KEY,
@@ -517,6 +518,32 @@ class PostgresStore:
                 "UPDATE dialogue_logs SET processed_for_attribution = TRUE WHERE id = %s",
                 (dialogue_id,),
             )
+
+    def increment_attribution_attempts(self, session_id: str) -> int:
+        """归因失败计数 +1，返回累计次数（死信判定依据）。"""
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE sessions SET attribution_attempts = attribution_attempts + 1
+                WHERE id = %s
+                RETURNING attribution_attempts
+                """,
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return row["attribution_attempts"] if row else 0
+
+    def mark_session_dialogues_processed(self, session_id: str) -> int:
+        """把会话全部未处理日志置为已处理（死信落葬），返回标记条数。"""
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE dialogue_logs SET processed_for_attribution = TRUE
+                WHERE session_id = %s AND processed_for_attribution = FALSE
+                """,
+                (session_id,),
+            )
+            return cur.rowcount
 
     def update_session_rating(
         self, session_id: str, rating: Optional[int], comment: Optional[str]

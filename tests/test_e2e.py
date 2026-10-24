@@ -14,6 +14,7 @@ from mr_data.models import (
     ReplyReference,
     WebDoc,
     WebDocMetadata,
+    WebMemoryMetadata,
 )
 from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
@@ -435,7 +436,7 @@ def test_prune_stale_dialogue_memories(chroma_store):
         ),
     )
 
-    pruned = chroma_store.prune_stale_dialogue_memories(
+    pruned = chroma_store.prune_stale_memories(
         cutoff_days=90,
         min_recall_count=1,
     )
@@ -443,6 +444,55 @@ def test_prune_stale_dialogue_memories(chroma_store):
 
     remaining = chroma_store.query_memories("dialogue", session_id=session_id, top_k=10)
     assert all("old stale" not in d.page_content for d in remaining)
+
+
+def test_prune_stale_web_memories(chroma_store):
+    from datetime import datetime, timedelta, timezone
+
+    session_id = "prune-web-session"
+    old_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    chroma_store.add_memory(
+        session_id,
+        "[网络资料] 旧资料",
+        memory_id="web:old",
+        metadata=WebMemoryMetadata(
+            url="http://example.com/old",
+            title="旧资料",
+            retrieved_at=old_time,
+        ),
+    )
+    chroma_store.add_memory(
+        session_id,
+        "[网络资料] 新资料",
+        memory_id="web:new",
+        metadata=WebMemoryMetadata(
+            url="http://example.com/new",
+            title="新资料",
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    # 老但被召回过的 web 记忆应保留（recall_count 达标）
+    chroma_store.add_memory(
+        session_id,
+        "[网络资料] 老但常用",
+        memory_id="web:recalled",
+        metadata=WebMemoryMetadata(
+            url="http://example.com/recalled",
+            title="老但常用",
+            retrieved_at=old_time,
+        ),
+    )
+    chroma_store.increment_memory_recall(["web:recalled"])
+
+    pruned = chroma_store.prune_stale_memories(
+        cutoff_days=90,
+        min_recall_count=1,
+    )
+    assert pruned == 1
+
+    remaining = chroma_store.query_memories("资料", session_id=session_id, top_k=10)
+    remaining_ids = {d.id for d in remaining}
+    assert "web:old" not in remaining_ids
 
 
 def test_global_memory_recall(

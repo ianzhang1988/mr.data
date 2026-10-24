@@ -85,6 +85,41 @@ def test_extract_web_pages_reids_doc_with_real_url(
     assert new_doc.page_content == "行星\n全文内容"
 
 
+def test_extract_web_pages_reids_by_content_when_real_url_unusable(
+    fake_llm, pg_available, chroma_store, monkeypatch
+):
+    """real_url 为空或仍是跳转链接时，re-id 以正文+标题哈希兜底：
+    同页同 id（upsert 去重），不再退化为随机 id 重复入库。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+
+    graph = _make_graph(
+        pg,
+        chroma_store,
+        fake_llm,
+        FakePageExtractor(ExtractedPage(text="全文内容", url="")),
+        monkeypatch,
+    )
+
+    doc = _make_doc(REDIRECT_URL)
+    state1 = graph._extract_web_pages(
+        {"session_id": "s", "user_input": "u", "web_docs": [doc]}
+    )
+    state2 = graph._extract_web_pages(
+        {"session_id": "s", "user_input": "u", "web_docs": [doc]}
+    )
+
+    id1 = state1["web_docs"][0].id
+    id2 = state2["web_docs"][0].id
+    assert id1 == _stable_web_id("", body="全文内容", title="行星")
+    assert id1 == id2  # 确定性：同页两次提取同 id，upsert 不重复入库
+
+
 def test_extract_web_pages_keeps_doc_when_extraction_fails(
     fake_llm, pg_available, chroma_store, monkeypatch
 ):

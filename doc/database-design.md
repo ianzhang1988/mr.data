@@ -109,6 +109,7 @@ CREATE INDEX idx_user_identities_default ON user_identities(is_default);
 | `status` | TEXT | `active` 或 `closed` |
 | `rating` | INTEGER | 退出时会话整体评分：-2（很差）~ 2（很好），可为空 |
 | `rating_comment` | TEXT | 退出时可选评论，可为空 |
+| `attribution_attempts` | INTEGER | 离线归因失败累计次数，达 `offline_max_attribution_attempts` 后会话死信（未处理日志置为已处理） |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 | `closed_at` | TIMESTAMPTZ | 关闭时间 |
 
@@ -211,7 +212,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 1. **值域按集合划分**：`personality` 集合只会出现 `line/event/evidence`，`memories` 集合只会出现 `web/dialogue`；本表不会出现 `dialogue`（分块记忆不回写引用）。
 2. **存储侧强校验**：`PersonalityEvent.source_type` 与 `DialogueVectorRef.source_type` 使用上述 Literal 别名，非规范值在模型构造时即报错。新写入路径必须复用这些别名，禁止字面量扩散。
 3. **LLM 边界宽松**：`ReplyReference.source_type`（回复引用）保持自由 `str`——该值由系统按检索结果覆盖填充（`graph.py` 的 `known_refs`），LLM 输出仅供参考，不做强校验以避免小模型输出不规范导致整个回复解析失败。
-4. **读取路径**：`chroma.prune_stale_dialogue_memories` 与 graph 中 recall_count 递增均按 `source_type == "dialogue"` 过滤；离线归因的 `_purge_dimension_vectors` 依赖本表回溯 `personality` 集合文档。
+4. **读取路径**：`chroma.prune_stale_memories` 覆盖 `dialogue` 与 `web` 两类（超时基准 `last_recalled_at`，dialogue 回退 `added_at`、web 回退 `retrieved_at`）；graph 在线召回对两类记忆统一递增 recall_count 并刷新 `last_recalled_at`（dialogue 走模型读-改-写、web 走裸 dict 容错）；离线归因的 `_purge_dimension_vectors` 依赖本表回溯 `personality` 集合文档。
 
 ---
 
@@ -241,7 +242,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 
 1. **存储侧强校验**：`add_memory`/`upsert_memory` 的 `metadata` 参数只接受 `DialogueMemoryMetadata | WebMemoryMetadata`，传裸 dict 在序列化时即报错；`DialogueLog.metadata` 类型为 `Optional[DialogueLogMetadata]`。
 2. **落库内容不变**：模型字段默认值与旧裸 dict 形态逐项对齐（如 `recall_count=0`、`last_recalled_at=""`），Chroma 落库 dict 的 key 集合与改造前一致；`model_dump(exclude_none=True)` 剔除未设置的 Optional 字段（Chroma 拒绝 None 值）。
-3. **覆盖两层**：模型化已覆盖存储边界与管道流转两层——web doc 管道流转与 collection 级配置 metadata 均已 schema 化；仅 `increment_memory_recall`/`prune_stale_dialogue_memories` 中非 dialogue source_type 的历史数据保留裸 dict 兜底。
+3. **覆盖两层**：模型化已覆盖存储边界与管道流转两层——web doc 管道流转与 collection 级配置 metadata 均已 schema 化；仅 `increment_memory_recall`/`prune_stale_memories` 中非 dialogue source_type 的历史数据保留裸 dict 兜底。
 
 ---
 
@@ -334,6 +335,7 @@ erDiagram
         text status
         int rating
         text rating_comment
+        int attribution_attempts
         timestamptz created_at
         timestamptz closed_at
     }

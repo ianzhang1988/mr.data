@@ -15,17 +15,7 @@
 （暂无）
 
 # 已完成的改进项
-（保留最近几条，完成的条目放到 finished_improvement.md 中归档；35-60 已迁移归档）
-
-61. ✅ ingest 幂等（`line_doc_id` 稳定 id + added/skipped 统计）、离线归因 Chroma 写/删移出 PG 事务（提交后 `_flush_post_commit_chroma` 统一执行、逐条故障隔离）、web 资料 upsert 逐条故障隔离（`chat.web_memory_upsert_failed`）。详见 finished_improvement.md #61。
-
-62. ✅ 移除 sample_lines 与 dimension 的关联（删 `PersonalitySampleLine.dimension_descriptions` 及 ingest 中按描述补插维度逻辑；全量 155 passed, 1 skipped 不变）。详见 finished_improvement.md #62。
-
-63. ✅ embedding 统一替换为 jina-embeddings-v2-base-zh（fastembed 栈保留，两集合共用单实例 768 维不截断；删除全部 query/document 前缀逻辑；配置合并为 `embedding_model`/`embedding_dim`；全量 153 passed, 1 skipped）。详见 finished_improvement.md #63。
-
-64. ✅ 维度淘汰改比率 + 最小样本量（`failure_min_samples`/`failure_ratio_threshold` 替换 `failure_threshold`）、在线链路三处兜底（回退二次失败静态文案、人格检索回退空列表、脏 CSV 容错）、CLI 两处异常保护（REPL 单轮故障不退出、finally 评分/关闭独立 try）。全量 167 passed, 1 skipped。详见 finished_improvement.md #64。
-
-65. ✅ 对话排序补 id tiebreaker（SQL `ORDER BY created_at DESC, id DESC` + Python 5 处排序键统一）、`_extract_web_pages` 保留 max_pages 之后的 snippet 级结果、SearXNG URL 保留子路径前缀、`personality_retrieval_top_k` 接线生效、删除死配置 `offline_lookback_days` 及 `lookback_days` 参数链（待改进项 1/2 经核实为 #64 重复条目，零改动）；追加 `_retrieve_memories` 两处 try 保护（检索失败回退空列表、recall 计数失败保留文档）。全量 175 passed, 1 skipped。详见 finished_improvement.md #65。
+（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-65 已迁移归档）
 
 66. ✅ 记忆分段预算对齐嵌入截断上限：新增 `embedding_max_tokens=512`（jina-zh 经 hf-mirror 核实 model_max_length=512，fastembed 静默截断不可覆盖）、`memory_dialogue_chunk_chars` 1200→400、Settings 启动校验（chunk_chars > max_tokens 抛 ValueError）、`chunk_dialogue_logs` 单行超预算改为行内切分（句号/换行优先、无句读硬切、切分段共享原 log id）、删除 `FastembedEmbedding.__init__` 的死参数 `max_length`（待改进项 1 的 `datetime.utcnow()` 问题经核实已被 #65 删除，零改动）。全量 180 passed, 1 skipped。详见 finished_improvement.md #66。
 

@@ -64,6 +64,22 @@ def _web_memory_chunks(doc: WebDoc) -> list[tuple[str, str]]:
     return [(f"{base_id}:c{i}", chunk) for i, chunk in enumerate(chunks)]
 
 
+def _render_memory_doc(d: MemoryDoc) -> str:
+    """按 source_type 渲染 memory 段的一条素材。
+
+    web 记忆渲染为「来源行 + 缩进两空格的片正文」两行；dialogue 记忆
+    单行平铺。供 _assemble_and_generate 的 memory 段使用。
+    """
+    if isinstance(d.metadata, WebMemoryMetadata):
+        title = d.metadata.title or "web"
+        if d.metadata.url:
+            header = f"- [id: {d.id}] [web] 《{title}》 {d.metadata.url}"
+        else:
+            header = f"- [id: {d.id}] [web] {title}"
+        return f"{header}\n  {d.page_content}"
+    return f"- [id: {d.id}] [dialogue] {d.page_content}"
+
+
 @dataclass
 class ChatResult:
     """在线对话的单轮返回结果。"""
@@ -567,8 +583,7 @@ class DialogueGraph:
             for d in personality_docs
         )
         memory_text = "\n".join(
-            f"- [id: {d.id}] {d.page_content}"
-            for d in memory_docs
+            _render_memory_doc(d) for d in memory_docs
         )
         web_text = "\n".join(
             f"- [id: {d.id}] [{d.metadata.title or 'web'}] {d.page_content}"

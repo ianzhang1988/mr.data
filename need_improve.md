@@ -17,11 +17,11 @@
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-72 已迁移归档）
 
-73. ✅ page_extract 编码兜底：`_fetch` 在响应头无 charset 时改用 `apparent_encoding`（charset_normalizer 推断）解码，中文站不再被 ISO-8859-1 静默误解码。详见 finished_improvement.md #73。
-
 74. ✅ 在线历史还原为真实消息序列：`_assemble_and_generate` 删除 messages/user_input 两个 PromptSection，最近 N 轮按 TokenCounter 预算从尾部整轮打包成真实 user/assistant 消息（单轮渲染口径不变），当前输入永远最后；messages 段不再走 assembler LLM 压缩，改为硬裁最老轮并记 `chat.history_trimmed`。详见 finished_improvement.md #74。
 
 75. ✅ 归因 transcript token 预算：`_attribute_session` 按 `llm_context_token_limit − system − context − 模板 − 256 slack` 预算 transcript，超预算头尾保留中间砍（整行保 `[#id]` 完整），切口插省略标记并同步替换 system「完整会话记录」措辞，记 `offline.transcript_truncated`；无截断时热路径 prompt 逐字不变。详见 finished_improvement.md #75。
+
+76. ✅ web 记忆入库 400 字分片改造：每页一文档 800 字截断改为 400 字分片 + 纯净嵌入（裸正文入 embed，title/url 只进 metadata），片 id `{base_id}:c{i}`（base_id=URL+正文哈希），upsert 改幂等 add（同页重抓原地刷新、recall_count 不重置），PG 引用每片一行，切分逻辑收拢至 `db/chunking.py`；prompt 记忆段按 source_type 渲染来源行。详见 finished_improvement.md #76。
 
 # 未来可选增强（计划中）
 
@@ -38,27 +38,3 @@
 10. 离线分析定时执行。似乎没有实现。需要确认
 
 
-11. web 记忆入库改造记录,让 web 对齐 dialogue 已验证的既有模式
-  ────────────────────
-
-  背景：web 资料抓取后写入记忆向量库（Chroma memories 集合），当前实现为"每页一文档、内容截断 800 字、前缀 �P0� 随文嵌入"。三个问题：
-
-  1. 存储与嵌入脱节：嵌入窗口 512 token（jina-v2-zh，fastembed 按 model_max_length 静默截断，无法关闭），800 字截断使尾部 ~300 字成为检索死重
-  2. URL 重复且低效：URL 同时存在于 metadata 和嵌入文本，语义价值近零却占用 ~10% 嵌入窗口
-  3. 类型标签错位：[网络资料] 标签对所有 web 文档是常量，无检索区分度，属于展示层职责
-  改造方案：改为"400 字分片 + 纯净嵌入"。决策如下：
-
-  ┌───────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-  │ 项            │ 裁决                                                                                                                      │
-  ├───────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ 分片          │ 400 字/片（与对话记忆分段同口径）                                                                                         │
-  │ 片内容        │ 裸正文切片；title/url 只进 metadata；类型标签不嵌入                                                                       │
-  │ overlap       │ ≤10%（≈40 字），切口句读优先                                                                                              │
-  │ 片 id         │ {base_id}:c{i}；base_id 为 URL+正文哈希（正文不变→片界稳定→同页重抓原地刷新，不产生孤儿）                                 │
-  │ recall_count  │ 按片计数（命中哪片哪片 +1）                                                                                               │
-  │ top_k         │ 保持 5，不做同源配额                                                                                                      │
-  │ PG 引用登记   │ 每片一行：片 id + 空 dimension_ids + 片正文（与嵌入内容一致）                                                             │
-  │ 切分函数      │ 移至向量库侧公共模块（如 db/chunking.py），现有句读优先切分逻辑复用                                                       │
-  │ prompt 展示层 │ 记忆渲染时从 metadata 拼来源行（- [id] [web] 《title》 url）；dialogue 记忆顺带补 source_type。作用域大于分片，可独立提交 │
-  │ 存量数据      │ 不迁移，旧单文档（旧 id）变孤儿，靠 90 天过期清理自然消亡                                                                 │
-  └───────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

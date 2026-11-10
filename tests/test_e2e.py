@@ -171,14 +171,11 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
-    import hashlib
-    expected_web_id = hashlib.sha256("http://example.com/planets".encode("utf-8")).hexdigest()
-
     class FakeWebSearch:
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id=expected_web_id,
+                    id="web:planets",
                     page_content="太阳系有八大行星",
                     metadata=WebDocMetadata(
                         url="http://example.com/planets",
@@ -215,11 +212,21 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
     assert reply
 
     # Web memories are global knowledge, not scoped to a single session.
+    # 正文原样入片（无 [网络资料] 包装、无 URL 混入），id 为 web 分片形态。
     docs = chroma_store.query_memories("八大行星", top_k=10)
-    assert any("八大行星" in d.page_content for d in docs)
-    assert any(d.metadata.source_type == "web" for d in docs)
-    assert any(d.metadata.url == "http://example.com/planets" for d in docs)
-    assert any(d.id == expected_web_id for d in docs)
+    matched = [
+        d for d in docs
+        if "八大行星" in d.page_content
+        and "[网络资料]" not in d.page_content
+        and "http://" not in d.page_content
+    ]
+    assert matched
+    for d in matched:
+        assert d.metadata.source_type == "web"
+        assert d.metadata.url == "http://example.com/planets"
+        assert d.metadata.title == "行星"
+        assert d.metadata.chunk_index == 0
+        assert d.id.startswith("web:") and d.id.endswith(":c0")
 
 
 def test_full_session_lifecycle(fake_llm, pg_available, chroma_store, temp_log_dir):
@@ -667,23 +674,24 @@ def test_assemble_and_generate_returns_references(
     assert not any(ref.id == "fake-id" for ref in all_refs)
 
 
-def test_web_memory_uses_stable_id(fake_llm, pg_available, chroma_store, monkeypatch):
+def test_web_memory_refetch_is_idempotent(fake_llm, pg_available, chroma_store, monkeypatch):
+    """同 URL 同正文重抓：add_memory 幂等，同页原地刷新，不新增分片、
+
+    也不重置 recall_count 等既有元数据。
+    """
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
-    import hashlib
-    from mr_data.online.search_providers import _stable_web_id
-
     url = "http://example.com/planets"
-    expected_id = _stable_web_id(url)
+    content = "太阳系有八大行星" + "，围绕太阳运转" * 60  # 长正文，确保切成多片
 
     class FakeWebSearch:
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id=expected_id,
-                    page_content="太阳系有八大行星",
+                    id="web:planets",
+                    page_content=content,
                     metadata=WebDocMetadata(
                         url=url,
                         title="行星",
@@ -707,7 +715,7 @@ def test_web_memory_uses_stable_id(fake_llm, pg_available, chroma_store, monkeyp
             return {
                 "text": "太阳系有八大行星。",
                 "references": [
-                    {"id": expected_id, "source_type": "web", "summary": "太阳系有八大行星"},
+                    {"id": "web:planets", "source_type": "web", "summary": "太阳系有八大行星"},
                 ],
             }
         return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
@@ -730,14 +738,26 @@ def test_web_memory_uses_stable_id(fake_llm, pg_available, chroma_store, monkeyp
     graph.chat(session_a, "太阳系有几颗行星")
     pg.close_session(session_a)
 
+    # 第一轮后记录该页的分片集合与元数据。
+    first = chroma_store.memories.get(include=["metadatas"])
+    page_ids = sorted(
+        doc_id for doc_id, meta in zip(first["ids"], first["metadatas"])
+        if meta.get("url") == url
+    )
+    assert page_ids
+    assert len(page_ids) > 1  # 长正文应切成多片
+    first_meta_by_id = dict(zip(first["ids"], first["metadatas"]))
+
     session_b = pg.create_session()
     graph.chat(session_b, "太阳系有几颗行星")
     pg.close_session(session_b)
 
-    # The same URL should produce exactly one memory document with the stable id.
-    result = chroma_store.memories.get(ids=[expected_id], include=["metadatas"])
-    assert len(result["ids"]) == 1
-    assert result["metadatas"][0].get("url") == url
+    # 重抓幂等：第二轮不新增该页分片，既有分片的 recall_count 未被重置。
+    second = chroma_store.memories.get(ids=page_ids, include=["metadatas"])
+    assert sorted(second["ids"]) == page_ids
+    for doc_id, meta in zip(second["ids"], second["metadatas"]):
+        assert meta.get("url") == url
+        assert meta.get("recall_count", 0) >= first_meta_by_id[doc_id].get("recall_count", 0)
 
 
 def test_dialogue_log_metadata_roundtrip(pg_available):

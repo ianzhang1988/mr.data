@@ -282,6 +282,7 @@ class WebMemoryMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     source_type: Literal["web"] = "web"
+    chunk_index: int = 0
     url: str = ""
     title: str = ""
     retrieved_at: str = ""

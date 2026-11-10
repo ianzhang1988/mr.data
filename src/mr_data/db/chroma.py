@@ -59,6 +59,11 @@ def dialogue_chunk_memory_id(
     )
 
 
+def web_chunk_base_id(url: str, content: str) -> str:
+    """web 记忆分片的 base_id：URL+正文哈希。正文不变 → 片界稳定 → 同页重抓原地刷新。"""
+    return _stable_doc_id("web", url, content)
+
+
 class ChromaStore:
     def __init__(
         self,

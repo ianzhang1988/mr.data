@@ -7,6 +7,8 @@ from langgraph.graph import StateGraph, END
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
+from mr_data.db.chunking import split_text_chunks
+from mr_data.db.chroma import web_chunk_base_id
 from mr_data.llm import LLMClient
 from mr_data.llm.tokenizer import TokenCounter
 from mr_data.logging import get_logger
@@ -42,6 +44,24 @@ from mr_data.online.web_search import WebSearchTool
 
 # 当结构化回复与纯文本回退均失败时使用的静态兜底文案。
 _STATIC_FALLBACK_REPLY = "我的处理回路暂时受到干扰，无法组织回复。"
+
+
+def _web_memory_chunks(doc: WebDoc) -> list[tuple[str, str]]:
+    """把 web 文档切成记忆分片，返回 [(chunk_id, chunk_text), ...]。
+
+    base_id 由 URL+正文哈希派生（web_chunk_base_id）：同页重抓正文不变 →
+    片界稳定 → 同 id 原地刷新；正文变化 → base_id 变化 → 全新 id 写入，
+    不会产生孤儿分片。空/纯空白正文不产生任何分片。
+    """
+    chunks = split_text_chunks(
+        doc.page_content,
+        settings.memory_web_chunk_chars,
+        settings.memory_web_chunk_overlap_chars,
+    )
+    if not chunks:
+        return []
+    base_id = web_chunk_base_id(doc.metadata.url, doc.page_content)
+    return [(f"{base_id}:c{i}", chunk) for i, chunk in enumerate(chunks)]
 
 
 @dataclass
@@ -772,48 +792,52 @@ class DialogueGraph:
                 )
                 for doc in personality_docs
             ]
-            vector_refs += [
-                DialogueVectorRef(
-                    dialogue_log_id=assistant_log_id,
-                    vector_doc_id=doc.id,
-                    source_type="web",
-                    content=doc.page_content,
-                    dimension_ids=[],
-                )
-                for doc in web_docs
-            ]
+            for doc in web_docs:
+                vector_refs += [
+                    DialogueVectorRef(
+                        dialogue_log_id=assistant_log_id,
+                        vector_doc_id=chunk_id,
+                        source_type="web",
+                        content=chunk,
+                        dimension_ids=[],
+                    )
+                    for chunk_id, chunk in _web_memory_chunks(doc)
+                ]
             self.pg.insert_dialogue_vector_refs(assistant_log_id, vector_refs)
 
-        # 把网络资料作为世界知识写入记忆向量库（使用 URL 哈希作为全局稳定 id）
+        # 把网络资料作为世界知识分片写入记忆向量库（PG 事务外，逐片失败隔离）。
+        # add_memory 幂等：同 id 已存在则跳过（保留 recall_count/added_at 等），
+        # 同页重抓正文不变时同 id 原地刷新；正文变化则 base_id 变化、新 id 全新
+        # 写入，不会产生孤儿分片。
         retrieval_query = state.get("retrieval_query", user_input)
         retrieved_at = datetime.now(timezone.utc).isoformat()
         for doc in web_docs:
             title = doc.metadata.title
             url = doc.metadata.url
-            content = doc.page_content
-            memory_content = f"[网络资料] {title}\n{url}\n{content[:800]}"
-            try:
-                self.chroma.upsert_memory(
-                    session_id="",
-                    content=memory_content,
-                    memory_id=doc.id,
-                    metadata=WebMemoryMetadata(
-                        url=url,
-                        title=title,
-                        retrieved_at=retrieved_at,
-                        retrieval_session_id=session_id,
-                        query=retrieval_query,
-                    ),
-                )
-            except Exception as exc:
-                self.logger.warning(
-                    "Web memory upsert failed, skipped",
-                    extra={
-                        "event": "chat.web_memory_upsert_failed",
-                        "session_id": session_id,
-                        "details": {"doc_id": doc.id, "url": url, "error": str(exc)},
-                    },
-                )
+            for i, (chunk_id, chunk) in enumerate(_web_memory_chunks(doc)):
+                try:
+                    self.chroma.add_memory(
+                        session_id="",
+                        content=chunk,
+                        memory_id=chunk_id,
+                        metadata=WebMemoryMetadata(
+                            url=url,
+                            title=title,
+                            retrieved_at=retrieved_at,
+                            retrieval_session_id=session_id,
+                            query=retrieval_query,
+                            chunk_index=i,
+                        ),
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "Web memory write failed, skipped",
+                        extra={
+                            "event": "chat.web_memory_write_failed",
+                            "session_id": session_id,
+                            "details": {"chunk_id": chunk_id, "url": url, "error": str(exc)},
+                        },
+                    )
 
         self.logger.info(
             "Logged dialogue turn",

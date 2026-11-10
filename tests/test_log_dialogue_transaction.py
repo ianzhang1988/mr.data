@@ -4,7 +4,7 @@
 - insert_dialogue_vector_refs 崩溃 → 事务回滚：本回合 user/assistant 行及
   dialogue_dimension_refs/dialogue_vector_refs 均无残留；
 - 正常路径：事务提交后 user+assistant 行、维度 refs、向量 refs 齐全；
-- 网络资料写入 Chroma 单条失败被隔离：不影响本回合 PG 提交，也不中断对话。
+- 网络资料写入记忆分片单条失败被隔离：不影响本回合 PG 提交，也不中断对话。
 """
 
 import pytest
@@ -149,7 +149,7 @@ def test_log_dialogue_commits_all_rows(
     ) == 2
 
 
-def test_web_memory_upsert_failure_does_not_abort_turn(
+def test_web_memory_write_failure_does_not_abort_turn(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
     pytest.importorskip("pgembed", reason="pgembed not installed")
@@ -169,10 +169,10 @@ def test_web_memory_upsert_failure_does_not_abort_turn(
     )
     state = _build_state(pg, test_session_id)
 
-    def _failing_upsert_memory(*args, **kwargs):
+    def _failing_add_memory(*args, **kwargs):
         raise RuntimeError("模拟 Chroma 故障")
 
-    monkeypatch.setattr(chroma_store, "upsert_memory", _failing_upsert_memory)
+    monkeypatch.setattr(chroma_store, "add_memory", _failing_add_memory)
 
     result = graph._log_dialogue(state)
     assistant_log_id = result["assistant_log_id"]

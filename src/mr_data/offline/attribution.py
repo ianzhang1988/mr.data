@@ -1,11 +1,12 @@
 import json
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
+from mr_data.db.chunking import chunk_dialogue_logs
 from mr_data.db.chroma import (
     dialogue_chunk_memory_id,
     evidence_doc_id,
@@ -16,7 +17,6 @@ from mr_data.llm.tokenizer import TokenCounter
 from mr_data.logging import get_logger
 from mr_data.models import (
     AdjustmentLog,
-    DialogueChunk,
     DialogueLog,
     DialogueMemoryMetadata,
     DialogueVectorRef,
@@ -44,85 +44,6 @@ class DimensionDelta(BaseModel):
 
 class AttributionResult(BaseModel):
     deltas: list[DimensionDelta] = Field(default_factory=list)
-
-
-_SENTENCE_ENDINGS = ("。", "！", "？", "\n")
-
-
-def _split_overlong_line(line: str, max_chars: int) -> list[str]:
-    """把超过字符预算的单行切分为多个不超预算的片段。
-
-    优先在预算窗口内最后一个句号/换行（兼顾！？）处下刀，标点保留在前段；
-    无句读则按预算硬切。嵌入模型会静默截断超长文本，分段必须保证不超预算。
-    """
-    pieces: list[str] = []
-    rest = line
-    while len(rest) > max_chars:
-        window = rest[:max_chars]
-        cut = max(window.rfind(mark) for mark in _SENTENCE_ENDINGS)
-        if cut <= 0:
-            cut = max_chars
-        else:
-            cut += 1  # 标点/换行符保留在前一段末尾
-        pieces.append(rest[:cut])
-        rest = rest[cut:]
-    pieces.append(rest)
-    return pieces
-
-
-def chunk_dialogue_logs(
-    logs: list[DialogueLog], max_chars: int, overlap_lines: int
-) -> list[DialogueChunk]:
-    """把会话日志按字符预算分段，段间保留 overlap_lines 行重叠。
-
-    单行超预算时行内切分（见 _split_overlong_line），切出的片段共享同一
-    log id——对应分段的 first/last_dialogue_log_id 均为该 log id。
-    """
-    sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))
-    lines = [
-        (f"{'user' if log.role == 'user' else 'assistant'}: {log.content}", log.id)
-        for log in sorted_logs
-    ]
-    # 预切分超预算行：主循环不再存在"整行成段超预算"的路径。
-    lines = [
-        (piece, log_id)
-        for line, log_id in lines
-        for piece in _split_overlong_line(line, max_chars)
-    ]
-
-    chunks: list[DialogueChunk] = []
-    cur_lines: list[str] = []  # 当前段的全部行（含 overlap 前缀）
-    cur_ids: list[Any] = []  # 当前段实际覆盖的 log id（不含 overlap 行）
-    cur_chars = 0  # 实际覆盖行的字符预算（不含 overlap 行）
-
-    for line, log_id in lines:
-        # 当前段已有覆盖行且加入下一行会超预算时关闭当前段。
-        if cur_ids and cur_chars + len(line) > max_chars:
-            chunks.append(
-                DialogueChunk(
-                    content="\n".join(cur_lines),
-                    chunk_index=len(chunks),
-                    first_dialogue_log_id=cur_ids[0],
-                    last_dialogue_log_id=cur_ids[-1],
-                )
-            )
-            cur_lines = cur_lines[-overlap_lines:] if overlap_lines > 0 else []
-            cur_ids = []
-            cur_chars = 0
-        cur_lines.append(line)
-        cur_ids.append(log_id)
-        cur_chars += len(line)
-
-    if cur_ids:
-        chunks.append(
-            DialogueChunk(
-                content="\n".join(cur_lines),
-                chunk_index=len(chunks),
-                first_dialogue_log_id=cur_ids[0],
-                last_dialogue_log_id=cur_ids[-1],
-            )
-        )
-    return chunks
 
 
 class AttributionEngine:

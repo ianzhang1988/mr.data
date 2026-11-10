@@ -1,7 +1,7 @@
 """chunk_dialogue_logs 分段逻辑的纯单元测试（不依赖 DB fixtures）。"""
 
 from mr_data.models import DialogueLog
-from mr_data.offline.attribution import chunk_dialogue_logs
+from mr_data.db.chunking import chunk_dialogue_logs
 
 
 def _make_logs(contents: list[str], session_id: str = "s1") -> list[DialogueLog]:

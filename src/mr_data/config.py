@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     memory_dialogue_chunk_chars: int = 400         # 每段字符预算
     memory_dialogue_chunk_overlap_lines: int = 2   # 段间重叠行数（约一轮对话）
 
+    # web 记忆正文分段（在线管道写入记忆向量库）
+    # 与 dialogue 分段同口径（1 字 ≈ 1 token），切口同样句读优先
+    memory_web_chunk_chars: int = 400        # web 记忆每片字符预算
+    memory_web_chunk_overlap_chars: int = 40 # 片间重叠字符（≤10%）
+
     # 是否在 CLI 回复后显示参考来源
     show_references: bool = False
 
@@ -130,6 +135,12 @@ class Settings(BaseSettings):
         if self.memory_dialogue_chunk_chars > self.embedding_max_tokens:
             raise ValueError(
                 f"memory_dialogue_chunk_chars ({self.memory_dialogue_chunk_chars}) "
+                f"不得超过 embedding_max_tokens ({self.embedding_max_tokens})："
+                "按 1 字 ≈ 1 token 保守口径，超出的内容会被嵌入模型静默截断。"
+            )
+        if self.memory_web_chunk_chars > self.embedding_max_tokens:
+            raise ValueError(
+                f"memory_web_chunk_chars ({self.memory_web_chunk_chars}) "
                 f"不得超过 embedding_max_tokens ({self.embedding_max_tokens})："
                 "按 1 字 ≈ 1 token 保守口径，超出的内容会被嵌入模型静默截断。"
             )

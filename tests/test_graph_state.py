@@ -16,6 +16,7 @@ import pytest
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore
+from mr_data.db.chroma import web_chunk_base_id
 from mr_data.models import (
     DialogueLog,
     DialogueLogMetadata,
@@ -134,7 +135,11 @@ def test_web_doc_filtering_not_undone_by_state_merge(
         )
         web_ref_ids = {row["vector_doc_id"] for row in cur.fetchall()}
 
-    assert web_ref_ids == {kept_id}
+    # 改进 76：PG 引用登记粒度为分片，期望登记保留文档的片 id。
+    expected_chunk_id = (
+        f"{web_chunk_base_id('http://example.com/planets', '太阳系有八大行星')}:c0"
+    )
+    assert web_ref_ids == {expected_chunk_id}
 
 
 class _RecordingReplyLLM(FakeLLMClient):

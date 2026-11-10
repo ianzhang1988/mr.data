@@ -6,7 +6,7 @@ import pytest
 
 from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
-from mr_data.offline.attribution import chunk_dialogue_logs
+from mr_data.db.chunking import chunk_dialogue_logs
 
 
 @pytest.mark.usefixtures("reset_pg_state")

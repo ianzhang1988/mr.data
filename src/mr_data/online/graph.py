@@ -8,6 +8,7 @@ from langgraph.graph import StateGraph, END
 from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore
 from mr_data.llm import LLMClient
+from mr_data.llm.tokenizer import TokenCounter
 from mr_data.logging import get_logger
 from mr_data.models import (
     AssistantReply,
@@ -518,7 +519,7 @@ class DialogueGraph:
             else [d.id for d in dimensions if d.id is not None]
         )
         dim_text = "\n".join(
-            f"- {dim.description})" for dim in dimensions if dim.id in selected_ids
+            f"- {dim.description}" for dim in dimensions if dim.id in selected_ids
         ) or "（未特别选中）"
         user_identity_text = ""
         if user_identity:
@@ -548,17 +549,6 @@ class DialogueGraph:
         memory_text = "\n".join(
             f"- [id: {d.id}] {d.page_content}"
             for d in memory_docs
-        )
-        messages_text = "\n".join(
-            f"{'user' if m.role == 'user' else 'assistant'}: {m.content}"
-            + (f"\n  内心独白：{m.inner_monologue}" if m.inner_monologue else "")
-            + (
-                f"\n  参考来源：{
-                    ', '.join(r.summary for block in m.blocks for r in block.references)}"
-                if any(block.references for block in m.blocks)
-                else ""
-            )
-            for m in messages
         )
         web_text = "\n".join(
             f"- [id: {d.id}] [{d.metadata.title or 'web'}] {d.page_content}"
@@ -609,17 +599,62 @@ class DialogueGraph:
                 "personality", personality_text), 70, "assistant"),
             PromptSection("memory", wrap_section(
                 "memory", memory_text), 60, "assistant"),
-            PromptSection("messages", wrap_section(
-                "messages", messages_text), 50, "assistant"),
             PromptSection("web", wrap_section(
                 "web", web_text), 40, "assistant"),
-            PromptSection("user_input", user_input_text, 80, "user"),
             PromptSection("format", format_instruction, 100, "system"),
         ]
 
         fitted = self.prompt_assembler.fit_sections(
             sections, settings.llm_context_token_limit)
-        llm_messages = build_messages(fitted)
+        base = build_messages(fitted)
+
+        # 改进 74：把最近 N 轮还原为真实 user/assistant 消息序列拼入 llm_messages，
+        # 当前输入永远在最后；装不下的最老整轮丢弃。
+        def _render_turn(m: DialogueMessage) -> str:
+            text = f"{'user' if m.role == 'user' else 'assistant'}: {m.content}"
+            if m.inner_monologue:
+                text += f"\n  内心独白：{m.inner_monologue}"
+            if any(block.references for block in m.blocks):
+                text += (
+                    f"\n  参考来源：{
+                        ', '.join(r.summary for block in m.blocks for r in block.references)}"
+                )
+            return text
+
+        counter = TokenCounter()
+        used = sum(counter.count(m["content"]) for m in base)
+        remaining = settings.llm_context_token_limit - used
+        remaining -= counter.count(user_input_text)
+        remaining = max(remaining, 0)
+
+        turn_messages: list[dict] = []
+        kept_turns = 0
+        for m in reversed(messages):
+            content = _render_turn(m)
+            turn_tokens = counter.count(content)
+            if used + turn_tokens > remaining:
+                # 预算耗尽：该轮及所有更老的轮整体丢弃，保留最近连续窗口。
+                break
+            turn_messages.append(
+                {"role": "user" if m.role == "user" else "assistant",
+                 "content": content})
+            used += turn_tokens
+            kept_turns += 1
+        turn_messages.reverse()
+
+        dropped_turns = len(messages) - kept_turns
+        if dropped_turns > 0:
+            self.logger.info(
+                "History turns trimmed to fit token budget",
+                extra={
+                    "event": "chat.history_trimmed",
+                    "session_id": state["session_id"],
+                    "details": {"kept": kept_turns, "dropped": dropped_turns},
+                },
+            )
+
+        llm_messages = base + turn_messages + [
+            {"role": "user", "content": user_input_text}]
 
         reply = ""
         blocks: list[ReplyBlock] = []

@@ -55,6 +55,10 @@ class PageExtractor:
         try:
             response = requests.get(url, timeout=self.timeout, headers={"User-Agent": "mr-data/0.1"})
             response.raise_for_status()
+            # 无 charset 头的站点 requests 默认按 ISO-8859-1 解码，中文会乱码；
+            # 用 apparent_encoding（charset_normalizer 推断）兜底修正。
+            if "charset" not in response.headers.get("content-type", "").lower():
+                response.encoding = response.apparent_encoding
             return response.text, response.url
         except Exception as exc:
             logger.warning(

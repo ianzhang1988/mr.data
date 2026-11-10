@@ -13,6 +13,18 @@ class _SimpleHTMLHandler(BaseHTTPRequestHandler):
             self.send_header("Location", "/landing")
             self.end_headers()
             return
+        if self.path == "/no-charset":
+            body = (
+                "<!DOCTYPE html><html><head><title>No Charset Page</title></head>"
+                "<body><article><h1>重要文章标题</h1>"
+                "<p>这是页面的主要内容，应当被正确提取。</p></article></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            # 故意不带 charset 参数，模拟老站行为
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -57,6 +69,14 @@ def test_page_extractor_extracts_article(local_html_server):
     assert "Navigation" not in page.text
     assert "Footer" not in page.text
     assert page.url.rstrip("/") == local_html_server
+
+
+def test_page_extractor_no_charset_falls_back_to_apparent_encoding(local_html_server):
+    extractor = PageExtractor(max_length=500)
+    page = extractor.extract(f"{local_html_server}/no-charset")
+    assert page is not None
+    assert "重要文章标题" in page.text
+    assert "主要内容" in page.text
 
 
 def test_page_extractor_follows_redirect(local_html_server):

@@ -6,13 +6,24 @@ Covers:
   across linear graph nodes).
 - ``selected_dimension_ids`` taking effect in prompt assembly and dialogue
   dimension-ref logging.
+- 改进 74：最近对话轮还原为真实 user/assistant 消息序列拼入 llm_messages。
 """
+
+import json
+from pathlib import Path
 
 import pytest
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore
-from mr_data.models import DialogueLog, DialogueLogMetadata, WebDoc, WebDocMetadata
+from mr_data.models import (
+    DialogueLog,
+    DialogueLogMetadata,
+    ReplyBlock,
+    ReplyReference,
+    WebDoc,
+    WebDocMetadata,
+)
 from mr_data.online import DialogueGraph
 
 from conftest import FakeLLMClient
@@ -126,49 +137,80 @@ def test_web_doc_filtering_not_undone_by_state_merge(
     assert web_ref_ids == {kept_id}
 
 
+class _RecordingReplyLLM(FakeLLMClient):
+    """记录 AssistantReply 调用时传入的 llm_messages。"""
+
+    def __init__(self):
+        super().__init__()
+        self.reply_messages: list[dict] = []
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        if response_format.__name__ == "AssistantReply":
+            self.reply_messages = messages
+        return super().structured_chat(messages, response_format, temperature)
+
+
+def _seed_turn(
+    pg,
+    session_id: str,
+    question: str,
+    answer: str,
+    inner_monologue=None,
+    blocks=None,
+):
+    """在 Postgres 中写入一对 user/assistant 对话。"""
+    pg.insert_dialogue(DialogueLog(session_id=session_id, role="user", content=question))
+    pg.insert_dialogue(
+        DialogueLog(
+            session_id=session_id,
+            role="assistant",
+            content=answer,
+            metadata=DialogueLogMetadata(
+                inner_monologue=inner_monologue, blocks=blocks or []
+            ),
+        )
+    )
+
+
+def _setup_seeded_graph(pg, chroma_store, llm):
+    pg.init_schema()
+    pg.seed()
+    return DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=llm,
+        enable_web_search=False,
+    )
+
+
 def test_history_messages_not_duplicated(
-    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
+    test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
 ):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
-    # Seed one history turn directly in Postgres.
-    pg.insert_dialogue(
-        DialogueLog(session_id=test_session_id, role="user", content="历史问题一")
-    )
-    pg.insert_dialogue(
-        DialogueLog(
-            session_id=test_session_id,
-            role="assistant",
-            content="历史回答一",
-            metadata=DialogueLogMetadata(inner_monologue=None, blocks=[]),
-        )
-    )
+    _seed_turn(pg, test_session_id, "历史问题一", "历史回答一")
 
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=fake_llm,
-        enable_web_search=False,
-    )
-    captured = _capture_fit_sections(graph, monkeypatch)
+    llm = _RecordingReplyLLM()
+    graph = _setup_seeded_graph(pg, chroma_store, llm)
 
     reply = graph.chat(test_session_id, "新问题")
     assert reply
 
-    sections = captured.get("sections")
-    assert sections, "fit_sections should have been called"
-    messages_section = next(s for s in sections if s.name == "messages")
+    llm_messages = llm.reply_messages
+    assert llm_messages, "AssistantReply 应该收到 llm_messages"
 
     # Each history message must appear exactly once in the assembled prompt.
-    assert messages_section.text.count("历史问题一") == 1
-    assert messages_section.text.count("历史回答一") == 1
+    joined = "\n".join(m["content"] for m in llm_messages)
+    assert joined.count("历史问题一") == 1
+    assert joined.count("历史回答一") == 1
+
+    # 当前输入永远是最后一条消息。
+    assert llm_messages[-1] == {"role": "user", "content": "用户说：新问题"}
 
 
 def test_log_dialogue_records_only_selected_dimensions(
@@ -487,3 +529,149 @@ def test_assemble_omits_dimension_lines_when_selection_empty(
     assert "（未特别选中）" in identity_section.text
     for dim in dimensions:
         assert dim.description not in identity_section.text
+
+
+def test_history_turns_become_alternating_messages(
+    test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    """改进 74：多轮历史还原为真实 user/assistant 消息序列，按时间序交替，
+    当前输入永远是最后一条消息。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    llm = _RecordingReplyLLM()
+    graph = _setup_seeded_graph(pg, chroma_store, llm)
+    pg.create_session(test_session_id)
+
+    _seed_turn(pg, test_session_id, "问题一", "回答一")
+    _seed_turn(pg, test_session_id, "问题二", "回答二")
+
+    reply = graph.chat(test_session_id, "当前问题")
+    assert reply
+
+    llm_messages = llm.reply_messages
+    assert llm_messages
+
+    roles = [m["role"] for m in llm_messages]
+    # base = system 段 + assistant 素材段；随后是交替的历史轮；最后是当前输入。
+    assert roles[:2] == ["system", "assistant"]
+    assert roles[2:] == ["user", "assistant", "user", "assistant", "user"]
+
+    # 时间序：较早的轮在前，较新的轮在后。
+    turn_contents = [m["content"] for m in llm_messages[2:-1]]
+    assert turn_contents == [
+        "user: 问题一",
+        "assistant: 回答一",
+        "user: 问题二",
+        "assistant: 回答二",
+    ]
+
+    # 人格/记忆/网络等素材仍集中在 base 的 assistant 消息内。
+    assistant_base = llm_messages[1]["content"]
+    assert "<personality>" in assistant_base
+    assert "<memory>" in assistant_base
+    assert "<web>" in assistant_base
+
+    # 当前输入是最后一条消息。
+    assert llm_messages[-1] == {"role": "user", "content": "用户说：当前问题"}
+
+
+def test_history_trimmed_to_token_budget_keeps_recent_turns(
+    test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
+):
+    """改进 74：历史超出 token 预算时最老整轮被裁、最近轮保留，并记录
+    chat.history_trimmed 日志。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    llm = _RecordingReplyLLM()
+    graph = _setup_seeded_graph(pg, chroma_store, llm)
+    pg.create_session(test_session_id)
+
+    # 6 对历史轮，每轮内容约 800 token（中文字符 ≈ 1 token）。
+    for i in range(6):
+        _seed_turn(
+            pg,
+            test_session_id,
+            question=f"第{i}问" + "问" * 800,
+            answer=f"第{i}答" + "答" * 800,
+        )
+
+    monkeypatch.setattr(settings, "llm_context_token_limit", 5000)
+
+    reply = graph.chat(test_session_id, "当前问题")
+    assert reply
+
+    llm_messages = llm.reply_messages
+    assert llm_messages
+
+    joined = "\n".join(m["content"] for m in llm_messages)
+    # 最老的轮被裁掉，最近的轮保留。
+    assert "第0问" not in joined
+    assert "第5问" in joined
+    assert "第5答" in joined
+    # 当前输入永远在最后。
+    assert llm_messages[-1] == {"role": "user", "content": "用户说：当前问题"}
+
+    # 裁剪事件被记录，kept + dropped 等于历史总轮数（12 条消息）。
+    log_text = (Path(temp_log_dir) / "mr-data.log").read_text(encoding="utf-8")
+    events = [
+        json.loads(line) for line in log_text.splitlines() if line.strip()
+    ]
+    trimmed = [e for e in events if e.get("event") == "chat.history_trimmed"]
+    assert len(trimmed) == 1
+    assert trimmed[0]["session_id"] == test_session_id
+    details = trimmed[0]["details"]
+    assert details["kept"] + details["dropped"] == 12
+    assert details["dropped"] > 0
+
+
+def test_history_assistant_turn_keeps_inner_monologue_and_references(
+    test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    """改进 74：assistant 历史轮的内心独白与参考来源标注仍出现在对应的
+    assistant 消息 content 中。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    llm = _RecordingReplyLLM()
+    graph = _setup_seeded_graph(pg, chroma_store, llm)
+    pg.create_session(test_session_id)
+
+    _seed_turn(
+        pg,
+        test_session_id,
+        "太阳系有几颗行星",
+        "太阳系有八大行星。",
+        inner_monologue="我在回忆太阳系资料",
+        blocks=[
+            ReplyBlock(
+                text="太阳系有八大行星。",
+                references=[
+                    ReplyReference(
+                        id="web:0", source_type="web", summary="太阳系资料"
+                    )
+                ],
+            )
+        ],
+    )
+
+    reply = graph.chat(test_session_id, "那冥王星呢")
+    assert reply
+
+    llm_messages = llm.reply_messages
+    assistant_turns = [
+        m for m in llm_messages
+        if m["role"] == "assistant" and m["content"].startswith("assistant: ")
+    ]
+    assert len(assistant_turns) == 1
+    content = assistant_turns[0]["content"]
+    assert content.startswith("assistant: 太阳系有八大行星。")
+    assert "\n  内心独白：我在回忆太阳系资料" in content
+    assert "\n  参考来源：太阳系资料" in content

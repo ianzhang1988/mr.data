@@ -12,6 +12,7 @@ from mr_data.db.chroma import (
     event_doc_id,
 )
 from mr_data.llm import LLMClient
+from mr_data.llm.tokenizer import TokenCounter
 from mr_data.logging import get_logger
 from mr_data.models import (
     AdjustmentLog,
@@ -231,7 +232,7 @@ class AttributionEngine:
             )
         return attempts
 
-    def _build_transcript(self, logs: list[DialogueLog]) -> str:
+    def _build_transcript_lines(self, logs: list[DialogueLog]) -> list[str]:
         sorted_logs = sorted(logs, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id or 0))
         lines = []
         for log in sorted_logs:
@@ -242,7 +243,67 @@ class AttributionEngine:
             if log.role == "assistant" and monologue:
                 label += f"（内心独白：{monologue}）"
             lines.append(f"{label}: {log.content}")
-        return "\n".join(lines)
+        return lines
+
+    def _build_transcript(self, logs: list[DialogueLog]) -> str:
+        return "\n".join(self._build_transcript_lines(logs))
+
+    def _fit_transcript_lines(
+        self, lines: list[str], budget: int
+    ) -> tuple[list[str], int]:
+        """把 transcript 行裁剪进 token 预算：头尾保留、中间砍并插省略标记。
+
+        返回 (保留行列表含省略标记, 省略行数)。行是 [#id] 完整性的单位，
+        整行保留/整行丢弃，不做行内切割。标记本身的 token 也占预算；
+        预算极小连头几行都装不下时至少保留第一行，不抛异常。
+        """
+        if not lines:
+            return [], 0
+        counter = TokenCounter()
+        total = sum(counter.count(line) for line in lines)
+        if total <= budget:
+            return list(lines), 0
+
+        # 先按上限位数预留标记 token，数字定稿后若仍超预算再从尾部丢行兜底。
+        marker_reserve = counter.count("……（中间省略 000000 条消息）……") + 16
+        head_budget = max(1, (budget - marker_reserve) // 2)
+        kept_head: list[str] = []
+        head_used = 0
+        for line in lines:
+            cost = counter.count(line)
+            if not kept_head:
+                # 退化情形：首行自身即超预算也至少保留第一行。
+                kept_head.append(line)
+                head_used += cost
+                continue
+            if head_used + cost > head_budget:
+                break
+            kept_head.append(line)
+            head_used += cost
+
+        remaining = budget - head_used - marker_reserve
+        kept_tail: list[str] = []
+        tail_used = 0
+        if remaining > 0:
+            for line in reversed(lines[len(kept_head):]):
+                cost = counter.count(line)
+                if kept_tail and tail_used + cost > remaining:
+                    break
+                kept_tail.append(line)
+                tail_used += cost
+            kept_tail.reverse()
+
+        omitted = len(lines) - len(kept_head) - len(kept_tail)
+        # 标记自身占预算：超了就从尾部丢行兜底（头部保底第一行不动）。
+        while omitted > 0 and kept_tail:
+            marker = f"……（中间省略 {omitted} 条消息）……"
+            if head_used + tail_used + counter.count(marker) <= budget:
+                break
+            tail_used -= counter.count(kept_tail.pop())
+            omitted += 1
+        if omitted <= 0:
+            return list(lines), 0
+        return kept_head + [f"……（中间省略 {omitted} 条消息）……"] + kept_tail, omitted
 
     def _build_context(self, session_id: str) -> str:
         identity = self.pg.get_identity()
@@ -293,8 +354,8 @@ class AttributionEngine:
         return "\n\n".join(parts)
 
     def _attribute_session(self, session_id: str, logs: list[DialogueLog]) -> Optional[AttributionResult]:
-        transcript = self._build_transcript(logs)
         context = self._build_context(session_id)
+        lines = self._build_transcript_lines(logs)
 
         system = """你是对话归因分析器。请阅读下面提供的完整会话记录（assistant 行附该轮的内心独白），并结合人设、性格维度分组（本次会话激活/其余活跃），完成以下任务：
 1. 判断哪些性格维度促成了成功或失败。
@@ -310,7 +371,53 @@ class AttributionEngine:
 请严格按 JSON 格式返回，不要输出任何其他内容：
 {"deltas": [{"dimension_id": 1, "new_dimension_description": null, "new_dimension_reason": null, "delta_success": 1, "delta_failure": 0, "reason": "...", "event_summary": "...", "evidence_snippets": ["..."], "relation_to_personality": "体现", "target_dialogue_log_id": 123}]}
 """
-        prompt = f"""{context}
+        # transcript token 预算保护（改进 75）：长文粘贴型会话可能拼出远超
+        # 模型上下文的 prompt，超上下文重试无效 → 会话死信。按预算头尾裁剪。
+        counter = TokenCounter()
+        template_const = "\n\n本次会话记录：\n\n\n请按 JSON 格式返回归因结果。"
+        budget = (
+            settings.llm_context_token_limit
+            - counter.count(system)
+            - counter.count(context)
+            - counter.count(template_const)
+            - 256  # slack：覆盖截断后 system 措辞变长与计量误差
+        )
+        budget = max(budget, 16)
+        fitted_lines, omitted = self._fit_transcript_lines(lines, budget)
+        transcript = "\n".join(fitted_lines)
+        if omitted > 0:
+            system = system.replace(
+                "请阅读下面提供的完整会话记录",
+                f"请阅读下面提供的会话记录（中间部分已省略，共 {omitted} 条）",
+            )
+            prompt = f"""{context}
+
+本次会话记录（中间有省略）：
+{transcript}
+
+请按 JSON 格式返回归因结果。"""
+            # 头/尾保留行数：标记行前的为头部，其后为尾部。
+            marker_idx = next(
+                i for i, line in enumerate(fitted_lines) if "中间省略" in line
+            )
+            kept_head = marker_idx
+            kept_tail = len(fitted_lines) - marker_idx - 1
+            self.logger.info(
+                "Session transcript truncated to fit token budget",
+                extra={
+                    "event": "offline.transcript_truncated",
+                    "session_id": session_id,
+                    "details": {
+                        "original_lines": len(lines),
+                        "kept_head": kept_head,
+                        "kept_tail": kept_tail,
+                        "omitted": omitted,
+                        "budget": budget,
+                    },
+                },
+            )
+        else:
+            prompt = f"""{context}
 
 本次会话记录：
 {transcript}

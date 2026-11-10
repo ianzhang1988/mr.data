@@ -143,12 +143,11 @@ class AttributionEngine:
         if not sessions:
             self.logger.info("No closed sessions with unprocessed dialogues to attribute.")
             print("No closed sessions with unprocessed dialogues to attribute.")
-            return
 
         total_sessions = 0
         total_deltas = 0
         failed_sessions = 0
-        for session in sessions:
+        for session in sessions or []:
             logs = self.pg.get_recent_dialogues(
                 session_id=session.id,
                 unprocessed_only=True,

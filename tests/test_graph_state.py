@@ -307,3 +307,183 @@ def test_select_dimensions_drops_hallucinated_ids(
     result = graph._select_dimensions(state)
 
     assert result["selected_dimension_ids"] == [1]
+
+
+class _EmptySelectionLLM(FakeLLMClient):
+    """DimensionSelection 明确返回空列表（本轮无维度起作用）。"""
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        if response_format.__name__ == "DimensionSelection":
+            return {"dimension_ids": []}
+        return super().structured_chat(messages, response_format, temperature)
+
+
+class _FailingSelectionLLM(FakeLLMClient):
+    """DimensionSelection 调用抛异常（选择失败）。"""
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        if response_format.__name__ == "DimensionSelection":
+            raise RuntimeError("dimension selection unavailable")
+        return super().structured_chat(messages, response_format, temperature)
+
+
+def test_select_dimensions_llm_empty_selection_yields_empty(
+    test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    """改进 70：LLM 返回空列表时 selected_dimension_ids 为 []，不回退全量。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+    dimensions = pg.list_dimensions(active_only=True)
+    assert len(dimensions) >= 2
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=_EmptySelectionLLM(),
+        enable_web_search=False,
+    )
+    state = {
+        "session_id": test_session_id,
+        "user_input": "测试输入",
+        "dimensions": dimensions,
+    }
+    result = graph._select_dimensions(state)
+
+    assert result["selected_dimension_ids"] == []
+
+
+def test_select_dimensions_failure_yields_empty_not_all(
+    test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    """改进 70：LLM 抛异常时 selected_dimension_ids 为 []（失败=无维度起作用），
+    不再回退为全量维度。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+    dimensions = pg.list_dimensions(active_only=True)
+    assert len(dimensions) >= 2
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=_FailingSelectionLLM(),
+        enable_web_search=False,
+    )
+    state = {
+        "session_id": test_session_id,
+        "user_input": "测试输入",
+        "dimensions": dimensions,
+    }
+    result = graph._select_dimensions(state)
+
+    assert result["selected_dimension_ids"] == []
+    assert set(result["selected_dimension_ids"]) != {
+        d.id for d in dimensions if d.id is not None
+    }
+
+
+def test_log_dialogue_records_empty_refs_when_selection_empty(
+    test_session_id, pg_available, chroma_store, temp_log_dir
+):
+    """改进 70：空选择三态——selected_dimension_ids=[] 时 dimension_refs 如实写空。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    dimensions = pg.list_dimensions(active_only=True)
+    assert len(dimensions) >= 1
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=FakeLLMClient(),
+        enable_web_search=False,
+    )
+
+    state = {
+        "session_id": test_session_id,
+        "user_input": "测试输入",
+        "reply": "测试回复",
+        "reply_blocks": [],
+        "dimensions": dimensions,
+        "selected_dimension_ids": [],
+        "personality_docs": [],
+        "web_docs": [],
+        "inner_monologue": None,
+    }
+    result = graph._log_dialogue(state)
+    assistant_log_id = result["assistant_log_id"]
+
+    with pg._cursor() as cur:
+        cur.execute(
+            "SELECT dimension_id FROM dialogue_dimension_refs WHERE dialogue_log_id = %s",
+            (assistant_log_id,),
+        )
+        ref_ids = {row["dimension_id"] for row in cur.fetchall()}
+
+    assert ref_ids == set()
+
+
+def test_assemble_omits_dimension_lines_when_selection_empty(
+    test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
+):
+    """改进 70：空选择三态——selected_dimension_ids=[] 时 prompt 不含任何维度行，
+    以占位文案代替。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    dimensions = pg.list_dimensions(active_only=True)
+    assert len(dimensions) >= 1
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=FakeLLMClient(),
+        enable_web_search=False,
+    )
+    captured = _capture_fit_sections(graph, monkeypatch)
+
+    state = {
+        "session_id": test_session_id,
+        "user_input": "测试输入",
+        "identity": pg.get_identity(),
+        "user_identity": None,
+        "dimensions": dimensions,
+        "selected_dimension_ids": [],
+        "personality_docs": [],
+        "memory_docs": [],
+        "messages": [],
+        "web_docs": [],
+        "inner_monologue": None,
+    }
+    graph._assemble_and_generate(state)
+
+    sections = captured.get("sections")
+    assert sections, "fit_sections should have been called"
+    identity_section = next(s for s in sections if s.name == "identity")
+
+    assert "（未特别选中）" in identity_section.text
+    for dim in dimensions:
+        assert dim.description not in identity_section.text

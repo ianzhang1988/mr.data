@@ -169,8 +169,9 @@ class DialogueGraph:
 
     def _select_dimensions(self, state: DialogueState) -> DialogueState:
         dimensions = state.get("dimensions", [])
-        fallback_ids = [dim.id for dim in dimensions if dim.id is not None]
-        selected_ids = fallback_ids[:]
+        # 三态语义：[] 表示「本轮无维度起作用」（LLM 明确不选或选择失败），
+        # 不再预置全量兜底，避免与失败兜底混同而污染下游归因。
+        selected_ids: list[int] = []
 
         if dimensions:
             dim_text = "\n".join(
@@ -202,11 +203,11 @@ class DialogueGraph:
                     )
             except Exception as exc:
                 self.logger.warning(
-                    "Dimension selection failed; falling back to all dimensions",
+                    "Dimension selection failed; using no dimensions",
                     extra={
                         "event": "personality.dimension_select_failed",
                         "session_id": state["session_id"],
-                        "details": {"error": str(exc), "fallback_ids": fallback_ids},
+                        "details": {"error": str(exc)},
                     },
                 )
 
@@ -511,13 +512,14 @@ class DialogueGraph:
         inner_monologue = state.get("inner_monologue")
         user_identity = state.get("user_identity")
 
+        raw_selected_ids = state.get("selected_dimension_ids")
         selected_ids = set(
-            state.get("selected_dimension_ids")
-            or [d.id for d in dimensions if d.id is not None]
+            raw_selected_ids if raw_selected_ids is not None
+            else [d.id for d in dimensions if d.id is not None]
         )
         dim_text = "\n".join(
             f"- {dim.description})" for dim in dimensions if dim.id in selected_ids
-        )
+        ) or "（未特别选中）"
         user_identity_text = ""
         if user_identity:
             user_identity_text = (
@@ -714,10 +716,12 @@ class DialogueGraph:
                 )
             )
 
-            # 记录本次实际选中的维度（未选择时回退为全量维度）
+            # 记录本次实际选中的维度；仅当 key 缺失（None）时才防御性回退全量，
+            # 空列表表示「本轮无维度起作用」，如实写空。
+            raw_selected_ids = state.get("selected_dimension_ids")
             selected_ids = set(
-                state.get("selected_dimension_ids")
-                or [d.id for d in dimensions if d.id is not None]
+                raw_selected_ids if raw_selected_ids is not None
+                else [d.id for d in dimensions if d.id is not None]
             )
             self.pg.insert_dialogue_dimension_refs(
                 assistant_log_id, [dim.id for dim in dimensions if dim.id in selected_ids])

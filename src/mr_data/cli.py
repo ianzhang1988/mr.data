@@ -1,4 +1,5 @@
 import json
+import shutil
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -8,7 +9,7 @@ from rich import print as rprint
 from rich.prompt import Prompt
 
 from mr_data.config import settings
-from mr_data.db import PostgresStore, ChromaStore
+from mr_data.db import PostgresStore, ChromaStore, PgEmbedManager
 from mr_data.db.chroma import line_doc_id
 from mr_data.db.personality_loader import load_personality_pack
 from mr_data.llm import LLMClient
@@ -86,6 +87,7 @@ def _print_chat_help(pg: PostgresStore) -> None:
   identity edit    编辑用户身份
   identity delete  删除用户身份
   chroma-restore   从备份恢复 Chroma 集合并重算向量
+  teardown         清空本地数据目录，回到全新状态
 
 [bold]当前用户身份[/bold]: """ + current_text + "\n")
 
@@ -382,6 +384,54 @@ def chroma_restore(
     rprint(
         f"[green]Restored {report['restored']} document(s) into '{report['collection']}' "
         f"({report['skipped']} skipped, already present).[/green]"
+    )
+
+
+@app.command()
+def teardown(
+    force: bool = typer.Option(False, "--force", help="跳过删除确认"),
+) -> None:
+    """删除本地数据目录（pgembed + chroma），回到全新状态。"""
+    if settings.postgres_dsn:
+        rprint(
+            "[red]teardown 仅支持 pgembed 嵌入式模式；当前配置了外部 PostgreSQL DSN，"
+            "请手工清理对应数据库。[/red]"
+        )
+        logger.warning(
+            "teardown refused: external postgres_dsn configured",
+            extra={
+                "event": "cli.teardown_refused",
+                "details": {"postgres_dsn": settings.postgres_dsn},
+            },
+        )
+        raise typer.Exit(1)
+
+    pgembed_dir = Path(settings.pgembed_data_dir)
+    chroma_dir = Path(settings.chroma_persist_dir)
+    if not force:
+        confirm = typer.confirm(
+            "将删除以下目录及其全部内容：\n"
+            f"  - {pgembed_dir}\n"
+            f"  - {chroma_dir}\n"
+            "确认执行 teardown？"
+        )
+        if not confirm:
+            rprint("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
+
+    # 先停 pgembed 集群，确保没有进程占用数据目录（未启动时 stop 是安全的）。
+    PgEmbedManager().stop()
+    removed = []
+    for target in (pgembed_dir, chroma_dir):
+        shutil.rmtree(target, ignore_errors=True)
+        removed.append(str(target))
+    rprint(f"[green]Teardown 完成，已删除：{'、'.join(removed)}[/green]")
+    logger.info(
+        "teardown completed",
+        extra={
+            "event": "cli.teardown",
+            "details": {"removed_dirs": removed},
+        },
     )
 
 

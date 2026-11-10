@@ -218,6 +218,14 @@ mr-data chroma-restore <backup.json>
 
 从集合重建时自动导出的备份 JSON 恢复 `personality` / `memories` 向量数据：用当前 embedding 模型重算向量，已存在的 id 自动跳过；目标集合非空时会先确认（可用 `--force` 跳过确认）。
 
+### 9. 清空本地数据（teardown）
+
+```bash
+mr-data teardown
+```
+
+删除 pgembed 数据目录与 chroma persist 目录，回到全新状态（人格源文件 `data/personalities/data.json` 保留）；执行前会列出将删除的目录并要求确认（可用 `--force` 跳过）。仅支持 pgembed 嵌入式模式，配置外部 PostgreSQL DSN 时会拒绝执行。teardown 后运行任意命令（chat/init/offline）会自动重建 schema 并写入默认数据。
+
 ## 运行测试
 
 测试默认使用 `pgembed` 启动临时嵌入式 PostgreSQL，无需配置外部数据库。

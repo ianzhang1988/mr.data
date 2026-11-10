@@ -37,10 +37,17 @@ class _ReadableFormatter(logging.Formatter):
 # Keep a module-level cache of configured loggers so we don't rebuild handlers repeatedly.
 _CONFIGURED: set[str] = set()
 
+# File handlers shared per log-file path so every logger writing to the same
+# file uses a single RotatingFileHandler (one rotation chain, not one per logger).
+_FILE_HANDLERS: dict[Path, logging.handlers.RotatingFileHandler] = {}
+
 
 def reset_loggers() -> None:
-    """Clear the configured-logger cache. Intended for tests."""
+    """Clear the configured-logger cache and close shared file handlers. Intended for tests."""
     _CONFIGURED.clear()
+    for handler in _FILE_HANDLERS.values():
+        handler.close()
+    _FILE_HANDLERS.clear()
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -54,16 +61,20 @@ def get_logger(name: str) -> logging.Logger:
     logger.handlers.clear()
     logger.propagate = False
 
-    # File handler with rotation.
+    # File handler with rotation, shared per log-file path.
     log_dir = Path(settings.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.handlers.RotatingFileHandler(
-        filename=log_dir / "mr-data.log",
-        maxBytes=settings.log_max_bytes,
-        backupCount=settings.log_backup_count,
-        encoding="utf-8",
-    )
-    file_handler.setFormatter(_JSONLFormatter())
+    log_path = log_dir / "mr-data.log"
+    file_handler = _FILE_HANDLERS.get(log_path)
+    if file_handler is None:
+        file_handler = logging.handlers.RotatingFileHandler(
+            filename=log_path,
+            maxBytes=settings.log_max_bytes,
+            backupCount=settings.log_backup_count,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(_JSONLFormatter())
+        _FILE_HANDLERS[log_path] = file_handler
     logger.addHandler(file_handler)
 
     # Optional console handler.

@@ -667,13 +667,13 @@ class DialogueGraph:
         for m in reversed(messages):
             content = _render_turn(m)
             turn_tokens = counter.count(content)
-            if used + turn_tokens > remaining:
+            if turn_tokens > remaining:
                 # 预算耗尽：该轮及所有更老的轮整体丢弃，保留最近连续窗口。
                 break
             turn_messages.append(
                 {"role": "user" if m.role == "user" else "assistant",
                  "content": content})
-            used += turn_tokens
+            remaining -= turn_tokens
             kept_turns += 1
         turn_messages.reverse()
 

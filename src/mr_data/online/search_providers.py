@@ -1,8 +1,5 @@
-import hashlib
-import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
-from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,38 +11,6 @@ from mr_data.models import WebDoc, WebDocMetadata
 logger = get_logger("mr_data.online")
 
 
-def _is_redirect_url(url: str) -> bool:
-    """Check whether a search-result URL is a redirect/jump link rather than the
-    real page URL. Baidu and Qihoo 360 return jump links (e.g.
-    https://www.baidu.com/link?url=...) whose parameters vary per search, so the
-    same page yields different URLs and thus different ids across runs."""
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    host = parsed.netloc.lower()
-    path = parsed.path.lower()
-    if not path.startswith("/link"):
-        return False
-    return host.endswith("baidu.com") or host.endswith("so.com")
-
-
-def _stable_web_id(url: str, body: str = "", title: str = "") -> str:
-    """Generate a long-term stable id for a web result.
-
-    Preference order:
-    1. sha256 of the real URL (most precise);
-    2. content key from title+body when the URL is missing or is a
-       redirect/jump link whose parameters vary per search;
-    3. random fallback when nothing stable is available.
-    """
-    if url and not _is_redirect_url(url):
-        return hashlib.sha256(url.encode("utf-8")).hexdigest()
-    if title or body:
-        return f"web:{hashlib.sha256(f'{title}\n{body}'.encode('utf-8')).hexdigest()[:16]}"
-    return f"web:{uuid.uuid4().hex}"
-
-
 def _to_doc_format(results: list[dict]) -> list[WebDoc]:
     """Normalize provider-specific rows into the standard web-search doc format."""
     docs = []
@@ -54,7 +19,9 @@ def _to_doc_format(results: list[dict]) -> list[WebDoc]:
         body = r.get("body", "")
         url = r.get("url", "")
         docs.append(WebDoc(
-            id=_stable_web_id(url, body, title),
+            # doc id 不再承载去重/引用职能（落库身份是 chunk 级片 id，
+            # prompt 引用键是 metadata.url），直接复用 url 保留可读性。
+            id=url,
             page_content=f"{title}\n{body}",
             metadata=WebDocMetadata(url=url, title=title),
         ))

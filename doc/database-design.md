@@ -256,13 +256,11 @@ Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等�
 | event 摘要（personality） | `event_doc_id(目标日志id, 维度id, 摘要)` | ✅ 重放跳过 |
 | ingest 台词（personality） | `line_doc_id(speaker, 内容, context)` | ✅ 重复 ingest 跳过 |
 | 对话分块（memories） | `dialogue_chunk_memory_id(session_id, 首/末日志id, 内容)` | ✅ 重放跳过 |
-| web 资料（memories） | `_stable_web_id(url, body, title)`（`online/search_providers.py`） | ✅ upsert 覆盖 |
+| web 资料分片（memories） | `web_chunk_base_id(url, 正文)` 派生 `{base}:c{i}` 片 id（`db/chroma.py`） | ✅ 同页重抓原地刷新 |
 
-`_stable_web_id` 的优先级：真实 URL 的 sha256 → 跳转链接/无 URL 时退化为 `title+body` 内容键（`web:` 前缀，识别 `baidu.com/link`、`so.com/link` 等跳转域名，避免同一页面因跳转参数变化重复入库）→ 皆无时间随机 uuid 兜底（此时内容本身无稳定标识，重复入库可接受）。
+**web 文档身份（改进 78）**：`WebDoc.id` 不再承载去重/引用职能——落库身份是 chunk 级片 id（见上表），prompt 引用键是 `metadata.url`（引用即链接，PG `vector_refs` 与 Chroma 均可按 url 溯源）。`_to_doc_format` 中 doc id 直接复用 url；`_extract_web_pages` 不再重写 id，仅更新 `metadata.url` 为最终落地 URL（原链接保留在 `metadata.source_url`）。
 
-**提取成功后重定 id**：`_extract_web_pages` 中 PageExtractor 抓取时 requests 自动跟随 302，以最终落地页 URL（`response.url`）重算 doc id（真实 URL 走裸 sha256 分支）并更新 `metadata.url`，原跳转链接保留在 `metadata.source_url` 备查。同一页面即使两次搜索摘要不同，提取后 id 也收敛为同一真实 URL 哈希，不再重复入库。已知边界：只对被提取的页面生效（`web_extract_max_pages` 限制），未提取的仍按内容键，同页不同摘要仍可能重复。
-
-**PG 侧崩溃重放幂等（会话级事务）**：`PostgresStore.transaction()` 提供会话级事务上下文，事务态下 `_cursor` 复用同一连接并抑制逐方法 commit；`AttributionEngine.run()` 把 `_apply` + `mark_dialogue_processed` 循环整体包入事务，LLM 调用（`_attribute_session`）在事务外。事务内任意失败整体回滚，会话保持 unprocessed 留待重跑，不再出现计数翻倍/审计双份。跨库一致性语义：Chroma 写/删（evidence/event 证据、会话分块记忆、维度淘汰 purge）全部不在事务内执行——`_apply` 只做 PG 写并收集待写入的 `PersonalityEvent`（doc id 为确定性哈希，可预算，PG `dialogue_vector_refs` 用预算 id 在事务内先行落库）与待淘汰维度 id；事务提交成功后由 `_flush_post_commit_chroma` 统一执行，单条失败记 warning（`offline.chroma_write_failed` / `offline.memory_persist_failed` / `offline.dimension_purge_failed`）继续。回滚时不产生任何 Chroma 副作用（无孤儿向量、无误删向量）；代价是提交后 Chroma 写失败不再自动重试（会话已标记 processed），残留以日志为准。非事务态（在线路径、CLI）行为不变，逐方法 autocommit。在线侧 `_log_dialogue` 的 4 步 PG 写（对话行/维度引用/向量引用）同样包入事务，Chroma upsert 留事务外且逐条故障隔离（`chat.web_memory_upsert_failed`）。
+**PG 侧崩溃重放幂等（会话级事务）**：`PostgresStore.transaction()` 提供会话级事务上下文，事务态下 `_cursor` 复用同一连接并抑制逐方法 commit；`AttributionEngine.run()` 把 `_apply` + `mark_dialogue_processed` 循环整体包入事务，LLM 调用（`_attribute_session`）在事务外。事务内任意失败整体回滚，会话保持 unprocessed 留待重跑，不再出现计数翻倍/审计双份。跨库一致性语义：Chroma 写/删（evidence/event 证据、会话分块记忆、维度淘汰 purge）全部不在事务内执行——`_apply` 只做 PG 写并收集待写入的 `PersonalityEvent`（doc id 为确定性哈希，可预算，PG `dialogue_vector_refs` 用预算 id 在事务内先行落库）与待淘汰维度 id；事务提交成功后由 `_flush_post_commit_chroma` 统一执行，单条失败记 warning（`offline.chroma_write_failed` / `offline.memory_persist_failed` / `offline.dimension_purge_failed`）继续。回滚时不产生任何 Chroma 副作用（无孤儿向量、无误删向量）；代价是提交后 Chroma 写失败不再自动重试（会话已标记 processed），残留以日志为准。非事务态（在线路径、CLI）行为不变，逐方法 autocommit。在线侧 `_log_dialogue` 的 4 步 PG 写（对话行/维度引用/向量引用）同样包入事务，Chroma upsert 留事务外且逐条故障隔离（`chat.web_memory_write_failed`）。
 
 **集合重建防丢数据**：`_ensure_collection` 检测 embedding 维度/模型不一致时，先把集合导出为 `<chroma_persist_dir 父目录>/chroma-backups/<集合名>-<UTC时间戳>.json`（ids+documents+metadatas，不导 embeddings——旧向量在新空间无意义，恢复时重算），导出失败则阻止删除；重建后打印报告与恢复提示。`mr-data chroma-restore <backup.json>` 用当前配置的 embedding 模型重算向量并恢复（已存在 id 跳过，幂等），是否使用老数据由用户决定。
 

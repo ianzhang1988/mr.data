@@ -32,7 +32,6 @@ from mr_data.models import (
     WebMemoryMetadata,
 )
 from mr_data.online.page_extract import PageExtractor
-from mr_data.online.search_providers import _stable_web_id
 from mr_data.online.web_filter import filter_web_docs
 from mr_data.online.prompt_assembly import (
     PromptAssembler,
@@ -371,9 +370,6 @@ class DialogueGraph:
             if result:
                 real_url = result.url
                 new_doc = doc.model_copy(update={
-                    # real_url 为空或仍是跳转链接时以正文+标题哈希兜底，
-                    # 保证同页同 id（upsert 去重），避免退化为随机 id 重复入库
-                    "id": _stable_web_id(real_url, body=result.text, title=doc.metadata.title),
                     "page_content": f"{doc.metadata.title}\n{result.text}",
                     "metadata": doc.metadata.model_copy(update={
                         "url": real_url,
@@ -585,8 +581,10 @@ class DialogueGraph:
         memory_text = "\n".join(
             _render_memory_doc(d) for d in memory_docs
         )
+        # 改进 78：web 引用键改用 metadata.url（引用即链接，落库侧可溯源）；
+        # 无 url 的 doc 退用 doc.id，两者皆空则不注册（空键会让任意空 id 引用命中）。
         web_text = "\n".join(
-            f"- [id: {d.id}] [{d.metadata.title or 'web'}] {d.page_content}"
+            f"- [url: {d.metadata.url or d.id}] [{d.metadata.title or 'web'}] {d.page_content}"
             for d in web_docs
         )
 
@@ -612,7 +610,9 @@ class DialogueGraph:
 
         known_refs: dict[str, str] = {}
         for d in web_docs:
-            known_refs[d.id] = "web"
+            key = d.metadata.url or d.id
+            if key:
+                known_refs[key] = "web"
         for d in personality_docs:
             known_refs[d.id] = d.metadata.source_type
         for d in memory_docs:

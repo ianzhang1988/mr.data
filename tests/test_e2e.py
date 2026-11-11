@@ -634,7 +634,7 @@ def test_assemble_and_generate_returns_references(
                     {
                         "text": "根据参考资料，太阳系有八大行星。",
                         "references": [
-                            {"id": "web:0", "source_type": "web", "summary": "太阳系有八大行星"},
+                            {"id": "http://example.com/planets", "source_type": "web", "summary": "太阳系有八大行星"},
                             {"id": "fake-id", "source_type": "memory", "summary": "不存在的素材"},
                         ],
                     }
@@ -648,7 +648,7 @@ def test_assemble_and_generate_returns_references(
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id="web:0",
+                    id="http://example.com/planets",
                     page_content="太阳系有八大行星",
                     metadata=WebDocMetadata(
                         url="http://example.com/planets",
@@ -670,8 +670,99 @@ def test_assemble_and_generate_returns_references(
     all_refs = [
         ref for block in result.blocks for ref in block.references
     ]
-    assert any(ref.id == "web:0" and ref.source_type == "web" for ref in all_refs)
+    assert any(
+        ref.id == "http://example.com/planets" and ref.source_type == "web"
+        for ref in all_refs
+    )
     assert not any(ref.id == "fake-id" for ref in all_refs)
+
+
+def test_web_doc_without_url_does_not_register_empty_ref_key(
+    fake_llm, pg_available, chroma_store, monkeypatch
+):
+    """改进 78：无 url 的 web doc 不注册空 known_refs 键，LLM 回传空 id 引用
+    被丢弃；有 url 的 doc 仍以 url 为引用键。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    session_id = pg.create_session()
+
+    original_chat_structured = fake_llm.chat_structured
+
+    def _patched_chat_structured(system_prompt, user_prompt, response_format, temperature=0.2):
+        name = response_format.__name__
+        if name == "ThinkDecision":
+            return {
+                "inner_monologue": "需要搜索",
+                "personality_query": user_prompt,
+                "memory_query": user_prompt,
+                "needs_web_search": True,
+                "search_query": user_prompt,
+            }
+        return original_chat_structured(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
+
+    original_structured_chat = fake_llm.structured_chat
+
+    def _patched_structured_chat(messages, response_format, temperature=0.2):
+        if response_format.__name__ == "AssistantReply":
+            return {
+                "text": "根据参考资料回复。",
+                "blocks": [
+                    {
+                        "text": "根据参考资料回复。",
+                        "references": [
+                            {"id": "", "source_type": "web", "summary": "空 id 引用"},
+                            {"id": "http://example.com/planets", "source_type": "web", "summary": "太阳系有八大行星"},
+                        ],
+                    }
+                ],
+            }
+        return original_structured_chat(messages, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "structured_chat", _patched_structured_chat)
+
+    class FakeWebSearch:
+        def search(self, query: str) -> list[WebDoc]:
+            return [
+                WebDoc(
+                    id="",
+                    page_content="无链接摘要",
+                    metadata=WebDocMetadata(url="", title="无链接"),
+                ),
+                WebDoc(
+                    id="http://example.com/planets",
+                    page_content="太阳系有八大行星",
+                    metadata=WebDocMetadata(
+                        url="http://example.com/planets",
+                        title="行星",
+                    ),
+                ),
+            ]
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        web_search=FakeWebSearch(),
+        enable_web_search=True,
+    )
+
+    result = graph.chat(session_id, "太阳系有几颗行星")
+    assert result.text
+    all_refs = [
+        ref for block in result.blocks for ref in block.references
+    ]
+    assert not any(ref.id == "" for ref in all_refs)
+    assert any(
+        ref.id == "http://example.com/planets" and ref.source_type == "web"
+        for ref in all_refs
+    )
 
 
 def test_web_memory_refetch_is_idempotent(fake_llm, pg_available, chroma_store, monkeypatch):
@@ -690,7 +781,7 @@ def test_web_memory_refetch_is_idempotent(fake_llm, pg_available, chroma_store, 
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id="web:planets",
+                    id=url,
                     page_content=content,
                     metadata=WebDocMetadata(
                         url=url,
@@ -715,7 +806,7 @@ def test_web_memory_refetch_is_idempotent(fake_llm, pg_available, chroma_store, 
             return {
                 "text": "太阳系有八大行星。",
                 "references": [
-                    {"id": "web:planets", "source_type": "web", "summary": "太阳系有八大行星"},
+                    {"id": url, "source_type": "web", "summary": "太阳系有八大行星"},
                 ],
             }
         return original_chat_structured(system_prompt, user_prompt, response_format, temperature)

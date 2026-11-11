@@ -2,11 +2,9 @@
 
 覆盖：
 - personality / memories 稳定 id 的「已存在则跳过」语义；
-- 归因 _apply + _flush_post_commit_chroma 后重放幂等，不产生重复文档；
-- _stable_web_id 各 fallback 分支与跳转链接（洞 1、洞 2）。
+- 归因 _apply + _flush_post_commit_chroma 后重放幂等，不产生重复文档。
+（_stable_web_id 各分支用例已随改进 78 删除该函数一并移除。）
 """
-
-import hashlib
 
 import pytest
 
@@ -20,7 +18,6 @@ from mr_data.db.chroma import (
 from mr_data.models import DialogueLog, DialogueMemoryMetadata, PersonalityEvent
 from mr_data.offline import AttributionEngine
 from mr_data.offline.attribution import AttributionResult, DimensionDelta
-from mr_data.online.search_providers import _is_redirect_url, _stable_web_id
 
 
 # ---------------------------------------------------------------------------
@@ -138,39 +135,3 @@ def test_apply_replay_does_not_duplicate_chroma_docs(
     engine._flush_post_commit_chroma(test_session_id, logs, events, purge)
     assert chroma_store.personality.count() == personality_count
     assert chroma_store.memories.count() == memories_count
-
-
-# ---------------------------------------------------------------------------
-# _stable_web_id（洞 1、洞 2）
-# ---------------------------------------------------------------------------
-
-
-def test_stable_web_id_real_url_uses_url_hash():
-    url = "https://example.com/page"
-    assert _stable_web_id(url) == hashlib.sha256(url.encode("utf-8")).hexdigest()
-
-
-def test_stable_web_id_redirect_url_falls_back_to_content_key():
-    title, body = "同一页面", "相同摘要"
-    id_a = _stable_web_id("https://www.baidu.com/link?url=AAA", body, title)
-    id_b = _stable_web_id("https://www.baidu.com/link?url=BBB", body, title)
-    id_c = _stable_web_id("https://www.so.com/link?m=CCC", body, title)
-    # 跳转链接参数不同但内容相同 → id 相同（洞 2）
-    assert id_a == id_b == id_c
-    assert id_a.startswith("web:")
-
-
-def test_stable_web_id_non_redirect_url_on_same_hosts_is_url_keyed():
-    url = "https://www.baidu.com/p/12345"
-    assert not _is_redirect_url(url)
-    assert _stable_web_id(url) == hashlib.sha256(url.encode("utf-8")).hexdigest()
-
-
-def test_stable_web_id_title_fallback_is_deterministic():
-    # 洞 1：无 URL 无正文但有标题时不再退化为随机 id
-    assert _stable_web_id("", "", "只有标题") == _stable_web_id("", "", "只有标题")
-    assert _stable_web_id("", "正文") == _stable_web_id("", "正文")
-
-
-def test_stable_web_id_empty_everything_is_random():
-    assert _stable_web_id("", "", "") != _stable_web_id("", "", "")

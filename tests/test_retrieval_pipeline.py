@@ -76,12 +76,8 @@ def test_extract_web_pages_keeps_docs_beyond_max_pages(
     result = graph._extract_web_pages(state)
 
     out = result["web_docs"]
-    assert [d.id for d in out] == [
-        # 前两条抓正文后 id 变为 real_url 的哈希
-        out[0].id,
-        out[1].id,
-        "web:c",
-    ]
+    # 改进 78：抽取不再重写 id，前三条 id 原样保留。
+    assert [d.id for d in out] == ["web:a", "web:b", "web:c"]
     assert out[0].metadata.extracted is True
     assert out[1].metadata.extracted is True
     # 第三条原样保留（snippet 级）
@@ -199,3 +195,28 @@ def test_retrieve_memories_counts_web_recall(chroma_store, monkeypatch):
     meta = result["memory_docs"][0].metadata
     assert meta.recall_count == 1
     assert meta.last_recalled_at
+
+
+def test_extract_web_pages_keeps_doc_when_extraction_fails(
+    chroma_store, monkeypatch
+):
+    """抽取失败（extract 返回 None）时原 doc 原样保留（改进 78 移除 re-id 后
+    该行为不变，迁自 test_web_reid.py）。"""
+    monkeypatch.setattr(settings, "web_extract_max_pages", 2)
+    graph = _make_graph(chroma_store)
+
+    class _FailingExtractor:
+        def extract(self, url):
+            return None
+
+    monkeypatch.setattr(graph, "page_extractor", _FailingExtractor())
+
+    docs = [_web_doc("web:a", "http://a.example")]
+    state = {
+        "session_id": "test-session",
+        "user_input": "测试输入",
+        "web_docs": docs,
+    }
+    result = graph._extract_web_pages(state)
+
+    assert result["web_docs"][0] == docs[0]

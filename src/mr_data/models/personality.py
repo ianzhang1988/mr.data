@@ -307,9 +307,12 @@ class WebDocMetadata(BaseModel):
 
 
 class WebDoc(BaseModel):
-    """web 搜索文档的管道载体（LangChain Document 风格的三元组）。"""
+    """web 搜索文档的管道载体（LangChain Document 风格的三元组）。
 
-    id: str = ""  # web_filter 容忍无 id 的 doc
+    无独立 id 字段（改进 79）：文档身份即 ``metadata.url``——去重由
+    chunk 级片 id 承担，prompt 引用键也是 url。
+    """
+
     page_content: str = ""
     metadata: WebDocMetadata = Field(default_factory=WebDocMetadata)
 

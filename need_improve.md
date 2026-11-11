@@ -15,13 +15,13 @@
 （暂无）
 
 # 已完成的改进项
-（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-75 已迁移归档）
-
-76. ✅ web 记忆入库 400 字分片改造：每页一文档 800 字截断改为 400 字分片 + 纯净嵌入（裸正文入 embed，title/url 只进 metadata），片 id `{base_id}:c{i}`（base_id=URL+正文哈希），upsert 改幂等 add（同页重抓原地刷新、recall_count 不重置），PG 引用每片一行，切分逻辑收拢至 `db/chunking.py`；prompt 记忆段按 source_type 渲染来源行。详见 finished_improvement.md #76。
+（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-76 已迁移归档）
 
 77. ✅ 历史轮 token 预算 base 双扣修复：历史窗口循环条件 used（含 base）与 remaining（已扣 base）比较导致 base 扣两次、历史窗口缩水一个 base 量级；改 `turn_tokens > remaining` + `remaining -= turn_tokens`。详见 finished_improvement.md #77。
 
 78. ✅ web 引用 id 改 URL：prompt 素材行与 known_refs 键改用 metadata.url（引用即链接），extract 的 id 重写与 `_stable_web_id`/`_is_redirect_url` 删除，入库管道不动。详见 finished_improvement.md #78。
+
+79. ✅ WebDoc 删除独立 id 字段，文档身份即 metadata.url：prompt 素材行经 `_render_web_doc` 渲染（无 url 退 `[web]` 标记且不注册引用），`_to_doc_format`/`web_filter` 相应简化。详见 finished_improvement.md #79。
 
 # 未来可选增强（计划中）
 

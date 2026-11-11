@@ -43,7 +43,6 @@ def _build_state(pg: PostgresStore, session_id: str) -> dict:
         ],
         "web_docs": [
             WebDoc(
-                id="web:tx-1",
                 page_content="网络资料内容",
                 metadata=WebDocMetadata(
                     url="http://example.com/tx",

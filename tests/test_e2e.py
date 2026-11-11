@@ -175,7 +175,6 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id="web:planets",
                     page_content="太阳系有八大行星",
                     metadata=WebDocMetadata(
                         url="http://example.com/planets",
@@ -648,7 +647,6 @@ def test_assemble_and_generate_returns_references(
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id="http://example.com/planets",
                     page_content="太阳系有八大行星",
                     metadata=WebDocMetadata(
                         url="http://example.com/planets",
@@ -731,12 +729,10 @@ def test_web_doc_without_url_does_not_register_empty_ref_key(
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id="",
                     page_content="无链接摘要",
                     metadata=WebDocMetadata(url="", title="无链接"),
                 ),
                 WebDoc(
-                    id="http://example.com/planets",
                     page_content="太阳系有八大行星",
                     metadata=WebDocMetadata(
                         url="http://example.com/planets",
@@ -781,7 +777,6 @@ def test_web_memory_refetch_is_idempotent(fake_llm, pg_available, chroma_store, 
         def search(self, query: str) -> list[WebDoc]:
             return [
                 WebDoc(
-                    id=url,
                     page_content=content,
                     metadata=WebDocMetadata(
                         url=url,

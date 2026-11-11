@@ -19,9 +19,6 @@ def _to_doc_format(results: list[dict]) -> list[WebDoc]:
         body = r.get("body", "")
         url = r.get("url", "")
         docs.append(WebDoc(
-            # doc id 不再承载去重/引用职能（落库身份是 chunk 级片 id，
-            # prompt 引用键是 metadata.url），直接复用 url 保留可读性。
-            id=url,
             page_content=f"{title}\n{body}",
             metadata=WebDocMetadata(url=url, title=title),
         ))

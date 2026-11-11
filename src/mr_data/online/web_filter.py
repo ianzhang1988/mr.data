@@ -38,7 +38,7 @@ def filter_web_docs(llm, docs: list[WebDoc], user_input: str) -> list[WebDoc]:
             )
             extraction = WebDocExtraction.model_validate(result)
         except Exception as exc:
-            details = {"error": str(exc), "doc_id": doc.id}
+            details = {"error": str(exc)}
             if doc.metadata.url:
                 details["url"] = doc.metadata.url
             if doc.metadata.title:

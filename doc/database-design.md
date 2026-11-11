@@ -258,7 +258,7 @@ Chroma 以 id 为去重键，但 `.add()` 遇重复 id 会抛错，因此幂等�
 | 对话分块（memories） | `dialogue_chunk_memory_id(session_id, 首/末日志id, 内容)` | ✅ 重放跳过 |
 | web 资料分片（memories） | `web_chunk_base_id(url, 正文)` 派生 `{base}:c{i}` 片 id（`db/chroma.py`） | ✅ 同页重抓原地刷新 |
 
-**web 文档身份（改进 78）**：`WebDoc.id` 不再承载去重/引用职能——落库身份是 chunk 级片 id（见上表），prompt 引用键是 `metadata.url`（引用即链接，PG `vector_refs` 与 Chroma 均可按 url 溯源）。`_to_doc_format` 中 doc id 直接复用 url；`_extract_web_pages` 不再重写 id，仅更新 `metadata.url` 为最终落地 URL（原链接保留在 `metadata.source_url`）。
+**web 文档身份（改进 78/79）**：`WebDoc` 无独立 id 字段，文档身份即 `metadata.url`——prompt 引用键是 url（引用即链接，PG `vector_refs` 与 Chroma 均可按 url 溯源），去重由 chunk 级片 id 承担（见上表）。`_extract_web_pages` 不重写身份，仅更新 `metadata.url` 为最终落地 URL（原链接保留在 `metadata.source_url`）；无 url 的 doc 不进 `known_refs`（空键会让任意空 id 引用命中）。
 
 **PG 侧崩溃重放幂等（会话级事务）**：`PostgresStore.transaction()` 提供会话级事务上下文，事务态下 `_cursor` 复用同一连接并抑制逐方法 commit；`AttributionEngine.run()` 把 `_apply` + `mark_dialogue_processed` 循环整体包入事务，LLM 调用（`_attribute_session`）在事务外。事务内任意失败整体回滚，会话保持 unprocessed 留待重跑，不再出现计数翻倍/审计双份。跨库一致性语义：Chroma 写/删（evidence/event 证据、会话分块记忆、维度淘汰 purge）全部不在事务内执行——`_apply` 只做 PG 写并收集待写入的 `PersonalityEvent`（doc id 为确定性哈希，可预算，PG `dialogue_vector_refs` 用预算 id 在事务内先行落库）与待淘汰维度 id；事务提交成功后由 `_flush_post_commit_chroma` 统一执行，单条失败记 warning（`offline.chroma_write_failed` / `offline.memory_persist_failed` / `offline.dimension_purge_failed`）继续。回滚时不产生任何 Chroma 副作用（无孤儿向量、无误删向量）；代价是提交后 Chroma 写失败不再自动重试（会话已标记 processed），残留以日志为准。非事务态（在线路径、CLI）行为不变，逐方法 autocommit。在线侧 `_log_dialogue` 的 4 步 PG 写（对话行/维度引用/向量引用）同样包入事务，Chroma upsert 留事务外且逐条故障隔离（`chat.web_memory_write_failed`）。
 

@@ -79,6 +79,13 @@ def _render_memory_doc(d: MemoryDoc) -> str:
     return f"- [id: {d.id}] [dialogue] {d.page_content}"
 
 
+def _render_web_doc(d: WebDoc) -> str:
+    """渲染 web 段的一条素材：文档身份即 url，无 url 时退化为 [web] 标记
+    （该 doc 不进 known_refs，引用会被丢弃）。供 _assemble_and_generate 使用。"""
+    marker = f"[url: {d.metadata.url}]" if d.metadata.url else "[web]"
+    return f"- {marker} [{d.metadata.title or 'web'}] {d.page_content}"
+
+
 @dataclass
 class ChatResult:
     """在线对话的单轮返回结果。"""
@@ -581,12 +588,8 @@ class DialogueGraph:
         memory_text = "\n".join(
             _render_memory_doc(d) for d in memory_docs
         )
-        # 改进 78：web 引用键改用 metadata.url（引用即链接，落库侧可溯源）；
-        # 无 url 的 doc 退用 doc.id，两者皆空则不注册（空键会让任意空 id 引用命中）。
-        web_text = "\n".join(
-            f"- [url: {d.metadata.url or d.id}] [{d.metadata.title or 'web'}] {d.page_content}"
-            for d in web_docs
-        )
+        # 改进 79：web 文档身份即 metadata.url，素材行直接标注 url。
+        web_text = "\n".join(_render_web_doc(d) for d in web_docs)
 
         format_instruction = (
             "请根据以上内容生成回复，保持性格一致性。\n\n"
@@ -610,9 +613,9 @@ class DialogueGraph:
 
         known_refs: dict[str, str] = {}
         for d in web_docs:
-            key = d.metadata.url or d.id
-            if key:
-                known_refs[key] = "web"
+            # 空 url 不注册（空键会让任意空 id 引用命中）。
+            if d.metadata.url:
+                known_refs[d.metadata.url] = "web"
         for d in personality_docs:
             known_refs[d.id] = d.metadata.source_type
         for d in memory_docs:

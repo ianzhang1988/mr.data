@@ -14,7 +14,6 @@ class FakeSuccessProvider(SearchProvider):
     def search(self, query: str) -> list[WebDoc]:
         return [
             WebDoc(
-                id="web:0",
                 page_content=f"Success\n{query}",
                 metadata=WebDocMetadata(
                     url="https://example.com",

@@ -42,11 +42,10 @@ def _make_graph(chroma_store):
     )
 
 
-def _web_doc(doc_id: str, url: str) -> WebDoc:
+def _web_doc(url: str) -> WebDoc:
     return WebDoc(
-        id=doc_id,
-        page_content=f"snippet of {doc_id}",
-        metadata=WebDocMetadata(url=url, title=doc_id),
+        page_content=f"snippet of {url}",
+        metadata=WebDocMetadata(url=url, title=url),
     )
 
 
@@ -64,9 +63,9 @@ def test_extract_web_pages_keeps_docs_beyond_max_pages(
     monkeypatch.setattr(graph, "page_extractor", _StubExtractor())
 
     docs = [
-        _web_doc("web:a", "http://a.example"),
-        _web_doc("web:b", "http://b.example"),
-        _web_doc("web:c", "http://c.example"),
+        _web_doc("http://a.example"),
+        _web_doc("http://b.example"),
+        _web_doc("http://c.example"),
     ]
     state = {
         "session_id": "test-session",
@@ -76,12 +75,16 @@ def test_extract_web_pages_keeps_docs_beyond_max_pages(
     result = graph._extract_web_pages(state)
 
     out = result["web_docs"]
-    # 改进 78：抽取不再重写 id，前三条 id 原样保留。
-    assert [d.id for d in out] == ["web:a", "web:b", "web:c"]
+    # 改进 78/79：抽取不重写身份，url 原样保留。
+    assert [d.metadata.url for d in out] == [
+        "http://a.example",
+        "http://b.example",
+        "http://c.example",
+    ]
     assert out[0].metadata.extracted is True
     assert out[1].metadata.extracted is True
     # 第三条原样保留（snippet 级）
-    assert out[2].page_content == "snippet of web:c"
+    assert out[2].page_content == "snippet of http://c.example"
     assert out[2].metadata.extracted is False
 
 
@@ -211,7 +214,7 @@ def test_extract_web_pages_keeps_doc_when_extraction_fails(
 
     monkeypatch.setattr(graph, "page_extractor", _FailingExtractor())
 
-    docs = [_web_doc("web:a", "http://a.example")]
+    docs = [_web_doc("http://a.example")]
     state = {
         "session_id": "test-session",
         "user_input": "测试输入",

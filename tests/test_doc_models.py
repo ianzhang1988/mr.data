@@ -20,14 +20,12 @@ from mr_data.models import (
 
 def test_webdoc_model_copy_pipeline_evolution():
     doc = WebDoc(
-        id="web:abc",
         page_content="标题\n正文",
         metadata=WebDocMetadata(url="https://baidu.com/link?x=1", title="标题"),
     )
 
-    # extract 阶段：重定 id + 记录原始跳转链接
+    # extract 阶段：记录原始跳转链接（改进 79 起不再重写 id，身份即 url）
     extracted = doc.model_copy(update={
-        "id": "web:real",
         "page_content": "标题\n提取全文",
         "metadata": doc.metadata.model_copy(update={
             "url": "https://real.example.com/page",
@@ -35,12 +33,11 @@ def test_webdoc_model_copy_pipeline_evolution():
             "extracted": True,
         }),
     })
-    assert extracted.id == "web:real"
     assert extracted.metadata.url == "https://real.example.com/page"
     assert extracted.metadata.source_url == "https://baidu.com/link?x=1"
     assert extracted.metadata.extracted is True
     # 原文档不被就地污染
-    assert doc.id == "web:abc"
+    assert doc.metadata.url == "https://baidu.com/link?x=1"
     assert doc.metadata.extracted is False
 
     # filter 阶段：llm_extracted 标记

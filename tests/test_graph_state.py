@@ -75,11 +75,8 @@ def test_web_doc_filtering_not_undone_by_state_merge(
     pg.seed()
     pg.create_session(test_session_id)
 
-    kept_id = "web:kept"
-    dropped_id = "web:dropped"
     docs = [
         WebDoc(
-            id=kept_id,
             page_content="太阳系有八大行星",
             metadata=WebDocMetadata(
                 url="http://example.com/planets",
@@ -87,7 +84,6 @@ def test_web_doc_filtering_not_undone_by_state_merge(
             ),
         ),
         WebDoc(
-            id=dropped_id,
             page_content="完全无关的蛋糕食谱",
             metadata=WebDocMetadata(
                 url="http://example.com/cake",

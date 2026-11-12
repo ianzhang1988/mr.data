@@ -1,5 +1,13 @@
 # AGENTS.md — mr.data
 
+## 设计文档
+
+设计细节以 `doc/design/` 为准（project_object.md 是目标层，doc/database-design.md 是表结构层）。
+查询动线：先 `doc/design/00-index.md` 路由表定位到「篇名#节号」，只取该节阅读；
+首次接触或跨领域任务先读 `doc/design/01-birdseye.md`。禁止整篇通读除非任务需要。
+改代码动了设计契约（状态 key、id 派生、降级方向、维度规则）时，同步更新对应节；
+改完自查 `doc/design/00-index.md` 的路由是否仍然指向正确章节。
+
 ## 测试
 
 ```bash
@@ -15,7 +23,6 @@
 | 机器负载高时 | 可能放大到 3–5 倍 | 用 600s |
 
 - Shell 工具默认 timeout 是 60s，**跑全量测试必须显式设置 timeout ≥ 300s**，否则会被误杀。
-- 基线：**185 passed, 1 skipped**（skip 的是需下载真实 embedding 模型的手动测试）。
 - 单文件测试可能仍需支付 pgembed 启动（热 ~0.1s / 冷 ~15s）。
 
 ## 测试基建要点

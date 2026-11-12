@@ -2,6 +2,8 @@
 
 mr.data 性格子程序原型。
 
+**设计文档**：设计细节见 [doc/design/](doc/design/00-index.md)（从索引路由表按节取阅；project_object.md 是目标层，doc/database-design.md 是表结构层）。
+
 ## 概念
 
 mr.data 需要性格子程序：

@@ -166,3 +166,11 @@
     - 部署连带（记录不处理）：哈希基准换原文后存量 web 记忆一次性失配、重新写入一轮，过渡期新旧两套并存至旧套 90 天 prune 消亡（检索噪音翻倍，无害）；original_content=None 退化路径行为同旧。
     - 测试：`test_page_extract.py` +1（默认 100K 上限）+ 截断用例补省略标记/truncated_chars=最终长度断言；`test_web_filter.py` +2（预算头截副本/源数据不动/日志事件、预算内不截断回归）；`test_web_chunking.py` +2（原文哈希基准——同页不同摘取版同 id 同片、None 回退 page_content）；`test_graph_state.py` +1（`_extract_web_pages` 填 original_content 不含 title、透传路径保持 None）。全量回归 **225 passed, 1 skipped**（219 基线 +6）。
     - 范围外（survey 确认不改）：截断点④（fit_sections/_compress_text 三层兜底链）、搜索层切片、记忆 400 字分片机制；D（`_filter_memory_docs` 预算统一）是下一个独立调查项。
+
+84. ✅ **记忆相关性过滤预算统一 TokenCounter**（truncation-survey.md 改进项 D）：`_filter_memory_docs` 原两个缺陷——`doc.page_content[:1500]` 字符魔法数无预算依据（1500 字按中文口径 ~750-1500 token）；整份 filter prompt（system+user_input+记忆列表）在 token 预算体系之外，user_input 无封顶、多片/大 top_k 时超上下文只能走「过滤失败保留全部」的错误驱动兜底。实现（改进 84）：
+    1. `config.py` 新配置 `memory_relevance_filter_max_tokens=32768`（用户拍板，与 web_filter_max_tokens 对齐；记忆入库每片 ≤ embedding_max_tokens=512、top_k=5 正常场景 ~2.5K token，32K 宽预算正常几乎不触发）；`.env.example` 同步。
+    2. `graph.py` 删 1500 魔法数；新增模块级 `_fit_memory_filter_docs`（与 `_web_memory_chunks` 平行）——TokenCounter 计整份 prompt，超额时按各片 token 占比等比分剩余预算（水填充同哲学，survey D 指定；逐片下钳 ≥1 token，水填充组语义），单片纯头部截（中文 ~2 字/token 估切口 + 真实计数砍半兜底 + 换行收尾 + 省略标记「[记忆过长，已省略后续内容]」），**源 doc 本体不动**；不调 LLM 压缩（逐片 N 次会 N 倍放大调用，记忆片本身 ≤512 token 量级，硬截够用）。
+    3. 新增 `retrieve.memory_filter_prompt_truncated`（warning，details：original_tokens/truncated_tokens/doc_count/session_id）——对齐 A5/C2 可见性体系。
+    4. 降级语义不变：LLM 失败保留全部 + `retrieve.memory_filter_failed`、全空回退全部、开关关闭直通；预算内路径与旧 1500 字内场景零变化。
+    - 测试：`test_graph_state.py` +2（等比压缩——3 条不同长度 MemoryDoc、预算=overhead+30，断言长片展示预算 > 短片、省略标记、源 doc 不动、日志事件 original>truncated；预算内零变化回归锁）；既有 `test_e2e.py::test_memory_relevance_filter` 直接通过。全量回归 **227 passed, 1 skipped**（225 基线 +2）。
+    - 范围外（survey 杂项，本次不动）：`search_providers.py` 两处死代码切片、`ChromaStore.query_personality/query_memories` 的 `top_k = max(top_k, 1)` 下界钳制——评估结论见会话回复。

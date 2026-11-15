@@ -120,9 +120,9 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 **本节回答：联网资料从搜索到沉淀的完整链路。** 三个节点作为整体被 think 决策 + `enable_web_search` 开关控制（改进 20）；`web_extract_max_pages` 之后的搜索结果不抓正文、以 snippet 级保留（改进 65）。
 
 1. **搜索**：7 家 provider（DuckDuckGo/SearXNG/Brave/Bing/Google CSE/百度/360）按 `web_search_providers` 配置顺序调用，失败或无结果自动降级下一家；各家返回键差异归一化为 WebDoc。 `[记录·改进 23]`
-2. **正文提取**（PageExtractor）：requests 单次抓取（跟随重定向，最终 URL 即真实 URL）→ trafilatura 主解析 → BeautifulSoup 兜底；无 charset 头站点用 apparent_encoding 修正防中文乱码；超 `web_extract_max_length` 截断。成功后 `metadata.url` 换真实 URL、原链接留 `source_url`——重定向链接（百度/360 跳转）由此归一。提取失败保留原 snippet 文档。 `[记录·改进 44/65/73]`
-3. **相关性过滤**（`filter_web_docs`，开关 `enable_web_doc_extraction` 默认开）：逐文档 LLM 判断——相关则摘取相关内容替换正文（`llm_extracted=True`），不相关丢弃；单文档失败保留原文，全过滤为空保留全部。 `[记录·改进 29]`
-4. **沉淀**：见 [memory-and-retrieval.md](memory-and-retrieval.md#2)——400 字/片、URL+全文哈希 id、add_memory 幂等、逐片失败隔离。 `[记录·改进 76]`
+2. **正文提取**（PageExtractor）：requests 单次抓取（跟随重定向，最终 URL 即真实 URL）→ trafilatura 主解析 → BeautifulSoup 兜底；无 charset 头站点用 apparent_encoding 修正防中文乱码；超 `web_extract_max_length`（100,000 字符归档级上限，Tika 100K / Claude Code 100KB 锚点）截断——截尾附省略标记并记 `web.extract_truncated`。成功后 `metadata.url` 换真实 URL、原链接留 `source_url`，并填 `WebDoc.original_content` 纯抽取正文（记忆入库/分片哈希基准，不含 title）——重定向链接（百度/360 跳转）由此归一。提取失败保留原 snippet 文档。 `[记录·改进 44/65/73/83]`
+3. **相关性过滤**（`filter_web_docs`，开关 `enable_web_doc_extraction` 默认开）：逐文档 LLM 判断——相关则摘取相关内容替换正文（`llm_extracted=True`），不相关丢弃；整份 filter prompt（system+user_input+page_content）受 `web_filter_max_tokens`（32K）总预算约束，超额时**纯头部**截「发给 LLM 的副本」（源 doc 不动）并记 `web.filter_prompt_truncated`，取代旧「超长 → API 报错 → 保留原文」错误驱动兜底；单文档失败保留原文，全过滤为空保留全部。 `[记录·改进 29/83]`
+4. **沉淀**：见 [memory-and-retrieval.md](memory-and-retrieval.md#2)——400 字/片、URL+原文哈希 id（`original_content or page_content`）、add_memory 幂等、逐片失败隔离；prompt 用摘取版、入库用原文双轨（同页不同问法不再产生重复分片）。 `[记录·改进 76/83]`
 
 ## 7. 降级链总表
 
@@ -136,6 +136,7 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 | retrieve_web | 单 provider 失败/无结果 | 顺序降级下一家；全失败 → 空列表 | 多家互为备胎 `[记录·改进 23]` |
 | extract_web_pages | 单页抓取/解析失败 | 保留原 snippet 文档 | snippet 仍可能有用 `[记录·改进 44]` |
 | filter_web_docs | 单文档判断失败 | 保留原文档 | 宁多勿漏 `[记录·改进 29]` |
+| filter_web_docs | 整份 prompt 超 `web_filter_max_tokens` | 纯头部截 LLM 副本（源 doc 不动）+ `web.filter_prompt_truncated` | 截外内容若在副本之外会被误判无关——副本截断 + 源不动使该风险最小化；入库走原文不受副本截断影响 `[记录·改进 83]` |
 | filter_web_docs | 全部被滤掉 | 回退保留全部 | 过滤器在最关键场景不能归零 `[记录·改进 29]` |
 | retrieve_personality | 检索异常 | 空列表 + warning | 人格素材缺失不致命，身份与维度仍在 prompt `[记录·改进 64]` |
 | retrieve_memories | 检索异常 | 空列表 + warning | 记忆缺失不致命 `[记录·改进 65]` |

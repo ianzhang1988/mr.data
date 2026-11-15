@@ -1,5 +1,6 @@
 import json
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,7 @@ from mr_data.offline import (
     AttributionEngine,
     OfflineScheduler,
     advisory_lock,
+    guarded_offline_run,
 )
 
 logger = get_logger("mr_data.cli")
@@ -28,6 +30,16 @@ logger = get_logger("mr_data.cli")
 app = typer.Typer(help="mr.data personality subsystem CLI")
 identity_app = typer.Typer(help="Manage user identities")
 app.add_typer(identity_app, name="identity")
+
+
+def _newsession_offline_run(engine, dsn: str) -> None:
+    """/newsession 触发的后台归因（改进 86）：与定时调度/手动 offline 共用
+    同一双层护栏；护栏函数自身永不抛出，这里只按结果给用户一行反馈。"""
+    status = guarded_offline_run(engine, dsn, source="newsession")
+    if status in ("locked", "busy"):
+        rprint("[yellow]另一个离线归因正在运行，本次跳过，对话继续。[/yellow]")
+    elif status == "completed":
+        rprint("[dim]会话已关闭，离线归因在后台完成。[/dim]")
 
 
 def _ensure_session(pg: PostgresStore, session_id: Optional[str]) -> str:
@@ -70,7 +82,8 @@ def _print_chat_help(pg: PostgresStore) -> None:
     rprint("""
 [bold]mr.data chat 交互命令[/bold]
   /help, /?      显示本帮助信息
-  /newsession    结束当前会话并开始新会话
+  /newsession    结束当前会话并开始新会话（随后在后台异步执行一次离线
+                 归因；与定时调度/手动 offline 互斥，占用时自动跳过）
   /exit, /quit, /bye  退出对话
 
   会话结束（/exit 或 /newsession）时会询问一次整体评分（-2..2）与可选评论，
@@ -117,12 +130,15 @@ def chat(
 
     # 内嵌离线归因定时调度（改进 85）：复用 graph 的 store/llm，避免重复加载
     # embedding 模型；守护线程随 chat 退出而停止。任何初始化失败只降级
-    # （告警 + 不启用调度），不阻断 chat。
+    # （告警 + 不启用调度），不阻断 chat。offline_engine 同时供 /newsession
+    # 异步触发复用（改进 86），故在调度器构造之前先取出。
+    offline_engine = None
     scheduler = None
     try:
-        scheduler = OfflineScheduler(
-            AttributionEngine(pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm)
+        offline_engine = AttributionEngine(
+            pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm
         )
+        scheduler = OfflineScheduler(offline_engine)
         scheduler.validate()
     except ValueError as exc:
         logger.warning(
@@ -157,6 +173,9 @@ def chat(
     rprint(f"[dim]Session: {current_session_id}[/dim]")
     rprint("[dim]Type '/newsession' to start a new session, '/exit' or Ctrl+C to quit.[/dim]\n")
 
+    # /newsession 触发的后台归因线程（改进 86），退出时在 finally 中 join
+    run_threads: list[threading.Thread] = []
+
     try:
         while True:
             try:
@@ -177,6 +196,17 @@ def chat(
                 pg.close_session(current_session_id)
                 current_session_id = pg.create_session()
                 rprint(f"[dim]New session: {current_session_id}[/dim]\n")
+                # 关闭的会话即可供离线归因：后台异步触发一轮，护栏内与
+                # 定时调度/手动 offline 互斥；护栏函数永不抛出，不阻塞对话。
+                if offline_engine is not None:
+                    t = threading.Thread(
+                        target=_newsession_offline_run,
+                        args=(offline_engine, graph.pg.dsn),
+                        name="mr-data-offline-newsession",
+                        daemon=True,
+                    )
+                    run_threads.append(t)
+                    t.start()
                 continue
 
             try:
@@ -209,6 +239,9 @@ def chat(
     finally:
         if scheduler is not None:
             scheduler.stop()
+        # 给在途的 /newsession 归因线程收尾机会（daemon 线程，超时即弃）
+        for t in run_threads:
+            t.join(timeout=5)
         # Ensure the active session is closed so offline attribution can process it.
         try:
             _ask_session_rating(pg, current_session_id)

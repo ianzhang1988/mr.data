@@ -1,17 +1,22 @@
-"""chat 内嵌的离线归因定时调度（改进 85）。
+"""chat 内嵌的离线归因定时调度（改进 85）与异步触发护栏（改进 86）。
 
-线程模型：chat REPL 主线程阻塞等待用户输入；本模块在独立守护线程中按
-配置 cron 串（offline_schedule_cron，5 段标准格式，UTC）定时执行
-AttributionEngine.run()。归因执行不占主线程，两线程互不等待。
+线程模型：chat REPL 主线程阻塞等待用户输入；定时调度在独立守护线程中按
+配置 cron 串（offline_schedule_cron，5 段标准格式，UTC）执行
+AttributionEngine.run()，/newsession 在另一个守护线程中异步执行同一入口。
+归因执行不占主线程，各线程互不等待。
 
-竞争状态保护（双层）：
+触发通道（三条，共用 guarded_offline_run 的同一双层护栏）：
+1. cron 定时调度（OfflineScheduler 守护线程，tick()）；
+2. chat 内 /newsession：关闭会话后异步触发一次（改进 86）；
+3. 手动 `mr-data offline` 命令（cli.py 直接用 advisory_lock，同一把锁）。
+
+竞争状态保护（双层，实现在 guarded_offline_run）：
 - 进程内：模块级 _RUN_LOCK 非阻塞获取，包住「advisory lock + run」全程
-  （调度线程自身顺序执行天然不自叠，此锁防御未来 /newsession 等
-  同进程异步触发路径与本任务复用同一护栏）；
-- 跨进程：PostgreSQL advisory lock（pg_try_advisory_lock），防守护线程
-  与另一终端手动执行的 `mr-data offline` 并发归因（否则重复归因/
+  （三条通道中同进程并发的触发路径互斥，天然不自叠）；
+- 跨进程：PostgreSQL advisory lock（pg_try_advisory_lock），防本进程守护
+  线程与另一终端手动执行的 `mr-data offline` 并发归因（否则重复归因/
   死信计数错乱）。锁为会话级，由专用连接持有整个 run 期间，退出显式
-  unlock + 关连接兜底释放。手动 offline 命令走同一把锁。
+  unlock + 关连接兜底释放。
 """
 
 import threading
@@ -63,6 +68,60 @@ def advisory_lock(dsn: str, key: int) -> Iterator[bool]:
         conn.close()
 
 
+def guarded_offline_run(engine, dsn: str, *, source: str) -> str:
+    """双层护栏（_RUN_LOCK + PG advisory lock）内执行一轮离线归因。
+
+    source 用于日志事件命名（offline.{source}_*），区分调用通道。
+    永不抛出（供守护线程/fire-and-forget 路径安全调用）：
+    返回 "completed" / "failed"（run 或锁阶段失败，已记日志）/
+    "busy"（进程内 _RUN_LOCK 被占）/ "locked"（跨进程 advisory lock 被占）。
+    """
+    if not _RUN_LOCK.acquire(blocking=False):
+        logger.info(
+            "Offline run already in progress in this process, skipping",
+            extra={"event": f"offline.{source}_skipped_busy"},
+        )
+        return "busy"
+    try:
+        try:
+            with advisory_lock(dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired:
+                if not acquired:
+                    logger.info(
+                        "Another offline attribution is running (manual "
+                        "offline or another trigger), skipping",
+                        extra={"event": f"offline.{source}_skipped_locked"},
+                    )
+                    return "locked"
+                try:
+                    engine.run()
+                except Exception as exc:
+                    logger.warning(
+                        "Offline run failed",
+                        extra={
+                            "event": f"offline.{source}_run_failed",
+                            "details": {"error": repr(exc)},
+                        },
+                    )
+                    return "failed"
+        except Exception as exc:
+            # advisory lock 连接/获取阶段失败（如 PG 暂不可达）：隔离不抛出
+            logger.warning(
+                "Offline run aborted before engine run",
+                extra={
+                    "event": f"offline.{source}_run_failed",
+                    "details": {"error": repr(exc)},
+                },
+            )
+            return "failed"
+        logger.info(
+            "Offline run completed",
+            extra={"event": f"offline.{source}_completed"},
+        )
+        return "completed"
+    finally:
+        _RUN_LOCK.release()
+
+
 def next_fire(cron_expr: str, after: Optional[datetime] = None) -> datetime:
     """cron 串（5 段标准格式，UTC）在 after 之后的下一次触发时间。
 
@@ -108,38 +167,7 @@ class OfflineScheduler:
 
     def tick(self) -> None:
         """执行一轮归因（双层互斥护栏内）；所有失败路径只记日志不抛出。"""
-        if not _RUN_LOCK.acquire(blocking=False):
-            self.logger.info(
-                "Offline run already in progress in this process, skipping tick",
-                extra={"event": "offline.schedule_skipped_busy"},
-            )
-            return
-        try:
-            with advisory_lock(self._dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired:
-                if not acquired:
-                    self.logger.info(
-                        "Another offline attribution is running (manual offline "
-                        "or another scheduler), skipping tick",
-                        extra={"event": "offline.schedule_skipped_locked"},
-                    )
-                    return
-                try:
-                    self._engine.run()
-                except Exception as exc:
-                    self.logger.warning(
-                        "Scheduled offline run failed",
-                        extra={
-                            "event": "offline.schedule_run_failed",
-                            "details": {"error": repr(exc)},
-                        },
-                    )
-                    return
-            self.logger.info(
-                "Scheduled offline run completed",
-                extra={"event": "offline.schedule_completed"},
-            )
-        finally:
-            _RUN_LOCK.release()
+        guarded_offline_run(self._engine, self._dsn, source="schedule")
 
     def _run_loop(self) -> None:
         try:

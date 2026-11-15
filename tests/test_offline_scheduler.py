@@ -288,3 +288,79 @@ def test_chat_invalid_cron_degrades_gracefully(monkeypatch, caplog, temp_log_dir
     assert result.exit_code == 0  # 不阻断 chat
     assert "定时调度未启用" in result.output
     assert len(capture_events(caplog, "offline.schedule_invalid_cron")) == 1
+
+
+# ---------- CLI：/newsession 异步触发离线归因（改进 86） ----------
+
+
+def _patch_newsession_deps(monkeypatch, engine, dsn: str):
+    """chat 依赖打桩：graph.pg.dsn 指向真 pg（供 advisory lock），
+    AttributionEngine 返回记录型替身；输入 /newsession + 空评分 + /exit + 空评分。"""
+
+    class FakeGraph:
+        def __init__(self, **kwargs):
+            self.pg = SimpleNamespace(dsn=dsn)
+            self.chroma = SimpleNamespace()
+            self.llm = SimpleNamespace()
+
+        def chat(self, session_id: str, user_input: str):
+            return SimpleNamespace(text="ok", blocks=[])
+
+    class FakeScheduler:
+        """只验接线，不拉真实调度线程。"""
+
+        cron_expr = "0 * * * *"
+
+        def __init__(self, engine):
+            pass
+
+        def validate(self):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def next_fire(self):
+            return datetime(2026, 11, 15, 11, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("mr_data.cli.OfflineScheduler", FakeScheduler)
+    monkeypatch.setattr("mr_data.cli.AttributionEngine", lambda **kwargs: engine)
+    monkeypatch.setattr("mr_data.cli.DialogueGraph", FakeGraph)
+    monkeypatch.setattr("mr_data.cli.PostgresStore", _FakePostgresStore)
+    monkeypatch.setattr(
+        "mr_data.cli.Prompt.ask", _sequential_prompt(["/newsession", "", "/exit", ""])
+    )
+
+
+def test_newsession_triggers_async_run(pg_available, reset_pg_state, temp_log_dir, monkeypatch):
+    pg = PostgresStore()
+    engine = _FakeEngine(dsn=pg.dsn)
+    _patch_newsession_deps(monkeypatch, engine, pg.dsn)
+
+    result = runner.invoke(app, ["chat"])
+
+    assert result.exit_code == 0
+    assert engine.run_calls == 1  # /newsession 关闭会话后在后台执行了一轮归因
+    assert "离线归因在后台完成" in result.output
+    assert "New session: sess-1" in result.output
+
+
+def test_newsession_skips_run_when_locked(
+    pg_available, reset_pg_state, temp_log_dir, monkeypatch
+):
+    pg = PostgresStore()
+    blocker = _hold_advisory_lock(pg)
+    engine = _FakeEngine(dsn=pg.dsn)
+    _patch_newsession_deps(monkeypatch, engine, pg.dsn)
+    try:
+        result = runner.invoke(app, ["chat"])
+    finally:
+        blocker.close()
+
+    assert result.exit_code == 0  # 护栏冲突不阻断 chat
+    assert engine.run_calls == 0
+    assert "跳过" in result.output
+    assert "New session: sess-1" in result.output  # 新会话照常开始

@@ -44,6 +44,60 @@ from mr_data.online.web_search import WebSearchTool
 # 当结构化回复与纯文本回退均失败时使用的静态兜底文案。
 _STATIC_FALLBACK_REPLY = "我的处理回路暂时受到干扰，无法组织回复。"
 
+# 记忆过滤展示文本等比压缩时附加的省略标记（发给 LLM 的展示副本专用，源 doc 不动）。
+_MEMORY_FILTER_TRUNCATION_MARKER = "\n\n[记忆过长，已省略后续内容]"
+
+_token_counter = TokenCounter()
+
+
+def _truncate_head_to_token_budget(text: str, budget_tokens: int) -> str:
+    """纯头部截 text 至 budget_tokens 内：中文 ~2 字/token 估切口，真实计数
+
+    超发则砍半兜底，换行收尾后附省略标记。预算内原文直出。
+    """
+    if budget_tokens <= 0:
+        return _MEMORY_FILTER_TRUNCATION_MARKER.strip()
+    if _token_counter.count(text) <= budget_tokens:
+        return text
+    cut = text[: budget_tokens * 2]
+    while cut and _token_counter.count(cut) > budget_tokens:
+        cut = cut[: len(cut) // 2]
+    if "\n" in cut:
+        cut = cut.rsplit("\n", 1)[0]
+    return cut + _MEMORY_FILTER_TRUNCATION_MARKER
+
+
+def _fit_memory_filter_docs(
+    docs: list[MemoryDoc], user_input: str
+) -> tuple[list[str], int, int]:
+    """按 memory_relevance_filter_max_tokens 预算把每条记忆的展示文本等比压缩
+
+    （水填充同哲学：按各片 token 占比分剩余预算，源 doc 本体不动）。
+    返回 (展示文本列表, 原始总 token, 截后总 token)；未超预算时原文直出。
+    """
+    system = "判断下列记忆内容是否与用户输入相关。请为每条记忆返回是否相关。"
+    overhead = _token_counter.count(
+        system
+        + f"用户输入：{user_input}\n\n记忆列表：\n\n\n请返回每条记忆的相关性判断。"
+    )
+    doc_tokens = [(_token_counter.count(d.page_content)) for d in docs]
+    original_tokens = overhead + sum(doc_tokens)
+    budget = settings.memory_relevance_filter_max_tokens
+    if original_tokens <= budget:
+        return [d.page_content for d in docs], original_tokens, original_tokens
+
+    doc_budget_total = max(budget - overhead, 0)
+    total_doc_tokens = sum(doc_tokens)
+    fitted: list[str] = []
+    for doc, t in zip(docs, doc_tokens):
+        if t == 0:
+            fitted.append(doc.page_content)
+            continue
+        share = max(int(doc_budget_total * (t / total_doc_tokens)), 1)
+        fitted.append(_truncate_head_to_token_budget(doc.page_content, share))
+    fitted_tokens = overhead + sum(_token_counter.count(t) for t in fitted)
+    return fitted, original_tokens, fitted_tokens
+
 
 def _web_memory_chunks(doc: WebDoc) -> list[tuple[str, str]]:
     """把 web 文档切成记忆分片，返回 [(chunk_id, chunk_text), ...]。
@@ -503,11 +557,24 @@ class DialogueGraph:
             return {**state, "memory_docs": docs}
 
         user_input = state["user_input"]
-        indexed_docs = [
-            (i, doc.page_content[:1500]) for i, doc in enumerate(docs)
-        ]
+        fitted_texts, original_tokens, fitted_tokens = _fit_memory_filter_docs(
+            docs, user_input
+        )
+        if fitted_tokens < original_tokens:
+            self.logger.warning(
+                "Memory filter prompt over budget; compressing item texts proportionally",
+                extra={
+                    "event": "retrieve.memory_filter_prompt_truncated",
+                    "session_id": state["session_id"],
+                    "details": {
+                        "original_tokens": original_tokens,
+                        "truncated_tokens": fitted_tokens,
+                        "doc_count": len(docs),
+                    },
+                },
+            )
         items_text = "\n\n".join(
-            f"[{idx}] {content}" for idx, content in indexed_docs
+            f"[{idx}] {content}" for idx, content in enumerate(fitted_texts)
         )
         system = "判断下列记忆内容是否与用户输入相关。请为每条记忆返回是否相关。"
         prompt = f"用户输入：{user_input}\n\n记忆列表：\n{items_text}\n\n请返回每条记忆的相关性判断。"

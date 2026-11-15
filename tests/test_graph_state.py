@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,8 @@ from mr_data.db.chroma import web_chunk_base_id
 from mr_data.models import (
     DialogueLog,
     DialogueLogMetadata,
+    DialogueMemoryMetadata,
+    MemoryDoc,
     ReplyBlock,
     ReplyReference,
     WebDoc,
@@ -27,7 +30,7 @@ from mr_data.models import (
 )
 from mr_data.online import DialogueGraph
 
-from conftest import FakeLLMClient
+from conftest import FakeLLMClient, capture_events, open_log_propagation
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
@@ -178,6 +181,124 @@ def test_extract_web_pages_fills_original_content(
     assert extracted_doc.page_content == "标题\n纯正文内容"
     assert extracted_doc.original_content == "纯正文内容"  # 不含 title
     assert passthrough_doc.original_content is None  # 未抽取路径退化
+
+
+def _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch):
+    monkeypatch.setattr(settings, "enable_memory_relevance_filter", True)
+    return DialogueGraph(
+        pg_store=PostgresStore(),
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        web_search=FakeWebSearch([]),
+        enable_web_search=False,
+    )
+
+
+def _memory_filter_overhead(user_input: str) -> int:
+    from mr_data.online import graph as graph_mod
+
+    system = "判断下列记忆内容是否与用户输入相关。请为每条记忆返回是否相关。"
+    return graph_mod._token_counter.count(
+        system + f"用户输入：{user_input}\n\n记忆列表：\n\n\n请返回每条记忆的相关性判断。"
+    )
+
+
+def test_memory_filter_proportional_compression(
+    fake_llm, chroma_store, temp_log_dir, monkeypatch, caplog
+):
+    """D：整份过滤 prompt 超 memory_relevance_filter_max_tokens 时按条数等比压缩
+
+    每条展示文本（水填充同哲学，源 doc 不动），记
+    retrieve.memory_filter_prompt_truncated。"""
+    user_input = "你喜欢什么颜色"
+    long_text = "关于星际旅行的记忆片段，包含曲速引擎的细节。" * 40  # ~720 字
+    mid_text = "关于蓝色海洋的记忆。" * 10
+    short_text = "喜欢蓝色"
+    docs = [
+        MemoryDoc(id="d0", page_content=long_text,
+                  metadata=DialogueMemoryMetadata(session_id="s")),
+        MemoryDoc(id="d1", page_content=mid_text,
+                  metadata=DialogueMemoryMetadata(session_id="s")),
+        MemoryDoc(id="d2", page_content=short_text,
+                  metadata=DialogueMemoryMetadata(session_id="s")),
+    ]
+    monkeypatch.setattr(
+        settings, "memory_relevance_filter_max_tokens",
+        _memory_filter_overhead(user_input) + 30,  # 记忆展示总预算仅 30 token
+    )
+    graph = _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch)
+    open_log_propagation(caplog, monkeypatch)  # 须在引擎构造后（构造会重置 propagate）
+
+    captured: dict = {}
+    original = fake_llm.chat_structured
+
+    def _patched(system_prompt, user_prompt, response_format, temperature=0.2):
+        if response_format.__name__ == "MemoryRelevanceFilterResult":
+            captured["prompt"] = user_prompt
+            return {"results": [{"index": i, "is_relevant": True} for i in range(3)]}
+        return original(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched)
+
+    state = graph._filter_memory_docs(
+        {"session_id": "s", "user_input": user_input, "memory_docs": docs}
+    )
+
+    # 三条全部保留（LLM 全判相关），但展示文本被等比压缩
+    assert len(state["memory_docs"]) == 3
+    prompt = captured["prompt"]
+    assert "[记忆过长，已省略后续内容]" in prompt
+    assert long_text not in prompt  # 长片不再整段进 prompt
+    body = prompt.split("记忆列表：\n", 1)[1].rsplit("\n\n请返回", 1)[0]
+    fitted = dict(
+        (int(i), t) for i, t in re.findall(r"\[(\d+)\] (.*?)(?=\n\n\[\d+\] |$)", body, re.S)
+    )
+    assert len(fitted) == 3
+    assert len(fitted[0]) > len(fitted[1]) > 0  # 等比：长片分到的展示预算更多
+    assert fitted[2].endswith("[记忆过长，已省略后续内容]")
+    assert docs[0].page_content == long_text  # 源 doc 本体不动
+    assert docs[2].page_content == short_text
+    events = capture_events(caplog, "retrieve.memory_filter_prompt_truncated")
+    assert len(events) == 1
+    details = events[0].details
+    assert details["original_tokens"] > details["truncated_tokens"]
+    assert details["doc_count"] == 3
+
+
+def test_memory_filter_within_budget_unchanged(
+    fake_llm, chroma_store, temp_log_dir, monkeypatch, caplog
+):
+    """D 回归：预算内各条展示原文，无压缩无日志（旧 1500 字内场景零变化）。"""
+    user_input = "你喜欢什么颜色"
+    docs = [
+        MemoryDoc(id="d0", page_content="我喜欢蓝色",
+                  metadata=DialogueMemoryMetadata(session_id="s")),
+        MemoryDoc(id="d1", page_content="今天天气很好",
+                  metadata=DialogueMemoryMetadata(session_id="s")),
+    ]
+    monkeypatch.setattr(settings, "memory_relevance_filter_max_tokens", 32768)
+    graph = _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch)
+    open_log_propagation(caplog, monkeypatch)  # 须在引擎构造后（构造会重置 propagate）
+
+    captured: dict = {}
+    original = fake_llm.chat_structured
+
+    def _patched(system_prompt, user_prompt, response_format, temperature=0.2):
+        if response_format.__name__ == "MemoryRelevanceFilterResult":
+            captured["prompt"] = user_prompt
+            return {"results": [{"index": 0, "is_relevant": True}]}
+        return original(system_prompt, user_prompt, response_format, temperature)
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _patched)
+
+    state = graph._filter_memory_docs(
+        {"session_id": "s", "user_input": user_input, "memory_docs": docs}
+    )
+
+    assert len(state["memory_docs"]) == 1
+    assert "我喜欢蓝色" in captured["prompt"]
+    assert "[记忆过长" not in captured["prompt"]
+    assert capture_events(caplog, "retrieve.memory_filter_prompt_truncated") == []
 
 
 class _RecordingReplyLLM(FakeLLMClient):

@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     memory_min_recall_count: int = 3
     memory_retrieval_top_k: int = 5
     enable_memory_relevance_filter: bool = False
+    # _filter_memory_docs 整份过滤 prompt（system+user_input+记忆列表）的 token 总预算；
+    # 超额时按条数等比压缩每条展示文本（水填充同哲学，源 doc 不动），
+    # 记 retrieve.memory_filter_prompt_truncated；记忆入库每片 ≤ embedding_max_tokens（512），
+    # top_k=5 正常场景 ~2.5K token，32K 宽预算正常场景几乎不触发压缩
+    memory_relevance_filter_max_tokens: int = 32768
 
     # 对话记忆分段（离线写入记忆向量库）
     # 字符预算口径：中文保守估计 1 字 ≈ 1 token，且需容纳段首 overlap 行

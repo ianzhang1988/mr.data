@@ -143,7 +143,10 @@ class LLMClient:
             response_format=response_format,
             temperature=temperature,
         )
-        content = resp.choices[0].message.content or "{}"
+        message = resp.choices[0].message
+        if message.parsed is not None:
+            return message.parsed.model_dump()
+        content = message.content or "{}"
         return json.loads(content)
 
     def _structured_chat_via_prompt(

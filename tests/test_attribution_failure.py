@@ -1,9 +1,13 @@
+import logging
+
 import pytest
 
 from mr_data.config import settings
 from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
 from mr_data.offline import AttributionEngine
+
+from conftest import capture_events, open_log_propagation
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
@@ -157,3 +161,45 @@ def test_attribution_dead_letter_after_threshold(
     monkeypatch.setattr(fake_llm, "chat_structured", _empty_deltas)
     engine.run()
     assert pg.list_closed_sessions_with_unprocessed() == []
+
+
+def test_dead_letter_logs_split_and_transcript_counts(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch, caplog
+):
+    """拆批与死信可见性（截断调查改进项 A2/A3）：limit 之外的日志被集体落葬时
+    never_in_transcript 必须可见，不能再静默丢弃。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    _setup_closed_session(pg, test_session_id)  # 2 条日志
+    monkeypatch.setattr(settings, "offline_max_attribution_attempts", 2)
+    monkeypatch.setattr(settings, "offline_max_session_logs", 1)  # 每批只取 1 条 → 拆批
+
+    def _failing_structured_chat(system_prompt, user_prompt, response_format, temperature=0.2):
+        raise RuntimeError("LLM 服务不可用")
+
+    monkeypatch.setattr(fake_llm, "chat_structured", _failing_structured_chat)
+
+    engine = _make_engine(pg, chroma_store, fake_llm)
+    # 引擎构造会重新 get_logger（propagate 重置为 False），传播开关须在构造后打开。
+    open_log_propagation(caplog, monkeypatch, "mr_data.offline")
+    caplog.set_level(logging.INFO, logger="mr_data.offline")
+
+    engine.run()
+    engine.run()  # 第二次失败达到阈值：死信落葬
+
+    split = capture_events(caplog, "offline.session_logs_split")
+    assert len(split) == 2  # 两次 run 各取一批，各记一次
+    assert split[0].details == {"batch_size": 1, "limit": 1}
+
+    dead = capture_events(caplog, "offline.session_dead_lettered")
+    assert len(dead) == 1
+    details = dead[0].details
+    # 被标记 2 条：本批进过 transcript 的 1 条 + limit 之外从未进过的 1 条。
+    assert details["marked_dialogues"] == 2
+    assert details["in_transcript"] == 1
+    assert details["never_in_transcript"] == 1

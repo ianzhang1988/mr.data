@@ -3,6 +3,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
+from conftest import capture_events, open_log_propagation
+
 from mr_data.online.page_extract import PageExtractor
 
 
@@ -91,3 +93,19 @@ def test_page_extractor_invalid_url():
     extractor = PageExtractor()
     assert extractor.extract("") is None
     assert extractor.extract("not-a-url") is None
+
+
+def test_page_extractor_truncation_logs_event(local_html_server, caplog, monkeypatch):
+    """正文超长截断记录 web.extract_truncated（截断调查改进项 A4）。"""
+    open_log_propagation(caplog, monkeypatch)
+    extractor = PageExtractor(max_length=50)
+
+    page = extractor.extract(local_html_server)
+
+    assert page is not None
+    truncated = capture_events(caplog, "web.extract_truncated")
+    assert len(truncated) == 1
+    details = truncated[0].details
+    assert details["url"] == page.url
+    assert details["original_chars"] > 50
+    assert details["truncated_chars"] <= 50

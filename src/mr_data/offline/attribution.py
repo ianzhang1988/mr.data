@@ -77,10 +77,22 @@ class AttributionEngine:
             )
             if not logs:
                 continue
+            if len(logs) >= settings.offline_max_session_logs:
+                self.logger.info(
+                    "Session exceeds per-session log limit, will be attributed in batches",
+                    extra={
+                        "event": "offline.session_logs_split",
+                        "session_id": session.id,
+                        "details": {
+                            "batch_size": len(logs),
+                            "limit": settings.offline_max_session_logs,
+                        },
+                    },
+                )
 
             result = self._attribute_session(session.id, logs)
             if result is None:
-                attempts = self._count_failure_and_dead_letter(session.id)
+                attempts = self._count_failure_and_dead_letter(session.id, logs)
                 if attempts < settings.offline_max_attribution_attempts:
                     self.logger.info(
                         "Session attribution failed, will retry next run",
@@ -100,7 +112,7 @@ class AttributionEngine:
                 # 事务已回滚（transaction() 自动 rollback），会话保持 unprocessed，
                 # 下次 run() 重试；Chroma 写/删均在提交成功后执行，回滚时不产生
                 # 任何 Chroma 副作用，无需自愈。
-                attempts = self._count_failure_and_dead_letter(session.id)
+                attempts = self._count_failure_and_dead_letter(session.id, logs)
                 if attempts < settings.offline_max_attribution_attempts:
                     self.logger.warning(
                         "Session apply failed and rolled back, will retry next run",
@@ -137,18 +149,30 @@ class AttributionEngine:
         )
         print(f"Processed {total_sessions} closed sessions.")
 
-    def _count_failure_and_dead_letter(self, session_id: str) -> int:
+    def _count_failure_and_dead_letter(
+        self, session_id: str, logs: list[DialogueLog]
+    ) -> int:
         """归因失败计数 +1 并返回累计次数；达 offline_max_attribution_attempts
-        时把会话未处理日志置为已处理（死信），避免无限重试。"""
+        时把会话未处理日志置为已处理（死信），避免无限重试。
+
+        logs 为本批实际进过 transcript 的日志（可见性改进 80）：死信 details
+        区分「进过 transcript」与「从未进过 transcript」（被 limit 拆分在外）
+        两类被标记条数，后者属永久静默丢弃，需可诊断。"""
         attempts = self.pg.increment_attribution_attempts(session_id)
         if attempts >= settings.offline_max_attribution_attempts:
             marked = self.pg.mark_session_dialogues_processed(session_id)
+            in_transcript = min(len(logs), marked)
             self.logger.warning(
                 "Session attribution attempts exhausted, dead-lettered",
                 extra={
                     "event": "offline.session_dead_lettered",
                     "session_id": session_id,
-                    "details": {"attempts": attempts, "marked_dialogues": marked},
+                    "details": {
+                        "attempts": attempts,
+                        "marked_dialogues": marked,
+                        "in_transcript": in_transcript,
+                        "never_in_transcript": marked - in_transcript,
+                    },
                 },
             )
         return attempts
@@ -363,6 +387,25 @@ class AttributionEngine:
         # 事务外：新维度重合判断（防维度膨胀），随后按配置截断为最强 N 条，
         # 最后校验 LLM 返回的数据库相关 id（防幻觉 id 触发外键违规/串号污染）。
         self._dedup_new_dimensions(session_id, parsed)
+        if len(parsed.deltas) > settings.offline_max_deltas_per_session:
+            dropped = parsed.deltas[settings.offline_max_deltas_per_session :]
+            self.logger.warning(
+                "Session deltas truncated to max per session",
+                extra={
+                    "event": "offline.deltas_truncated",
+                    "session_id": session_id,
+                    "details": {
+                        "kept": settings.offline_max_deltas_per_session,
+                        "dropped": len(dropped),
+                        "dropped_refs": [
+                            f"dim:{d.dimension_id}"
+                            if d.dimension_id is not None
+                            else f"new:{(d.new_dimension_description or '')[:40]}"
+                            for d in dropped
+                        ],
+                    },
+                },
+            )
         parsed.deltas = parsed.deltas[: settings.offline_max_deltas_per_session]
         self._validate_delta_ids(session_id, logs, parsed)
         return parsed

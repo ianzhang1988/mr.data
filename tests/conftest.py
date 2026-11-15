@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -246,3 +247,26 @@ def temp_log_dir(tmp_path, monkeypatch):
     reset_loggers()
     yield str(log_dir)
     reset_loggers()
+
+
+def open_log_propagation(caplog, monkeypatch, logger_name="mr_data.online"):
+    """临时打开项目 logger 的传播，让 caplog 能捕获其记录。
+
+    项目 logger 由 get_logger 配置为 propagate=False（日志只进 JSONL 文件），
+    caplog 挂在 root 上，不打开传播捕获不到。
+    """
+    monkeypatch.setattr(logging.getLogger(logger_name), "propagate", True)
+    caplog.set_level(logging.INFO, logger=logger_name)
+
+
+def capture_events(caplog, event: str):
+    """按 event 过滤 caplog 记录并按对象身份去重。
+
+    同一 record 可能被 root 上的多个 pytest handler 重复收集，
+    去重后才是真实的发射次数。
+    """
+    records = []
+    for r in caplog.records:
+        if getattr(r, "event", None) == event and r not in records:
+            records.append(r)
+    return records

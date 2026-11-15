@@ -1,5 +1,8 @@
 """PromptAssembler 预算分配的 priority 梯度测试（改进 48）。"""
 
+from conftest import capture_events, open_log_propagation
+
+from mr_data.llm.tokenizer import TokenCounter
 from mr_data.online.prompt_assembly import PromptAssembler, PromptSection
 
 
@@ -135,3 +138,78 @@ def test_exhausted_budget_yields_omission_placeholder():
     fitted = asm.fit_sections(sections, limit)
     assert _text("personality", fitted) == personality_text
     assert "因上下文限制已省略" in _text("web", fitted)
+
+
+def _records(caplog, event: str):
+    return capture_events(caplog, event)
+
+
+def _open_log(caplog, monkeypatch, logger_name="mr_data.online"):
+    open_log_propagation(caplog, monkeypatch, logger_name)
+
+
+def test_compressed_section_logged(caplog, monkeypatch):
+    """按比例压缩记录 prompt.section_compressed（截断调查改进项 A5）。"""
+    _open_log(caplog, monkeypatch)
+    personality_text = "人格素材" * 20
+    web_text = "网页资料" * 500
+    sections = [
+        PromptSection("personality", personality_text, 70, "assistant"),
+        PromptSection("web", web_text, 40, "assistant"),
+    ]
+    asm = _assembler()
+    counter = TokenCounter()
+    limit = counter.count(personality_text) + counter.count(personality_text) // 2
+
+    asm.fit_sections(sections, limit)
+
+    compressed = _records(caplog, "prompt.section_compressed")
+    assert [r.details["section"] for r in compressed] == ["web"]
+    assert compressed[0].details["target_tokens"] > 0
+    assert compressed[0].details["original_tokens"] > compressed[0].details["target_tokens"]
+
+
+def test_omitted_sections_logged(caplog, monkeypatch):
+    """预算耗尽后的省略占位记录 prompt.section_omitted（截断调查改进项 A5）。"""
+    _open_log(caplog, monkeypatch)
+    personality_text = "人格" * 100
+    memory_text = "记忆" * 100
+    web_text = "网页" * 100
+    sections = [
+        PromptSection("personality", personality_text, 70, "assistant"),
+        PromptSection("memory", memory_text, 60, "assistant"),
+        PromptSection("web", web_text, 40, "assistant"),
+    ]
+    asm = _assembler()
+    counter = TokenCounter()
+    limit = counter.count(personality_text) + 2
+
+    fitted = asm.fit_sections(sections, limit)
+
+    assert "因上下文限制已省略" in _text("web", fitted)
+    omitted = _records(caplog, "prompt.section_omitted")
+    assert [r.details["section"] for r in omitted] == ["web"]
+    assert omitted[0].details["target_tokens"] == 0
+    assert omitted[0].details["original_tokens"] == counter.count(web_text)
+
+
+def test_must_keep_overage_omits_adjustable_with_log(caplog, monkeypatch):
+    """must_keep 已超限时 adjustable 整体省略并记录（截断调查改进项 A5）。"""
+    _open_log(caplog, monkeypatch)
+    high_text = "核心" * 500
+    low_text = "低优" * 50
+    sections = [
+        PromptSection("high", high_text, 90, "assistant"),
+        PromptSection("low", low_text, 40, "assistant"),
+    ]
+    asm = _assembler()
+    counter = TokenCounter()
+    limit = counter.count(high_text) // 2
+
+    fitted = asm.fit_sections(sections, limit)
+
+    assert _text("low", fitted) == "（low 因上下文限制已省略）"
+    omitted = _records(caplog, "prompt.section_omitted")
+    assert [r.details["section"] for r in omitted] == ["low"]
+    assert omitted[0].details["target_tokens"] == 0
+    assert omitted[0].details["original_tokens"] == counter.count(low_text)

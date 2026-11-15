@@ -6,6 +6,21 @@ from mr_data.logging import get_logger
 logger = get_logger("mr_data.online")
 
 
+def _log_section_action(event: str, section: "PromptSection", target_tokens: int, original_tokens: int) -> None:
+    """记录 section 被省略/压缩的可见性日志（截断调查改进项 A5）。"""
+    logger.info(
+        f"Prompt section {event.split('_', 1)[1]}: {section.name}",
+        extra={
+            "event": event,
+            "details": {
+                "section": section.name,
+                "target_tokens": target_tokens,
+                "original_tokens": original_tokens,
+            },
+        },
+    )
+
+
 @dataclass
 class PromptSection:
     """Prompt 组装中的一个分块。"""
@@ -59,8 +74,9 @@ class PromptAssembler:
         if must_total >= limit:
             # Even high-priority sections exceed the budget; compress them proportionally.
             fitted_map = self._compress_to_budget(must_keep, limit)
-            for s, _ in adjustable:
+            for s, t in adjustable:
                 fitted_map[s.name] = f"（{s.name} 因上下文限制已省略）"
+                _log_section_action("prompt.section_omitted", s, 0, t)
         else:
             remaining = limit - must_total
             fitted_map = self._compress_to_budget(adjustable, remaining)
@@ -95,8 +111,9 @@ class PromptAssembler:
             group = groups[priority]
             group_total = sum(t for _, t in group)
             if remaining <= 0:
-                for s, _ in group:
+                for s, t in group:
                     fitted[s.name] = f"（{s.name} 因上下文限制已省略）"
+                    _log_section_action("prompt.section_omitted", s, 0, t)
                 continue
             if group_total <= remaining:
                 for s, _ in group:
@@ -110,6 +127,7 @@ class PromptAssembler:
                     fitted[s.name] = s.text
                 else:
                     fitted[s.name] = self._compress_text(s.text, target)
+                    _log_section_action("prompt.section_compressed", s, target, t)
             remaining = 0
         return fitted
 

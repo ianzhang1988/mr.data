@@ -43,7 +43,19 @@ class PageExtractor:
             return None
         text = text.strip()
         if self.max_length and len(text) > self.max_length:
+            original_chars = len(text)
             text = text[: self.max_length].rsplit("\n", 1)[0]
+            logger.info(
+                "Page text truncated to max length",
+                extra={
+                    "event": "web.extract_truncated",
+                    "details": {
+                        "url": final_url,
+                        "original_chars": original_chars,
+                        "truncated_chars": len(text),
+                    },
+                },
+            )
         return ExtractedPage(text=text, url=final_url)
 
     def _fetch(self, url: str) -> Optional[tuple[str, str]]:

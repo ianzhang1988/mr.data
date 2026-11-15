@@ -12,16 +12,16 @@
 
 # 待改进
 
-2. chat_structured 主路径可改用 message.pagsed 替代 json.loads
+（无）
 
 # 已完成的改进项
-（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-76 已迁移归档）
-
-78. ✅ web 引用 id 改 URL：prompt 素材行与 known_refs 键改用 metadata.url（引用即链接），extract 的 id 重写与 `_stable_web_id`/`_is_redirect_url` 删除，入库管道不动。详见 finished_improvement.md #78。
-
-79. ✅ WebDoc 删除独立 id 字段，文档身份即 metadata.url：prompt 素材行经 `_render_web_doc` 渲染（无 url 退 `[web]` 标记且不注册引用），`_to_doc_format`/`web_filter` 相应简化。详见 finished_improvement.md #79。
+（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-79 已迁移归档）
 
 80. ✅ 截断点可见性日志（调查文档改进项 A，只加日志不动行为）：`offline.deltas_truncated`/`offline.session_logs_split`、死信 details 增 in_transcript/never_in_transcript、`web.extract_truncated`、`prompt.section_omitted`/`prompt.section_compressed` 五处静默截断点补 JSONL 事件。详见 finished_improvement.md #80。
+
+81. ✅ chat_structured 主路径改用 `message.parsed`：`_structured_chat_via_parse` 优先消费 SDK 解析好的 `message.parsed`（不再对 content 二次 json.loads），parsed=None 保留 content 兜底。详见 finished_improvement.md #81。
+
+82. ✅ 离线归因拆批语义（截断调查改进项 B1-B4）：单会话超 100 条未处理日志跨 run 拆批——批间上文回顾（adjacent-processed 查询 + 不可作 target）、分片级死信（不再会话级连坐）、「第 x/y 批」标注、评分段落拆批时替换为背景校准+锚定本批事件。未拆批 prompt 零变化。详见 finished_improvement.md #82。
 
 # 未来可选增强（计划中）
 
@@ -35,5 +35,3 @@
 
 
 1. 离线分析定时执行。似乎没有实现。需要确认
-
-1. 优化代码中截断的地方, 参考调查文档 mr.data/review/truncation-survey.md, 文档中标题 改进方案 中有多个独立改进项，每次执行性一个项目的修改, 项目修改完成时在文档中标注一下完成，本次修改项: B

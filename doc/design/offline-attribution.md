@@ -17,8 +17,8 @@
 
 **本节回答：归因什么时候跑、一次跑多少、失败怎么办。** 离线归因是「自我修正」能力的执行体（overview#1）：复盘已关闭会话，把成败归因到性格维度。
 
-- **触发**：两条路径互斥执行（改进 85 起）——① 手动：`mr-data offline` 调用 `run()`；② 定时：`mr-data chat` 启动时在守护线程内嵌调度器（`offline/scheduler.py`），按 `offline_schedule_cron`（默认 `0 * * * *`，UTC，croniter 解析）定时执行 `run()`，随 chat 退出而停止；仍无 `/newsession` 联动（未来项）。 `[记录·改进 1/85]`
-- **并发保护（改进 85，原「单写者，无锁」假设由锁兜底）**：双层互斥——① 进程内 `_RUN_LOCK`（threading.Lock 非阻塞获取，包住「取 advisory lock + run」全程）；② 跨进程 PG advisory lock（`pg_try_advisory_lock`，会话级，专用连接持有整个 run 期间）——手动 `offline` 与内嵌调度共用同一把锁（`OFFLINE_ADVISORY_LOCK_KEY`），持锁冲突即跳过：调度侧记 `offline.schedule_skipped_locked` / `offline.schedule_skipped_busy`，手动侧提示并退出码 1。 `[记录·改进 85]`
+- **触发**：三条路径共用同一护栏（改进 85/86）——① 手动：`mr-data offline` 调用 `run()`；② 定时：`mr-data chat` 启动时在守护线程内嵌调度器（`offline/scheduler.py`），按 `offline_schedule_cron`（默认 `0 * * * *`，UTC，croniter 解析）定时执行 `run()`，随 chat 退出而停止；③ `/newsession`：chat 内执行 `/newsession` 关闭当前会话后，在守护线程（`mr-data-offline-newsession`）异步触发一轮 `run()`（改进 86）——刚关闭的会话无需等 cron 即可被归因；护栏冲突（另一归因在跑）则跳过，chat 照常继续。三条路径的护栏主体收敛为 `guarded_offline_run(engine, dsn, source=...)`（`offline/scheduler.py`），`source` 区分日志事件名（`offline.schedule_*` / `offline.newsession_*` / 手动侧 `offline.manual_*`）。 `[记录·改进 1/85/86]`
+- **并发保护（改进 85/86，原「单写者，无锁」假设由锁兜底）**：双层互斥——① 进程内 `_RUN_LOCK`（threading.Lock 非阻塞获取，包住「取 advisory lock + run」全程，三条同进程触发路径互斥）；② 跨进程 PG advisory lock（`pg_try_advisory_lock`，会话级，专用连接持有整个 run 期间）——手动 `offline` 与内嵌调度共用同一把锁（`OFFLINE_ADVISORY_LOCK_KEY`），持锁冲突即跳过：调度侧记 `offline.schedule_skipped_locked` / `offline.schedule_skipped_busy`，`/newsession` 侧记 `offline.newsession_skipped_*` 并提示用户，手动侧提示并退出码 1。 `/newsession` 守护线程与在线对话共享 graph 的 pg/chroma/llm 组件，并发画像与定时调度线程一致（改进 85 已拍板接受）；chat 退出时在 finally 中 join 在途归因线程（限时 5s）。 `[记录·改进 85/86]`
 - **会话生命周期现状**：会话只有 active/closed 两态，由 CLI 显式切换；不存在「长期未活动自动关闭」机制——会话不关闭就永远不会被归因。 `[记录·现状]`
 - **批处理**：每次取 `offline_batch_size`（50）个「已关闭且存在未处理日志」的会话；单会话取最新 `offline_max_session_logs`（100）条未处理日志（DESC 最新优先，多批跨 run 逐批推进），**批次方向保持最新优先**（改进 82 拍板）。 `[记录·改进 82]`
 - **拆批语义（改进 82，调查文档改进项 B）**：单会话未处理日志超 100 条时跨 run 拆批，四个配套机制：

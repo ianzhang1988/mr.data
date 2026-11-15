@@ -106,7 +106,7 @@ web **管道文档**（web 子管道内流转的 WebDoc）身份即 metadata.url
 - `dialogue_vector_refs`：每轮对话检索到的素材快照（vector_doc_id + source_type + 内容 + dimension_ids）。在线每轮登记（人格素材按 doc、web 按片一行）；离线归因的证据/event 也登记（指向 target 日志）。它是「某轮实际检索了什么」的审计链，注意**不是**「实际被引用了什么」。 `[记录·改进 25/76]`
 - `dialogue_dimension_refs`：在线每轮实际选中的维度；离线用它区分会话激活维度。 `[记录·改进 34]`
 - dimension_ids 在 Chroma metadata 落库为 CSV、读出还原为 list[int]，非数字 token 跳过并 warning（脏数据容错）。 `[记录·改进 39/49/64]`
-- 已知语义错位（现状≠设计）：`dialogue_vector_refs` 记录「检索到的全部素材」，memory_docs 完全缺席该表，记忆被清理后引用悬空——追溯链断裂，见 [open-questions.md](open-questions.md)。 `[记录·last_time_left #14]`
+- 已知语义错位（现状≠设计）：`dialogue_vector_refs` 记录「检索到的全部素材」，memory_docs 完全缺席该表，记忆被清理后引用悬空——追溯链断裂。 `[记录·last_time_left #14]`
 
 ## 证据区
 

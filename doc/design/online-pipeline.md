@@ -76,7 +76,7 @@ PG 事务写 4 步（user 日志、assistant 日志、维度 refs、vector refs�
 | `web_docs` | web 子管道产出的 WebDoc 列表 | 三个 web 节点 | assemble/log（沉淀） |
 | `personality_docs` / `memory_docs` | 两路检索结果（模型列表） | 对应检索/过滤节点 | assemble/log |
 | `reply` / `reply_blocks` | 回复文本 / 内容块（含引用） | assemble | log、ChatResult |
-| `assistant_log_id` | 落库返回的 assistant 行 id | log_dialogue | **无人读**——见 [open-questions.md](open-questions.md) |
+| `assistant_log_id` | 落库返回的 assistant 行 id | log_dialogue | **无人读** |
 
 ## 4. prompt 组装
 
@@ -113,7 +113,7 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 - 回复按块（block）组织，每块携带引用列表（id + source_type + 一句话总结）。 `[记录·改进 25]`
 - **known_refs 对账**：assemble 时建立「本轮素材清单」——web 键 = `metadata.url`（空 url 不注册，防空键让任意空 id 命中），personality/memory 键 = doc.id → 值 = 系统侧 source_type。LLM 回传的引用 id 必须命中清单，否则丢弃。 `[记录·改进 78/79]`
 - **source_type 以系统为准**：命中清单的引用，source_type 用清单值覆盖 LLM 填值；未命中的引用被丢弃，故 LLM 的 source_type 实际进不了结果——`ReplyReference.source_type` 保持自由 str 是有意（强校验会让小模型的不规范输出炸掉整个回复解析）。 `[记录·改进 39]`
-- 追溯链：assistant 日志的 metadata.blocks 落库；`dialogue_vector_refs` 每 web 片一行登记（改进 76）。**已知语义错位（现状≠设计）**：vector_refs 记录的是「检索到的全部素材」而非「实际被引用的」，memory_docs 缺席该表——见 [open-questions.md](open-questions.md)。 `[记录·last_time_left #14]`
+- 追溯链：assistant 日志的 metadata.blocks 落库；`dialogue_vector_refs` 每 web 片一行登记（改进 76）。**已知语义错位（现状≠设计）**：vector_refs 记录的是「检索到的全部素材」而非「实际被引用的」，memory_docs 缺席该表。 `[记录·last_time_left #14]`
 
 ## 6. web 子管道
 

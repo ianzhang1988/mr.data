@@ -25,7 +25,6 @@
 | 改证据/事件回写 | [offline-attribution.md](offline-attribution.md#4) 证据回写 |
 | 改写入顺序/事务边界/重试死信 | [offline-attribution.md](offline-attribution.md#6) 一致性边界 + [online-pipeline.md](online-pipeline.md#7) 降级链 |
 | 为什么当初这样设计 | [decisions.md](decisions.md) 按 D 编号检索 |
-| 理解代码时对照已知坑（**不是任务清单，未获指示禁止动手**） | [open-questions.md](open-questions.md) |
 
 ## 全局约定速查
 

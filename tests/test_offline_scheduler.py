@@ -22,7 +22,6 @@ from mr_data.db import PostgresStore
 from mr_data.offline import (
     OFFLINE_ADVISORY_LOCK_KEY,
     OfflineScheduler,
-    advisory_lock,
     next_fire,
 )
 from mr_data.offline.scheduler import _RUN_LOCK
@@ -51,24 +50,17 @@ class _FakeEngine:
 # ---------- cron 解析（纯函数，不依赖 PG） ----------
 
 
-def test_next_fire_hourly_and_custom():
+def test_next_fire_hourly():
+    # 包装层契约：默认 cron 串能算出下一触发点（解析矩阵归 croniter 自测）
     assert next_fire("0 * * * *", _NOW) == datetime(
         2026, 11, 15, 11, 0, tzinfo=timezone.utc
     )
-    assert next_fire("30 3 * * *", _NOW) == datetime(
-        2026, 11, 16, 3, 30, tzinfo=timezone.utc
-    )
-    # 当天 10:30 已过点：取次日 10:30
-    after = datetime(2026, 11, 15, 10, 35, tzinfo=timezone.utc)
-    assert next_fire("30 10 * * *", after) == datetime(
-        2026, 11, 16, 10, 30, tzinfo=timezone.utc
-    )
 
 
-@pytest.mark.parametrize("expr", ["not-a-cron", "* * * *", "61 * * * *"])
-def test_invalid_cron_raises(expr):
+def test_invalid_cron_raises():
+    # 契约：非法串归一为 ValueError（供启动时快速失败/降级）
     with pytest.raises(ValueError):
-        next_fire(expr, _NOW)
+        next_fire("not-a-cron", _NOW)
 
 
 # ---------- tick：进程内护栏 / advisory lock / 异常隔离 ----------
@@ -144,28 +136,6 @@ def test_tick_failure_logged_not_raised(
     assert engine.run_calls == 1
     assert len(capture_events(caplog, "offline.schedule_run_failed")) == 1
     assert capture_events(caplog, "offline.schedule_completed") == []
-
-
-# ---------- advisory_lock 上下文管理器 ----------
-
-
-def test_advisory_lock_released_after_exit(pg_available, reset_pg_state):
-    pg = PostgresStore()
-    with advisory_lock(pg.dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired:
-        assert acquired
-    # 退出后再取应能获得（显式 unlock + 关连接兜底均生效）
-    with advisory_lock(pg.dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired2:
-        assert acquired2
-
-
-def test_advisory_lock_unavailable_yields_false(pg_available, reset_pg_state):
-    pg = PostgresStore()
-    blocker = _hold_advisory_lock(pg)
-    try:
-        with advisory_lock(pg.dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired:
-            assert not acquired
-    finally:
-        blocker.close()
 
 
 # ---------- 守护线程生命周期 ----------

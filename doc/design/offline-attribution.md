@@ -17,8 +17,8 @@
 
 **本节回答：归因什么时候跑、一次跑多少、失败怎么办。** 离线归因是「自我修正」能力的执行体（overview#1）：复盘已关闭会话，把成败归因到性格维度。
 
-- **触发**：仅手动——`mr-data offline` 调用 `run()`。无定时调度、无 `/newsession` 联动。 `[记录·改进 1]`
-- **并发假设：单写者，无锁**。`run()` 无任何并发保护（无 flock / SKIP LOCKED）；调用方负责保证同一时刻只有一个 run 在执行。 `[记录·现状]`
+- **触发**：两条路径互斥执行（改进 85 起）——① 手动：`mr-data offline` 调用 `run()`；② 定时：`mr-data chat` 启动时在守护线程内嵌调度器（`offline/scheduler.py`），按 `offline_schedule_cron`（默认 `0 * * * *`，UTC，croniter 解析）定时执行 `run()`，随 chat 退出而停止；仍无 `/newsession` 联动（未来项）。 `[记录·改进 1/85]`
+- **并发保护（改进 85，原「单写者，无锁」假设由锁兜底）**：双层互斥——① 进程内 `_RUN_LOCK`（threading.Lock 非阻塞获取，包住「取 advisory lock + run」全程）；② 跨进程 PG advisory lock（`pg_try_advisory_lock`，会话级，专用连接持有整个 run 期间）——手动 `offline` 与内嵌调度共用同一把锁（`OFFLINE_ADVISORY_LOCK_KEY`），持锁冲突即跳过：调度侧记 `offline.schedule_skipped_locked` / `offline.schedule_skipped_busy`，手动侧提示并退出码 1。 `[记录·改进 85]`
 - **会话生命周期现状**：会话只有 active/closed 两态，由 CLI 显式切换；不存在「长期未活动自动关闭」机制——会话不关闭就永远不会被归因。 `[记录·现状]`
 - **批处理**：每次取 `offline_batch_size`（50）个「已关闭且存在未处理日志」的会话；单会话取最新 `offline_max_session_logs`（100）条未处理日志（DESC 最新优先，多批跨 run 逐批推进），**批次方向保持最新优先**（改进 82 拍板）。 `[记录·改进 82]`
 - **拆批语义（改进 82，调查文档改进项 B）**：单会话未处理日志超 100 条时跨 run 拆批，四个配套机制：
@@ -94,7 +94,7 @@
 
 ## 证据区
 
-- 改进 1/8/11/22/31/33/42/43/50/51/53/54/55/56/61/62/64/66/67/69/75（finished_improvement.md）
-- 代码锚：`offline/attribution.py`（`run`/`_attribute_session`/`_dedup_new_dimensions`/`_apply`/`_flush_post_commit_chroma`）、`db/chunking.py`
+- 改进 1/8/11/22/31/33/42/43/50/51/53/54/55/56/61/62/64/66/67/69/75/82（finished_improvement.md）
+- 代码锚：`offline/attribution.py`（`run`/`_attribute_session`/`_dedup_new_dimensions`/`_apply`/`_flush_post_commit_chroma`）、`offline/scheduler.py`（OfflineScheduler/advisory_lock/next_fire）、`db/chunking.py`
 - D-81（两段式折中定位）
 - 推断路径说明：「发育人格向量库」意图来自 `_apply` 内代码注释；维度计数与记忆计数的区分从两套字段（PG success/failure vs Chroma recall_count）的独立消费方归纳。

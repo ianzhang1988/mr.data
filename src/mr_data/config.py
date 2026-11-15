@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     offline_max_attribution_attempts: int = 3
     # 单会话归因落库的最大 delta 条数（prompt 收敛 + 代码截断兜底）
     offline_max_deltas_per_session: int = 3
+    # chat 内嵌离线归因定时调度的 cron 串（5 段标准格式，UTC）：调度线程按此串
+    # 定时执行 AttributionEngine.run()，默认每小时整点；非法 cron 串启动时告警并
+    # 降级为不启用调度（不阻断 chat，对齐「可配置与可降级」原则）
+    offline_schedule_cron: str = "0 * * * *"
     # 新建性格维度前的 LLM 重合判断（防维度膨胀）；失败时按允许新建降级
     enable_dimension_dedup: bool = True
     personality_retrieval_top_k: int = 5

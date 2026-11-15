@@ -16,7 +16,12 @@ from mr_data.llm import LLMClient
 from mr_data.logging import get_logger
 from mr_data.models import DialogueLog, PersonalityEvent, UserIdentity
 from mr_data.online import DialogueGraph
-from mr_data.offline import AttributionEngine
+from mr_data.offline import (
+    OFFLINE_ADVISORY_LOCK_KEY,
+    AttributionEngine,
+    OfflineScheduler,
+    advisory_lock,
+)
 
 logger = get_logger("mr_data.cli")
 
@@ -71,6 +76,10 @@ def _print_chat_help(pg: PostgresStore) -> None:
   会话结束（/exit 或 /newsession）时会询问一次整体评分（-2..2）与可选评论，
   供离线归因参考；直接回车可跳过。
 
+  chat 启动后会在后台线程按 cron 串（MR_DATA_OFFLINE_SCHEDULE_CRON，
+  默认每小时整点）定时执行离线归因分析；与手动 `mr-data offline`
+  互斥（PG advisory lock），执行期间不阻塞对话。
+
 [bold]启动选项[/bold]
   --session-id TEXT    指定会话 ID
   --web-search / --no-web-search  是否启用网络搜索 RAG
@@ -105,6 +114,44 @@ def chat(
     pg = PostgresStore()
     pg.init_schema()
     pg.seed()
+
+    # 内嵌离线归因定时调度（改进 85）：复用 graph 的 store/llm，避免重复加载
+    # embedding 模型；守护线程随 chat 退出而停止。任何初始化失败只降级
+    # （告警 + 不启用调度），不阻断 chat。
+    scheduler = None
+    try:
+        scheduler = OfflineScheduler(
+            AttributionEngine(pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm)
+        )
+        scheduler.validate()
+    except ValueError as exc:
+        logger.warning(
+            "Invalid offline schedule cron, scheduler disabled",
+            extra={
+                "event": "offline.schedule_invalid_cron",
+                "details": {"error": str(exc)},
+            },
+        )
+        rprint(
+            f"[yellow]离线归因定时调度的 cron 串非法（{settings.offline_schedule_cron!r}），"
+            "定时调度未启用。[/yellow]"
+        )
+        scheduler = None
+    except Exception as exc:
+        logger.warning(
+            "Failed to initialize offline scheduler, scheduler disabled",
+            extra={
+                "event": "offline.schedule_init_failed",
+                "details": {"error": repr(exc)},
+            },
+        )
+        scheduler = None
+    if scheduler is not None:
+        scheduler.start()
+        rprint(
+            f"[dim]离线归因定时任务已启动（cron: {scheduler.cron_expr}，"
+            f"下次触发: {scheduler.next_fire().strftime('%Y-%m-%d %H:%M:%S %Z')}）[/dim]"
+        )
 
     current_session_id = _ensure_session(pg, session_id)
     rprint(f"[dim]Session: {current_session_id}[/dim]")
@@ -160,6 +207,8 @@ def chat(
                 rprint()
 
     finally:
+        if scheduler is not None:
+            scheduler.stop()
         # Ensure the active session is closed so offline attribution can process it.
         try:
             _ask_session_rating(pg, current_session_id)
@@ -194,7 +243,16 @@ def offline() -> None:
     pg.init_schema()
     pg.seed()
     engine = AttributionEngine(pg_store=pg)
-    engine.run()
+    # 与 chat 内嵌定时调度共用同一把 PG advisory lock，跨进程互斥
+    with advisory_lock(pg.dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired:
+        if not acquired:
+            rprint("[yellow]另一个离线归因正在运行（定时调度或其他进程），本次跳过。[/yellow]")
+            logger.warning(
+                "Offline attribution already running, manual run skipped",
+                extra={"event": "offline.manual_skipped_locked"},
+            )
+            raise typer.Exit(1)
+        engine.run()
 
 
 @app.command()

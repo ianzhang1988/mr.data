@@ -315,6 +315,10 @@ class WebDoc(BaseModel):
 
     page_content: str = ""
     metadata: WebDocMetadata = Field(default_factory=WebDocMetadata)
+    # 抽取层填充的纯正文原文（不含 title），filter 只读不碰；记忆入库与
+    # 分片哈希以它为准（original_content or page_content 回退），保证同页
+    # 不同问法的摘取版差异不影响记忆分片 id 稳定（改进 83/C3）
+    original_content: Optional[str] = None
 
 
 class PersonalityDoc(BaseModel):

@@ -48,18 +48,20 @@ _STATIC_FALLBACK_REPLY = "我的处理回路暂时受到干扰，无法组织回
 def _web_memory_chunks(doc: WebDoc) -> list[tuple[str, str]]:
     """把 web 文档切成记忆分片，返回 [(chunk_id, chunk_text), ...]。
 
-    base_id 由 URL+正文哈希派生（web_chunk_base_id）：同页重抓正文不变 →
-    片界稳定 → 同 id 原地刷新；正文变化 → base_id 变化 → 全新 id 写入，
-    不会产生孤儿分片。空/纯空白正文不产生任何分片。
+    切片与哈希统一基于原文（original_content，纯抽取正文不含 title；无原文
+    退化回 page_content）。base_id 由 URL+正文哈希派生（web_chunk_base_id）：
+    同页重抓正文不变 → 片界稳定 → 同 id 原地刷新；正文变化 → base_id 变化 →
+    全新 id 写入，不会产生孤儿分片。空/纯空白正文不产生任何分片。
     """
+    base_text = doc.original_content or doc.page_content
     chunks = split_text_chunks(
-        doc.page_content,
+        base_text,
         settings.memory_web_chunk_chars,
         settings.memory_web_chunk_overlap_chars,
     )
     if not chunks:
         return []
-    base_id = web_chunk_base_id(doc.metadata.url, doc.page_content)
+    base_id = web_chunk_base_id(doc.metadata.url, base_text)
     return [(f"{base_id}:c{i}", chunk) for i, chunk in enumerate(chunks)]
 
 
@@ -378,6 +380,7 @@ class DialogueGraph:
                 real_url = result.url
                 new_doc = doc.model_copy(update={
                     "page_content": f"{doc.metadata.title}\n{result.text}",
+                    "original_content": result.text,  # 纯抽取正文（不含 title），入库/哈希基准
                     "metadata": doc.metadata.model_copy(update={
                         "url": real_url,
                         "source_url": url,

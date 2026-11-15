@@ -97,8 +97,15 @@ class Settings(BaseSettings):
 
     # 网页正文提取与相关性过滤配置
     web_extract_max_pages: int = 2
-    web_extract_max_length: int = 4000
+    # 正文归档级上限（出处：Apache Tika 默认 write limit 100K 与
+    # Claude Code web fetch 100KB 两大工业锚点重合）；正常页面 1~3 万字全覆盖，
+    # 仅防论坛倒序楼类病态页面；截断带省略标记并记 web.extract_truncated
+    web_extract_max_length: int = 100000
     enable_web_doc_extraction: bool = True
+    # filter_web_docs 整份 prompt（system+page_content+user_input）的 token 总预算；
+    # 超额时纯头部截「发给 LLM 的副本」（源数据不动）并记 web.filter_prompt_truncated，
+    # 取代旧「超长 → API 报错 → 保留原文」的错误驱动兜底
+    web_filter_max_tokens: int = 32768
 
     # 记忆保留策略（dialogue 与 web 记忆共用；配置名保留 dialogue 前缀以兼容存量 .env）
     memory_dialogue_retention_days: int = 90

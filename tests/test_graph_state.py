@@ -138,6 +138,48 @@ def test_web_doc_filtering_not_undone_by_state_merge(
     assert web_ref_ids == {expected_chunk_id}
 
 
+def test_extract_web_pages_fills_original_content(
+    fake_llm, chroma_store, temp_log_dir, monkeypatch
+):
+    """C3：抽取成功组装 doc 时填 original_content（纯抽取正文，不含 title）——
+
+    记忆入库与分片哈希的基准；snippet 透传/抽取失败路径保持 None。"""
+    monkeypatch.setattr(settings, "web_extract_max_pages", 1)
+
+    from mr_data.online.page_extract import ExtractedPage
+
+    class _StubExtractor:
+        def extract(self, url):
+            return ExtractedPage(text="纯正文内容", url=url)
+
+    graph = DialogueGraph(
+        pg_store=PostgresStore(),
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        web_search=FakeWebSearch([]),
+        enable_web_search=True,
+    )
+    graph.page_extractor = _StubExtractor()
+    docs = [
+        WebDoc(
+            page_content="snippet",
+            metadata=WebDocMetadata(url="http://x.com/a", title="标题"),
+        ),
+        WebDoc(
+            page_content="snippet-only",
+            metadata=WebDocMetadata(url="", title="无url"),
+        ),
+    ]
+
+    state = graph._extract_web_pages({"session_id": "s", "web_docs": docs})
+
+    extracted_doc, passthrough_doc = state["web_docs"]
+    assert extracted_doc.metadata.extracted is True
+    assert extracted_doc.page_content == "标题\n纯正文内容"
+    assert extracted_doc.original_content == "纯正文内容"  # 不含 title
+    assert passthrough_doc.original_content is None  # 未抽取路径退化
+
+
 class _RecordingReplyLLM(FakeLLMClient):
     """记录 AssistantReply 调用时传入的 llm_messages。"""
 

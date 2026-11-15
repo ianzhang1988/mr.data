@@ -96,16 +96,28 @@ def test_page_extractor_invalid_url():
 
 
 def test_page_extractor_truncation_logs_event(local_html_server, caplog, monkeypatch):
-    """正文超长截断记录 web.extract_truncated（截断调查改进项 A4）。"""
+    """正文超长截断记录 web.extract_truncated（截断调查改进项 A4/C1），
+
+    截尾带省略标记，truncated_chars 为最终返回文本长度（含标记）。"""
     open_log_propagation(caplog, monkeypatch)
     extractor = PageExtractor(max_length=50)
 
     page = extractor.extract(local_html_server)
 
     assert page is not None
+    assert page.text.endswith("[内容过长，已省略后续部分]")
     truncated = capture_events(caplog, "web.extract_truncated")
     assert len(truncated) == 1
     details = truncated[0].details
     assert details["url"] == page.url
     assert details["original_chars"] > 50
-    assert details["truncated_chars"] <= 50
+    assert details["truncated_chars"] == len(page.text)
+    assert details["truncated_chars"] < details["original_chars"]
+
+
+def test_page_extractor_default_max_length_is_archive_cap():
+    """C1：默认上限为 100,000 字符归档级上限（Tika 100K / Claude Code 100KB 锚点）。"""
+    from mr_data.config import settings
+
+    assert settings.web_extract_max_length == 100000
+    assert PageExtractor().max_length == 100000

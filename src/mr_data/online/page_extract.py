@@ -45,6 +45,7 @@ class PageExtractor:
         if self.max_length and len(text) > self.max_length:
             original_chars = len(text)
             text = text[: self.max_length].rsplit("\n", 1)[0]
+            text += "\n\n[内容过长，已省略后续部分]"
             logger.info(
                 "Page text truncated to max length",
                 extra={

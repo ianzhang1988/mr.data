@@ -90,3 +90,42 @@ def test_web_chunk_base_id_stable_and_content_sensitive():
     assert id1 == id2
     assert id1 != id3
     assert re.fullmatch(r"web:[0-9a-f]{64}", id1)
+
+
+from mr_data.models import WebDoc, WebDocMetadata  # noqa: E402
+from mr_data.online.graph import _web_memory_chunks  # noqa: E402
+
+
+def test_web_memory_chunks_use_original_content_for_hash_and_chunks():
+    """C3：切片与哈希基于原文（original_content）——同页不同摘取版
+
+    page_content 不同但原文相同 → 分片 id 与片正文完全一致，
+    修掉「同页不同问法重抓产生重复分片」的哈希基准 bug。"""
+    url = "https://example.com/article"
+    original = _long_mixed_text(total_chars=1200)
+    doc_a = WebDoc(page_content="摘取版甲", original_content=original,
+                   metadata=WebDocMetadata(url=url))
+    doc_b = WebDoc(page_content="摘取版乙", original_content=original,
+                   metadata=WebDocMetadata(url=url))
+
+    chunks_a = _web_memory_chunks(doc_a)
+    chunks_b = _web_memory_chunks(doc_b)
+
+    assert chunks_a, "原文 1200 字应产生多个分片"
+    assert chunks_a == chunks_b
+    for _, chunk in chunks_a:
+        assert chunk in original  # 片正文来自原文而非摘取版
+
+
+def test_web_memory_chunks_fallback_to_page_content():
+    """C3 退化路径：original_content=None（snippet 透传/抽取失败）回退 page_content。"""
+    url = "https://example.com/article"
+    text = _long_mixed_text(total_chars=1200)
+    doc = WebDoc(page_content=text, metadata=WebDocMetadata(url=url))
+
+    chunks = _web_memory_chunks(doc)
+
+    assert chunks
+    assert [cid for cid, _ in chunks] == [
+        f"{web_chunk_base_id(url, text)}:c{i}" for i in range(len(chunks))
+    ]

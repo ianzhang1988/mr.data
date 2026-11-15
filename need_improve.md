@@ -12,28 +12,25 @@
 
 # 待改进
 
-（当前无进行中改进项；截断调查改进项 A-D 已全部落地，见 review/truncation-survey.md 与 finished_improvement.md #80-84）
+
+
 
 # 已完成的改进项
-（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-81 已迁移归档）
-
-82. ✅ 离线归因拆批语义（截断调查改进项 B1-B4）：单会话超 100 条未处理日志跨 run 拆批——批间上文回顾（adjacent-processed 查询 + 不可作 target）、分片级死信（不再会话级连坐）、「第 x/y 批」标注、评分段落拆批时替换为背景校准+锚定本批事件。未拆批 prompt 零变化。详见 finished_improvement.md #82。
+（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-82 已迁移归档）
 
 83. ✅ 网页管道截断改造（截断调查改进项 C1-C3）：抽取归档上限 4000→100000 带省略标记；filter prompt 新增 `web_filter_max_tokens=32768` 总预算、超额纯头部截 LLM 副本（源数据不动）记 `web.filter_prompt_truncated`；入库双轨——`WebDoc.original_content` 原文切片 + 哈希基准改原文，修同页重复分片。详见 finished_improvement.md #83。
-
 84. ✅ 记忆相关性过滤预算统一 TokenCounter（截断调查改进项 D）：`memory_relevance_filter_max_tokens=32768` 总预算，超额按条数等比压缩每条展示文本（源 doc 不动）记 `retrieve.memory_filter_prompt_truncated`，删 1500 字符魔法数；降级语义不变。详见 finished_improvement.md #84。
+
+85. ✅ 离线归因定时调度（chat 内嵌守护线程）：croniter 解析 `offline_schedule_cron`（默认每小时整点）定时执行归因，进程内 `_RUN_LOCK` + 跨进程 PG advisory lock 双层互斥，手动 `offline` 同锁。详见 finished_improvement.md #85。
 
 # 未来可选增强（计划中）
 
 2. 更完善的日志查看/搜索 UI 或 CLI 命令。
 3. graph.py 中考虑到本地运行使用的模型，例如qwen3.5:9B，目前部分结构化输出对模型的压力可能太大了。我们需要一种兼容性的模式，根据配置来决定是否用复杂的结构化输出方式。（改进项 37 已落地 `llm_structured_mode` 配置与自动降级，剩余：复杂 schema 本身的精简，如块级引用嵌套结构的简化模式）, 我说的其实是model不能完成正确的json输出，甚至连格式都不能保证的情况下。要如何降级的问题。改进37没有处理这类问题的能力。
 4. 最后对话组装和生成的部分，是不是考虑做个独立codeagent？让他有更好的思考完成任务的机会，可以考虑再加上获取相关内容的能力
-8. 考虑性格向量库的更新问题
-   1. chroma性格库部分，增加召回时的记录，用来做淘汰等
+1. 写个计划检查所有的测试项目，是否有可以合并的，失效的，或者意义不大的等等。目标是简化测试集。
+8. 性格维度增加一个编辑交互。
+1. 增加chat http交互api，这样后续可以用agent测试agent，先不要改项目，考虑设计。
+
+1. cli命令执行/newsession时，触发异步 AttributionEngine.gun(), 注意不要和在线处理或者按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
 1. 自动关闭长期未活动的会话（session timeout policy）。
-5. 做成再cli命令/newsession时，触发 AttributionEngine.gun(), 注意不要和按照时间触发的代码发生竞态，也许加个锁，或者其他合适的方式。
-
-
-1. 离线分析定时执行。似乎没有实现。需要确认
-
-1. 调查文档 mr.data/review/truncation-survey.md 改进方案中的杂项，是否值得改, 修改是否有风险。

@@ -174,3 +174,11 @@
     4. 降级语义不变：LLM 失败保留全部 + `retrieve.memory_filter_failed`、全空回退全部、开关关闭直通；预算内路径与旧 1500 字内场景零变化。
     - 测试：`test_graph_state.py` +2（等比压缩——3 条不同长度 MemoryDoc、预算=overhead+30，断言长片展示预算 > 短片、省略标记、源 doc 不动、日志事件 original>truncated；预算内零变化回归锁）；既有 `test_e2e.py::test_memory_relevance_filter` 直接通过。全量回归 **227 passed, 1 skipped**（225 基线 +2）。
     - 范围外（survey 杂项，本次不动）：`search_providers.py` 两处死代码切片、`ChromaStore.query_personality/query_memories` 的 `top_k = max(top_k, 1)` 下界钳制——评估结论见会话回复。
+
+85. ✅ **离线归因定时调度**（need_improve.md 待改进：「使用类 cron 库，定时异步执行离线归因分析，注意竞争状态保护，配置中增加 cron 串，默认每 1 小时」；按用户指示不新增 CLI 命令，内嵌 chat）：原触发路径仅手动 `mr-data offline`，无定时调度。实现（改进 85）：
+    1. **内嵌守护线程**：`mr-data chat` 启动时在 daemon 线程拉起 `OfflineScheduler`（新 `offline/scheduler.py`），复用 `DialogueGraph` 的 pg/chroma/llm（避免重复加载 embedding 模型）；cron 到点在调度线程内同步执行 `AttributionEngine.run()`——主线程 REPL 不被阻塞（「不阻塞」指归因不占主线程、互不等待；run() 本身仍是同步代码）。`stop_event` 可提前唤醒睡眠循环，`chat` 退出 finally 中 `stop()`（限时 join 2s，daemon 兜底）。
+    2. **cron 串配置**：`offline_schedule_cron: str = "0 * * * *"`（5 段标准格式，UTC，croniter 解析，默认每小时整点）；`.env.example` 同步 `MR_DATA_OFFLINE_SCHEDULE_CRON`。非法串：chat 启动时告警并降级为不启用调度（对齐「可配置与可降级」，不阻断 chat）。
+    3. **竞争状态保护（双层）**：① 进程内 `_RUN_LOCK`（threading.Lock 非阻塞获取，包住「取 advisory lock + run」全程，防御未来 /newsession 异步触发路径复用）；② 跨进程 PG advisory lock（`pg_try_advisory_lock(OFFLINE_ADVISORY_LOCK_KEY)`，会话级，专用连接持有整个 run 期间，退出显式 unlock + 关连接兜底释放）——防守护线程与另一终端手动 `mr-data offline` 并发归因。**手动 `offline` 命令包同一把锁**：持锁冲突 → 提示 + 退出码 1（现有命令小幅行为变化，本任务竞争保护必要组成）。
+    4. **日志事件**：`offline.schedule_started`（cron + next fire）/ `schedule_completed` / `schedule_run_failed`（单轮失败不崩守护循环）/ `schedule_skipped_busy` / `schedule_skipped_locked` / `schedule_invalid_cron` / `offline.manual_skipped_locked`；`chat /help` 文案补定时调度说明。
+    - 测试：新建 `tests/test_offline_scheduler.py` +14——next_fire 触发点计算（整点/自定义/过点取次日）与非法串（3 参数化）、tick 正常一次、进程内锁占用跳过、advisory lock 外部持锁跳过、run 抛异常记日志不抛出、advisory_lock 退出后释放与未获得 yield False、start/stop 生命周期（stop 唤醒睡眠循环、不产生 tick）、CLI 手动 offline 持锁冲突跳过退出码 1、chat 启动/停止调度接线、非法 cron 降级不阻断 chat。全量回归 **241 passed, 1 skipped**（227 基线 +14）。
+    - 范围外建议（未改）：未来「/newsession 异步触发 run()」应复用 `_RUN_LOCK` + `advisory_lock` 双护栏；守护在 chat 进程内使 pgembed 同 data_dir 多进程常驻风险天然收敛，但部署仍建议守护与交互进程二选一或改用外部 `postgres_dsn`。

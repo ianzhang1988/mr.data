@@ -351,7 +351,8 @@ class BaiduProvider(SearchProvider):
                 body = snippet_tag.get_text(strip=True)
             rows.append({"title": title, "body": body, "url": url})
 
-        return _to_doc_format(rows[: self.max_results])
+        # rows 在循环头已按 max_results 截断，此处无需再切（truncation-survey 杂项）
+        return _to_doc_format(rows)
 
 
 class Qihoo360Provider(SearchProvider):
@@ -396,4 +397,5 @@ class Qihoo360Provider(SearchProvider):
                 body = snippet_tag.get_text(strip=True)
             rows.append({"title": title, "body": body, "url": url})
 
-        return _to_doc_format(rows[: self.max_results])
+        # rows 在循环头已按 max_results 截断，此处无需再切（truncation-survey 杂项）
+        return _to_doc_format(rows)

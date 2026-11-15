@@ -50,7 +50,7 @@ web 子管道三节点，整体受 `enable_web_search` 单一开关与 think 决
 用语义 query 查 memories 集合（top_k 走配置）→ `memory_docs`；命中统一 recall 计数 + state 内补丁（语义见 [memory-and-retrieval.md](memory-and-retrieval.md#4)）。 `[记录·改进 60/65/68]`
 
 ### filter_memory_docs
-LLM 批量相关性过滤（开关 `enable_memory_relevance_filter`，**默认关**）。失败或全过滤为空 → 保留全部——宁可多给不可漏给。 `[记录·改进 24]`
+LLM 批量相关性过滤（开关 `enable_memory_relevance_filter`，**默认关**）。整份过滤 prompt（system+user_input+记忆列表）受 `memory_relevance_filter_max_tokens`（32K）总预算约束，超额时按条数等比压缩每条展示文本（源 doc 不动）并记 `retrieve.memory_filter_prompt_truncated`；失败或全过滤为空 → 保留全部——宁可多给不可漏给。 `[记录·改进 24/84]`
 
 ### assemble_and_generate
 管道核心：组装 prompt（#4）→ 结构化生成 → 引用对账（#5）。回复三级降级见 #7。 `[记录·改进 25/37/64]`
@@ -142,6 +142,7 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 | retrieve_memories | 检索异常 | 空列表 + warning | 记忆缺失不致命 `[记录·改进 65]` |
 | retrieve_memories | recall 计数异常 | 保留已检索文档，跳过计数 | 计数是辅助信号 `[记录·改进 65]` |
 | filter_memory_docs | 过滤失败或全不相关 | 保留全部 | 宁多勿漏；该过滤默认关 `[记录·改进 24]` |
+| filter_memory_docs | 整份 prompt 超 `memory_relevance_filter_max_tokens` | 按条数等比压缩每条展示文本（源 doc 不动）+ `retrieve.memory_filter_prompt_truncated` | 记忆片 ≤512 token（写入侧 embedding_max_tokens 不变量），32K 预算正常不触发；等比压缩保证每片都有最小展示 `[记录·改进 84]` |
 | assemble 生成 | 结构化输出失败 | 纯文本 chat 回退（无引用块） | 回复优先于可解释性 `[记录·改进 37/64]` |
 | assemble 生成 | 纯文本也失败 | 静态兜底文案，当轮照常落库 | 用户看到次优回复 > 无回复 `[记录·改进 64]` |
 | assemble 压缩 | LLM 压缩失败 | 硬截断 | 预算铁律不可破 `[记录·改进 48]` |

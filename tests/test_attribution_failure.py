@@ -166,8 +166,9 @@ def test_attribution_dead_letter_after_threshold(
 def test_dead_letter_logs_split_and_transcript_counts(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch, caplog
 ):
-    """拆批与死信可见性（截断调查改进项 A2/A3）：limit 之外的日志被集体落葬时
-    never_in_transcript 必须可见，不能再静默丢弃。"""
+    """拆批与死信可见性（截断调查改进项 B2，改进 82）：死信只落葬本批实际
+    进过 transcript 的分片，不连坐 limit 之外从未取过的日志；
+    never_in_transcript 字段保留（日志 schema 稳定）但分片级落葬后恒为 0。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -190,16 +191,35 @@ def test_dead_letter_logs_split_and_transcript_counts(
     caplog.set_level(logging.INFO, logger="mr_data.offline")
 
     engine.run()
-    engine.run()  # 第二次失败达到阈值：死信落葬
+    # 第一次失败：未达阈值，无落葬，2 条均保留待重试
+    assert len(pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)) == 2
+
+    engine.run()
+    # 第二次失败达阈值：只落葬本批取过的 1 条，limit 之外的另 1 条不被连坐
+    session = pg.get_session(test_session_id)
+    assert session.attribution_attempts == 2
+    assert len(pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)) == 1
 
     split = capture_events(caplog, "offline.session_logs_split")
-    assert len(split) == 2  # 两次 run 各取一批，各记一次
-    assert split[0].details == {"batch_size": 1, "limit": 1}
+    # run1、run2 时未处理数均为 2 > limit(1)，各记一次；run1 失败未标记，
+    # run2 计数不变。run2 起只剩 1 条，不再有后续批次，不记。
+    assert len(split) == 2
+    assert split[0].details == {"batch_size": 1, "limit": 1, "total_batches": 2}
 
     dead = capture_events(caplog, "offline.session_dead_lettered")
     assert len(dead) == 1
     details = dead[0].details
-    # 被标记 2 条：本批进过 transcript 的 1 条 + limit 之外从未进过的 1 条。
-    assert details["marked_dialogues"] == 2
+    # 分片级落葬：仅本批进过 transcript 的 1 条；从未取过的日志不被集体置已处理。
+    assert details["marked_dialogues"] == 1
     assert details["in_transcript"] == 1
-    assert details["never_in_transcript"] == 1
+    assert details["never_in_transcript"] == 0
+
+    # 剩余 1 条在第 3 次 run 才被取出；attempts 已超阈值（会话级计数），
+    # 失败后即时落葬——分片隔离不连坐，但每个分片终被独立安葬。
+    engine.run()
+    assert pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True) == []
+    assert pg.list_closed_sessions_with_unprocessed() == []
+    dead = capture_events(caplog, "offline.session_dead_lettered")
+    assert len(dead) == 2
+    assert dead[1].details["marked_dialogues"] == 1
+    assert dead[1].details["never_in_transcript"] == 0

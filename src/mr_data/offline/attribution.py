@@ -69,15 +69,39 @@ class AttributionEngine:
         total_sessions = 0
         total_deltas = 0
         failed_sessions = 0
+        overlap = settings.offline_attribution_batch_overlap_lines
+        per_session_limit = settings.offline_max_session_logs
         for session in sessions or []:
+            # 拆批取数（改进 82）：本批 = 最新至多 per_session_limit 条未处理行
+            # （DESC 最新优先）；上文回顾 = 已处理行中按时间紧邻本批上方的
+            # overlap 条（单独查询——与大窗口同取会让窗口被已处理行占满、
+            # 深部未处理行永远取不到）。上文行仅供 LLM 理解上下文，
+            # 不重复归因、不可作 target。
             logs = self.pg.get_recent_dialogues(
                 session_id=session.id,
                 unprocessed_only=True,
-                limit=settings.offline_max_session_logs,
+                limit=per_session_limit,
             )
             if not logs:
                 continue
-            if len(logs) >= settings.offline_max_session_logs:
+            context_logs: list[DialogueLog] = []
+            if overlap > 0 and logs[0].id is not None:
+                context_logs = self.pg.get_adjacent_processed_dialogues(
+                    session.id, logs[0].created_at, logs[0].id, overlap
+                )
+
+            # 批号 x/y：p/u 为会话级已处理/未处理总数。死信落葬会缩小 u，
+            # y 为近似值（调查文档已注明）；x = p // limit + 1。
+            processed_count = self.pg.count_dialogues(session.id)
+            unprocessed_count = self.pg.count_dialogues(
+                session.id, unprocessed_only=True
+            )
+            total_batches = (
+                processed_count + unprocessed_count + per_session_limit - 1
+            ) // per_session_limit
+            batch_index = processed_count // per_session_limit + 1
+            batched = total_batches > 1
+            if unprocessed_count > per_session_limit:
                 self.logger.info(
                     "Session exceeds per-session log limit, will be attributed in batches",
                     extra={
@@ -85,12 +109,19 @@ class AttributionEngine:
                         "session_id": session.id,
                         "details": {
                             "batch_size": len(logs),
-                            "limit": settings.offline_max_session_logs,
+                            "limit": per_session_limit,
+                            "total_batches": total_batches,
                         },
                     },
                 )
 
-            result = self._attribute_session(session.id, logs)
+            result = self._attribute_session(
+                session.id,
+                logs,
+                context_logs=context_logs or None,
+                batch_index=batch_index if batched else None,
+                total_batches=total_batches if batched else None,
+            )
             if result is None:
                 attempts = self._count_failure_and_dead_letter(session.id, logs)
                 if attempts < settings.offline_max_attribution_attempts:
@@ -153,15 +184,17 @@ class AttributionEngine:
         self, session_id: str, logs: list[DialogueLog]
     ) -> int:
         """归因失败计数 +1 并返回累计次数；达 offline_max_attribution_attempts
-        时把会话未处理日志置为已处理（死信），避免无限重试。
+        时把本批实际进过 transcript 的日志置为已处理（死信分片级落葬，
+        改进 82）——不再 session 级连坐把从未取过的日志集体落葬。
 
-        logs 为本批实际进过 transcript 的日志（可见性改进 80）：死信 details
-        区分「进过 transcript」与「从未进过 transcript」（被 limit 拆分在外）
-        两类被标记条数，后者属永久静默丢弃，需可诊断。"""
+        logs 为本批进过 transcript 的日志；attempts 仍是会话级：达阈值后
+        后续每个分片失败一次即被即时落葬（调查文档 B 节已记录该边界）。
+        never_in_transcript 字段保留以稳日志 schema，分片级落葬后恒为 0。"""
         attempts = self.pg.increment_attribution_attempts(session_id)
         if attempts >= settings.offline_max_attribution_attempts:
-            marked = self.pg.mark_session_dialogues_processed(session_id)
-            in_transcript = min(len(logs), marked)
+            marked = self.pg.mark_dialogues_processed(
+                [log.id for log in logs if log.id is not None]
+            )
             self.logger.warning(
                 "Session attribution attempts exhausted, dead-lettered",
                 extra={
@@ -170,8 +203,8 @@ class AttributionEngine:
                     "details": {
                         "attempts": attempts,
                         "marked_dialogues": marked,
-                        "in_transcript": in_transcript,
-                        "never_in_transcript": marked - in_transcript,
+                        "in_transcript": marked,
+                        "never_in_transcript": 0,
                     },
                 },
             )
@@ -298,9 +331,23 @@ class AttributionEngine:
             parts.append(rating_text)
         return "\n\n".join(parts)
 
-    def _attribute_session(self, session_id: str, logs: list[DialogueLog]) -> Optional[AttributionResult]:
+    def _attribute_session(
+        self,
+        session_id: str,
+        logs: list[DialogueLog],
+        context_logs: Optional[list[DialogueLog]] = None,
+        batch_index: Optional[int] = None,
+        total_batches: Optional[int] = None,
+    ) -> Optional[AttributionResult]:
+        batched = total_batches is not None and total_batches > 1
         context = self._build_context(session_id)
         lines = self._build_transcript_lines(logs)
+        if context_logs:
+            # 上文回顾段（改进 82 B1）：context 行时间晚于本批，附在批次行
+            # 之后；不参与归因计数、不可作 target（id 校验白名单只用本批行）。
+            lines = lines + [
+                "（以下为上文回顾：已在此前批次完成归因，仅供理解上下文，不要对其再次归因）"
+            ] + self._build_transcript_lines(context_logs)
 
         system = """你是对话归因分析器。请阅读下面提供的完整会话记录（assistant 行附该轮的内心独白），并结合人设、性格维度分组（本次会话激活/其余活跃），完成以下任务：
 1. 判断哪些性格维度促成了成功或失败。
@@ -316,10 +363,39 @@ class AttributionEngine:
 请严格按 JSON 格式返回，不要输出任何其他内容：
 {"deltas": [{"dimension_id": 1, "new_dimension_description": null, "new_dimension_reason": null, "delta_success": 1, "delta_failure": 0, "reason": "...", "event_summary": "...", "evidence_snippets": ["..."], "relation_to_personality": "体现", "target_dialogue_log_id": 123}]}
 """
+        if batched:
+            # B3 分片语义标注 + B4 会话级信号规则（措辞定稿见
+            # review/truncation-survey.md「B4 prompt 定稿」，逐字采用）。
+            system = system.replace(
+                "请阅读下面提供的完整会话记录",
+                f"请阅读下面提供的本会话记录（第 {batch_index}/{total_batches} 批，非完整会话）",
+            )
+            system = system.replace(
+                "用户对本会话的评分与评论（如有）是最直接的成败信号："
+                "低分或批评性评论应更严格地归因失败维度；评论若点名某种性格表现，"
+                "优先对照既有维度归因；高分且评论肯定时可强化对应维度的成功计数。"
+                "没有评价时按对话内容自行判断。",
+                f"用户对本会话的评分与评论（如有）是针对整个会话的总体评价，"
+                f"本批（第 {batch_index}/{total_batches} 批）只是其中一段。使用规则：\n"
+                "- 评分/评论用于校准判断倾向：差评背景下，对本批 assistant 表现中的"
+                "可疑迹象从宽认定为失败迹象；好评背景下，对本批的优秀表现从宽认定成功。\n"
+                "- 但成败计数必须锚定本批对话中的具体事件：reason 中应能指出本批记录里"
+                "对应的那一轮对话。仅因评分而输出、本批对话中没有对应表现的维度计数，"
+                "不要输出——导致该评价的表现若在其他批次，由对应批次归因。\n"
+                "- 同理，高分且评论肯定时，只有本批中有具体优秀表现才强化成功计数。",
+            )
         # transcript token 预算保护（改进 75）：长文粘贴型会话可能拼出远超
         # 模型上下文的 prompt，超上下文重试无效 → 会话死信。按预算头尾裁剪。
         counter = TokenCounter()
-        template_const = "\n\n本次会话记录：\n\n\n请按 JSON 格式返回归因结果。"
+        if batched:
+            header_plain = f"本次会话记录（第 {batch_index}/{total_batches} 批）："
+            header_omitted = (
+                f"本次会话记录（第 {batch_index}/{total_batches} 批，中间有省略）："
+            )
+        else:
+            header_plain = "本次会话记录："
+            header_omitted = "本次会话记录（中间有省略）："
+        template_const = f"\n\n{header_plain}\n\n\n请按 JSON 格式返回归因结果。"
         budget = (
             settings.llm_context_token_limit
             - counter.count(system)
@@ -331,13 +407,20 @@ class AttributionEngine:
         fitted_lines, omitted = self._fit_transcript_lines(lines, budget)
         transcript = "\n".join(fitted_lines)
         if omitted > 0:
-            system = system.replace(
-                "请阅读下面提供的完整会话记录",
-                f"请阅读下面提供的会话记录（中间部分已省略，共 {omitted} 条）",
-            )
+            if batched:
+                system = system.replace(
+                    f"请阅读下面提供的本会话记录（第 {batch_index}/{total_batches} 批，非完整会话）",
+                    f"请阅读下面提供的本会话记录（第 {batch_index}/{total_batches} 批，"
+                    f"非完整会话，中间部分已省略，共 {omitted} 条）",
+                )
+            else:
+                system = system.replace(
+                    "请阅读下面提供的完整会话记录",
+                    f"请阅读下面提供的会话记录（中间部分已省略，共 {omitted} 条）",
+                )
             prompt = f"""{context}
 
-本次会话记录（中间有省略）：
+{header_omitted}
 {transcript}
 
 请按 JSON 格式返回归因结果。"""
@@ -364,7 +447,7 @@ class AttributionEngine:
         else:
             prompt = f"""{context}
 
-本次会话记录：
+{header_plain}
 {transcript}
 
 请按 JSON 格式返回归因结果。"""

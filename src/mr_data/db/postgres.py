@@ -512,6 +512,43 @@ class PostgresStore:
             cur.execute(sql, params)
             return [DialogueLog.model_validate(r) for r in cur.fetchall()]
 
+    def get_adjacent_processed_dialogues(
+        self,
+        session_id: str,
+        after_created_at,
+        after_id: int,
+        limit: int,
+    ) -> list[DialogueLog]:
+        """取已处理行中按时间紧邻界线上方的 limit 条（最早优先）。
+
+        拆批上文回顾用（改进 82）：界线为本批最新一行，其上方（更新）的已处理
+        行即按时间紧邻本批的上文。单独查询而非与大窗口同取，保证窗口推进到
+        任意深度都能取到未处理行。created_at 为 NULL 的行不参与比较。
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM dialogue_logs
+                WHERE session_id = %s
+                  AND processed_for_attribution = TRUE
+                  AND (created_at, id) > (%s, %s)
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s
+                """,
+                (session_id, after_created_at, after_id, limit),
+            )
+            return [DialogueLog.model_validate(r) for r in cur.fetchall()]
+
+    def count_dialogues(self, session_id: str, unprocessed_only: bool = False) -> int:
+        """统计会话日志条数（拆批批号 x/y 计算用）。"""
+        with self._cursor() as cur:
+            sql = (
+                "SELECT COUNT(*) AS n FROM dialogue_logs "
+                "WHERE session_id = %s AND processed_for_attribution = %s"
+            )
+            cur.execute(sql, (session_id, not unprocessed_only))
+            return cur.fetchone()["n"]
+
     def mark_dialogue_processed(self, dialogue_id: int) -> None:
         with self._cursor(commit=True) as cur:
             cur.execute(
@@ -533,15 +570,17 @@ class PostgresStore:
             row = cur.fetchone()
             return row["attribution_attempts"] if row else 0
 
-    def mark_session_dialogues_processed(self, session_id: str) -> int:
-        """把会话全部未处理日志置为已处理（死信落葬），返回标记条数。"""
+    def mark_dialogues_processed(self, dialogue_ids: list[int]) -> int:
+        """把指定日志置为已处理（死信分片级落葬），返回标记条数。"""
+        if not dialogue_ids:
+            return 0
         with self._cursor(commit=True) as cur:
             cur.execute(
                 """
                 UPDATE dialogue_logs SET processed_for_attribution = TRUE
-                WHERE session_id = %s AND processed_for_attribution = FALSE
+                WHERE id = ANY(%s) AND processed_for_attribution = FALSE
                 """,
-                (session_id,),
+                (dialogue_ids,),
             )
             return cur.rowcount
 

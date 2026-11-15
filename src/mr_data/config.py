@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # 离线任务参数
     offline_batch_size: int = 50
     offline_max_session_logs: int = 100
+    # 离线归因拆批的批间上文回顾行数（约一轮对话，借鉴 chunk overlap 语义）：
+    # 上文行仅供 LLM 理解上下文，不参与归因计数、不可作 target，0 = 关闭
+    offline_attribution_batch_overlap_lines: int = 2
     # 单会话归因失败重试上限：达到后该会话未处理日志置为已处理（死信），
     # 记 offline.session_dead_lettered，不再无限重试
     offline_max_attribution_attempts: int = 3

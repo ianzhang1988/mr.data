@@ -6,6 +6,7 @@ from typing import Optional
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from mr_data.config import settings
 from mr_data.db.pgembed_manager import PgEmbedManager
@@ -150,6 +151,26 @@ CREATE TABLE IF NOT EXISTS user_identities (
 CREATE INDEX IF NOT EXISTS idx_user_identities_default ON user_identities(is_default);
 """
 
+_POOLS: dict[str, ConnectionPool] = {}
+
+
+def _get_pool(dsn: str) -> ConnectionPool:
+    """按 dsn 进程级共享连接池（测试中大量临时 PostgresStore 实例从不 close，
+    共享池避免每实例一条 min_size 连接累积撑爆 pgembed）。"""
+    pool = _POOLS.get(dsn)
+    if pool is None:
+        pool = ConnectionPool(
+            conninfo=dsn,
+            min_size=1,
+            max_size=8,
+            kwargs={"row_factory": dict_row},
+            open=False,
+        )
+        pool.open()
+        _POOLS[dsn] = pool
+    return pool
+
+
 class PostgresStore:
     def __init__(self, dsn: Optional[str] = None):
         if dsn:
@@ -173,17 +194,16 @@ class PostgresStore:
         """会话级事务：事务态下 _cursor 复用同一连接并抑制逐方法 commit。"""
         if self._tx_conn is not None:
             raise RuntimeError("PostgresStore: nested transactions are not supported")
-        conn = psycopg.connect(self.dsn, row_factory=dict_row)
-        self._tx_conn = conn
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-            self._tx_conn = None
+        with _get_pool(self.dsn).connection() as conn:
+            self._tx_conn = conn
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                self._tx_conn = None
 
     @contextmanager
     def _cursor(self, *, commit: bool = False):
@@ -191,14 +211,11 @@ class PostgresStore:
             with self._tx_conn.cursor() as cur:
                 yield cur
             return
-        conn = psycopg.connect(self.dsn, row_factory=dict_row)
-        try:
+        with _get_pool(self.dsn).connection() as conn:
             with conn.cursor() as cur:
                 yield cur
             if commit:
                 conn.commit()
-        finally:
-            conn.close()
 
     def init_schema(self) -> None:
         with self._cursor(commit=True) as cur:

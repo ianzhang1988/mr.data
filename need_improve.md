@@ -12,7 +12,12 @@
 
 # 待改进
 
-（暂无）
+1.  改进：vector_refs 补全 memory_docs 登记
+
+  • 问题：dialogue_vector_refs 现状只登记 personality_docs + 本轮新沉淀 web 片；retrieve_memories 召回的 memory_docs（dialogue 段 + 旧 web 片）零登记。
+  • 建议实现：
+    1. graph.py::_log_dialogue 组装 vector_refs 时纳入 state["memory_docs"]；
+    2. dialogue 段：DialogueVectorRefSourceType 扩 "dialogue" 值域，同步 database-design「素材来源类型约定」表（本表将出现 dialogue），排查下游按 source_type 分支的消费者；
 
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-83 已迁移归档）

@@ -62,7 +62,7 @@
 | 术语 | 定义 | 权威细节 |
 |---|---|---|
 | 两个向量库 | Chroma `personality`（人格素材）与 `memories`（记忆素材）两个集合；PG 是关系侧（日志/维度/引用） | memory-and-retrieval.md#1/#6 |
-| vector_refs | PG `dialogue_vector_refs` 表：assistant 日志 → 向量素材文档的引用登记（实际只有 evidence/web 两类有行） | memory-and-retrieval.md#6 |
+| vector_refs | PG `dialogue_vector_refs` 表：assistant 日志 → 向量素材的引用登记（历史快照语义——行不随向量删除而清理，D-88；实际只有 evidence/web 两类有行） | memory-and-retrieval.md#6；decisions.md D-88 |
 | 幂等（稳定 id 派生） | 所有向量文档 id 由内容/外键确定性哈希派生，重放写入时「已存在则跳过」 | memory-and-retrieval.md#2 |
 | 两段式写入 | 跨库一致性折中：PG 事务先提交，Chroma 副作用在提交后逐条 flush（Chroma 失败不回滚 PG） | offline-attribution.md#6；decisions.md D-81 |
 | 单写者 | 离线归因同一时刻仅一个 run 在写：进程内锁 + PG advisory lock 双护栏 | offline-attribution.md#1 |

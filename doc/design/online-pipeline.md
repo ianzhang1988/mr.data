@@ -112,7 +112,7 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 - 回复按块（block）组织，每块携带引用列表（id + source_type + 一句话总结）。
 - **known_refs 对账**：assemble 时建立「本轮素材清单」——web 键 = `metadata.url`（空 url 不注册，防空键让任意空 id 命中），personality/memory 键 = doc.id → 值 = 系统侧 source_type。LLM 回传的引用 id 必须命中清单，否则丢弃。
 - **source_type 以系统为准**：命中清单的引用，source_type 用清单值覆盖 LLM 填值；未命中的引用被丢弃，故 LLM 的 source_type 实际进不了结果——`ReplyReference.source_type` 保持自由 str 是有意（强校验会让小模型的不规范输出炸掉整个回复解析）。
-- 追溯链：assistant 日志的 metadata.blocks 落库；`dialogue_vector_refs` 每 web 片一行登记（改进 76）。**已知语义错位（现状≠设计）**：vector_refs 记录的是「检索到的全部素材」而非「实际被引用的」，memory_docs 缺席该表。
+- 追溯链：assistant 日志的 metadata.blocks 落库；`dialogue_vector_refs` 按素材登记——web 每片一行、人格按 doc、memory_docs 按段/片（契约见 [memory-and-retrieval.md](memory-and-retrieval.md#6)）。登记的是「实际检索到」的审计链，非「实际被引用」。（实现注释：memory_docs 登记待补，见该节注释）
 
 ## 6. web 子管道
 

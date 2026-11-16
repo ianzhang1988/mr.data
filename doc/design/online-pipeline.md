@@ -24,7 +24,7 @@ flowchart LR
     C -->|否则| D[retrieve_personality] --> E[retrieve_memories] --> G[filter_memory_docs] --> H[assemble_and_generate] --> I[log_dialogue]
 ```
 
-状态更新语义是**普通 overwrite**（无 reducer）：节点返回 `{**state, ...}`，后写覆盖先写。图为线性无并行，overwrite 足够；曾经有过的 reducer 因与覆盖语义冲突被删除。
+状态更新语义是**普通 overwrite**（无 reducer）：节点返回 `{**state, ...}`，后写覆盖先写。图为线性无并行，overwrite 足够。
 
 ## 2. 节点职责卡
 
@@ -120,7 +120,7 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 
 1. **搜索**：7 家 provider（DuckDuckGo/SearXNG/Brave/Bing/Google CSE/百度/360）按 `web_search_providers` 配置顺序调用，失败或无结果自动降级下一家；各家返回键差异归一化为 WebDoc。
 2. **正文提取**（PageExtractor）：requests 单次抓取（跟随重定向，最终 URL 即真实 URL）→ trafilatura 主解析 → BeautifulSoup 兜底；无 charset 头站点用 apparent_encoding 修正防中文乱码；超 `web_extract_max_length`（100,000 字符归档级上限，Tika 100K / Claude Code 100KB 锚点）截断——截尾附省略标记并记 `web.extract_truncated`。成功后 `metadata.url` 换真实 URL、原链接留 `source_url`，并填 `WebDoc.original_content` 纯抽取正文（记忆入库/分片哈希基准，不含 title）——重定向链接（百度/360 跳转）由此归一。提取失败保留原 snippet 文档。
-3. **相关性过滤**（`filter_web_docs`，开关 `enable_web_doc_extraction` 默认开）：逐文档 LLM 判断——相关则摘取相关内容替换正文（`llm_extracted=True`），不相关丢弃；整份 filter prompt（system+user_input+page_content）受 `web_filter_max_tokens`（32K）总预算约束，超额时**纯头部**截「发给 LLM 的副本」（源 doc 不动）并记 `web.filter_prompt_truncated`，取代旧「超长 → API 报错 → 保留原文」错误驱动兜底；单文档失败保留原文，全过滤为空保留全部。
+3. **相关性过滤**（`filter_web_docs`，开关 `enable_web_doc_extraction` 默认开）：逐文档 LLM 判断——相关则摘取相关内容替换正文（`llm_extracted=True`），不相关丢弃；整份 filter prompt（system+user_input+page_content）受 `web_filter_max_tokens`（32K）总预算约束，超额时**纯头部**截「发给 LLM 的副本」（源 doc 不动）并记 `web.filter_prompt_truncated`；单文档失败保留原文，全过滤为空保留全部。
 4. **沉淀**：见 [memory-and-retrieval.md](memory-and-retrieval.md#2)——400 字/片、URL+原文哈希 id（`original_content or page_content`）、add_memory 幂等、逐片失败隔离；prompt 用摘取版、入库用原文双轨（同页不同问法不再产生重复分片）。
 
 ## 7. 降级链总表

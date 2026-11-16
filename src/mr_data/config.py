@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     # 性格维度淘汰参数：总样本量达到 failure_min_samples 后，
     # 若失败比率 failure_count/(success_count+failure_count) 超过该阈值则停用维度。
     failure_min_samples: int = 10
-    failure_ratio_threshold: float = 0.33
+    failure_ratio_threshold: float = 0.6
 
     # 网页正文提取与相关性过滤配置
     web_extract_max_pages: int = 2

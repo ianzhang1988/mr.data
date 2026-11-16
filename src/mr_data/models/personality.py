@@ -11,7 +11,7 @@ logger = get_logger("mr_data.models.personality")
 PersonalitySourceType = Literal["line", "event", "evidence"]
 MemorySourceType = Literal["web", "dialogue"]
 SourceType = Literal["line", "event", "evidence", "web", "dialogue"]
-DialogueVectorRefSourceType = Literal["line", "event", "evidence", "web"]
+DialogueVectorRefSourceType = Literal["line", "event", "evidence", "web", "dialogue"]
 
 
 class ThinkDecision(BaseModel):

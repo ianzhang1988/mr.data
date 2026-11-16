@@ -10,11 +10,15 @@
 import pytest
 
 from mr_data.db import PostgresStore
+from mr_data.db.chroma import web_chunk_base_id
 from mr_data.models import (
+    DialogueMemoryMetadata,
+    MemoryDoc,
     PersonalityDoc,
     PersonalityDocMetadata,
     WebDoc,
     WebDocMetadata,
+    WebMemoryMetadata,
 )
 from mr_data.online import DialogueGraph
 
@@ -146,6 +150,70 @@ def test_log_dialogue_commits_all_rows(
         "SELECT COUNT(*) AS c FROM dialogue_vector_refs WHERE dialogue_log_id = %s",
         (assistant_log_id,),
     ) == 2
+
+
+def test_log_dialogue_registers_memory_docs(
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+):
+    """改进 88：进入 prompt 的 memory_docs（filter 之后的集合）登记进
+    dialogue_vector_refs——dialogue 段按段、web 旧片按片，dimension_ids 恒空。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+    state = _build_state(pg, test_session_id)
+    memory_docs = [
+        MemoryDoc(
+            id="memory:dlg-1",
+            page_content="旧会话记忆段",
+            metadata=DialogueMemoryMetadata(session_id="s-old", chunk_index=0),
+        ),
+        MemoryDoc(
+            id="memory:web-1:c0",
+            page_content="旧 web 记忆片",
+            metadata=WebMemoryMetadata(
+                url="http://example.com/old", title="旧资料"),
+        ),
+    ]
+    state["memory_docs"] = memory_docs
+
+    result = graph._log_dialogue(state)
+    assistant_log_id = result["assistant_log_id"]
+    assert assistant_log_id is not None
+
+    with pg._cursor() as cur:
+        cur.execute(
+            """
+            SELECT vector_doc_id, source_type, dimension_ids
+            FROM dialogue_vector_refs
+            WHERE dialogue_log_id = %s
+            ORDER BY id
+            """,
+            (assistant_log_id,),
+        )
+        rows = cur.fetchall()
+
+    # 人格 1 + 本轮 web 片 1 + memory_docs 2 = 4 行；登记集合与 state 完全一致。
+    assert [(r["vector_doc_id"], r["source_type"]) for r in rows] == [
+        ("personality:tx-1", "line"),
+        ("memory:dlg-1", "dialogue"),
+        ("memory:web-1:c0", "web"),
+        (f"{web_chunk_base_id('http://example.com/tx', '网络资料内容')}:c0", "web"),
+    ]
+    # memory refs 的 dimension_ids 落库 NULL（恒空，不参与维度 purge）。
+    assert rows[1]["dimension_ids"] is None
+    assert rows[2]["dimension_ids"] is None
 
 
 def test_web_memory_write_failure_does_not_abort_turn(

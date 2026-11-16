@@ -20,13 +20,18 @@ def test_personality_event_accepts_personality_source_types():
         assert event.source_type == source_type
 
 
-def test_dialogue_vector_ref_rejects_dialogue_source_type():
-    # dialogue 分块记忆不回写 dialogue_vector_refs
-    with pytest.raises(ValidationError):
-        DialogueVectorRef(
-            dialogue_log_id=1, vector_doc_id="d1",
-            source_type="dialogue", content="x",
-        )
+def test_dialogue_vector_ref_accepts_dialogue_source_type():
+    # 改进 88：在线管道把进入 prompt 的 memory_docs（dialogue 段/旧 web 片）
+    # 登记进 dialogue_vector_refs，dialogue 成为本表合法值。
+    ref = DialogueVectorRef(
+        dialogue_log_id=1, vector_doc_id="d1",
+        source_type="dialogue", content="x",
+    )
+    assert ref.source_type == "dialogue"
+
+
+def test_dialogue_vector_ref_rejects_unknown_source_type():
+    # 非五值之外的来源类型仍被拒绝（如集合名误用）
     with pytest.raises(ValidationError):
         DialogueVectorRef(
             dialogue_log_id=1, vector_doc_id="d1",
@@ -35,7 +40,7 @@ def test_dialogue_vector_ref_rejects_dialogue_source_type():
 
 
 def test_dialogue_vector_ref_accepts_ref_source_types():
-    for source_type in ("line", "event", "evidence", "web"):
+    for source_type in ("line", "event", "evidence", "web", "dialogue"):
         ref = DialogueVectorRef(
             dialogue_log_id=1, vector_doc_id="d1",
             source_type=source_type, content="x",

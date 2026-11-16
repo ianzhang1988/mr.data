@@ -837,6 +837,7 @@ class DialogueGraph:
         reply = state["reply"]
         dimensions = state.get("dimensions", [])
         personality_docs = state.get("personality_docs", [])
+        memory_docs = state.get("memory_docs", [])
         web_docs = state.get("web_docs", [])
         inner_monologue = state.get("inner_monologue")
 
@@ -869,7 +870,10 @@ class DialogueGraph:
             self.pg.insert_dialogue_dimension_refs(
                 assistant_log_id, [dim.id for dim in dimensions if dim.id in selected_ids])
 
-            # 记录检索到的向量素材（人格素材 + 网络资料）
+            # 记录检索到的向量素材（人格素材 + 进入 prompt 的记忆素材 + 网络资料）。
+            # memory_docs 在 filter_memory_docs 之后到达本节点，即实际进入 prompt、
+            # 被相关性过滤掉的素材不登记；其 dimension_ids 恒空（记忆无维度归属），
+            # 落库 NULL，天然不参与离线归因的维度 purge。
             vector_refs = [
                 DialogueVectorRef(
                     dialogue_log_id=assistant_log_id,
@@ -880,17 +884,35 @@ class DialogueGraph:
                 )
                 for doc in personality_docs
             ]
-            for doc in web_docs:
-                vector_refs += [
+            seen_ref_ids = {ref.vector_doc_id for ref in vector_refs}
+            for doc in memory_docs:
+                if doc.id in seen_ref_ids:
+                    # 旧 web 片被召回为记忆、同页又重抓且正文未变时分片 id 相同，跳过重复登记。
+                    continue
+                seen_ref_ids.add(doc.id)
+                vector_refs.append(
                     DialogueVectorRef(
                         dialogue_log_id=assistant_log_id,
-                        vector_doc_id=chunk_id,
-                        source_type="web",
-                        content=chunk,
+                        vector_doc_id=doc.id,
+                        source_type=doc.metadata.source_type,
+                        content=doc.page_content,
                         dimension_ids=[],
                     )
-                    for chunk_id, chunk in _web_memory_chunks(doc)
-                ]
+                )
+            for doc in web_docs:
+                for chunk_id, chunk in _web_memory_chunks(doc):
+                    if chunk_id in seen_ref_ids:
+                        continue
+                    seen_ref_ids.add(chunk_id)
+                    vector_refs.append(
+                        DialogueVectorRef(
+                            dialogue_log_id=assistant_log_id,
+                            vector_doc_id=chunk_id,
+                            source_type="web",
+                            content=chunk,
+                            dimension_ids=[],
+                        )
+                    )
             self.pg.insert_dialogue_vector_refs(assistant_log_id, vector_refs)
 
         # 把网络资料作为世界知识分片写入记忆向量库（PG 事务外，逐片失败隔离）。
@@ -936,6 +958,7 @@ class DialogueGraph:
                     "assistant_log_id": assistant_log_id,
                     "inner_monologue": inner_monologue,
                     "personality_doc_count": len(personality_docs),
+                    "memory_doc_count": len(memory_docs),
                     "web_doc_count": len(web_docs),
                     "block_count": len(state.get("reply_blocks", [])),
                     "reference_count": sum(

@@ -85,7 +85,17 @@ def test_dialogue_log_legacy_metadata_with_top_level_references(pg_available, re
     assert found.metadata.blocks == []
 
 
-def test_personality_doc_metadata_chroma_roundtrip():
+@pytest.mark.parametrize("full", [True, False], ids=["roundtrip", "defaults"])
+def test_personality_doc_metadata_chroma_roundtrip(full):
+    if not full:
+        # 缺失字段走默认值兜底
+        parsed = PersonalityDocMetadata.from_chroma_metadata({"utterance": "只有台词"})
+        assert parsed.dimension_ids == []
+        assert parsed.speaker == "assistant"
+        assert parsed.source_type == "line"
+        assert parsed.source_id == ""
+        assert parsed.to_chroma_metadata()["dimension_ids"] == ""
+        return
     original = PersonalityDocMetadata(
         utterance="我对此充满好奇。",
         context="多轮上下文",
@@ -101,15 +111,6 @@ def test_personality_doc_metadata_chroma_roundtrip():
 
     parsed = PersonalityDocMetadata.from_chroma_metadata(meta)
     assert parsed == original
-
-
-def test_personality_doc_metadata_from_chroma_defaults():
-    parsed = PersonalityDocMetadata.from_chroma_metadata({"utterance": "只有台词"})
-    assert parsed.dimension_ids == []
-    assert parsed.speaker == "assistant"
-    assert parsed.source_type == "line"
-    assert parsed.source_id == ""
-    assert parsed.to_chroma_metadata()["dimension_ids"] == ""
 
 
 def test_add_memory_dialogue_metadata_key_set(chroma_store):

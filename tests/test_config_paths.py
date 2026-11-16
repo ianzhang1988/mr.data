@@ -77,22 +77,14 @@ def test_explicit_relative_value_preserved(clean_path_env):
     assert s.log_dir == "./mylogs"
 
 
-def test_chunk_chars_must_not_exceed_embedding_max_tokens(clean_path_env):
-    """分段字符预算 > 嵌入截断上限时启动即拒绝（校验信息即文档）。"""
+@pytest.mark.parametrize("chunk_field", ["memory_dialogue_chunk_chars", "memory_web_chunk_chars"])
+def test_chunk_chars_must_not_exceed_embedding_max_tokens(clean_path_env, chunk_field):
+    """分段/web 分段字符预算 > 嵌入截断上限时启动即拒绝（校验信息即文档）。"""
     clean_path_env.delenv("MR_DATA_MEMORY_DIALOGUE_CHUNK_CHARS", raising=False)
-    clean_path_env.delenv("MR_DATA_EMBEDDING_MAX_TOKENS", raising=False)
-    with pytest.raises(ValueError, match="embedding_max_tokens"):
-        Settings(_env_file=None, memory_dialogue_chunk_chars=600,
-                 embedding_max_tokens=512)
-
-
-def test_web_chunk_chars_must_not_exceed_embedding_max_tokens(clean_path_env):
-    """web 分段字符预算 > 嵌入截断上限时启动即拒绝（校验信息即文档）。"""
     clean_path_env.delenv("MR_DATA_MEMORY_WEB_CHUNK_CHARS", raising=False)
     clean_path_env.delenv("MR_DATA_EMBEDDING_MAX_TOKENS", raising=False)
     with pytest.raises(ValueError, match="embedding_max_tokens"):
-        Settings(_env_file=None, memory_web_chunk_chars=600,
-                 embedding_max_tokens=512)
+        Settings(_env_file=None, embedding_max_tokens=512, **{chunk_field: 600})
 
 
 def test_chunk_chars_default_within_embedding_limit(clean_path_env):

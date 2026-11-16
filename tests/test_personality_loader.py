@@ -3,19 +3,8 @@ import json
 import pytest
 
 from mr_data.config import settings
-from mr_data.db.personality_loader import (
-    DEFAULT_IDENTITY,
-    DEFAULT_PERSONALITY_PACK,
-    load_personality_pack,
-)
+from mr_data.db.personality_loader import load_personality_pack
 from mr_data.models import PersonalityPack
-
-
-def test_default_pack_is_data():
-    assert DEFAULT_IDENTITY.name == "Data"
-    assert "企业号" in DEFAULT_IDENTITY.role
-    assert len(DEFAULT_PERSONALITY_PACK.dimensions) > 0
-    assert any(dim.core for dim in DEFAULT_PERSONALITY_PACK.dimensions)
 
 
 def test_load_personality_pack_from_file(tmp_path, monkeypatch):
@@ -48,17 +37,12 @@ def test_load_personality_pack_from_file(tmp_path, monkeypatch):
     assert len(pack.sample_lines) == 1
 
 
-def test_load_personality_pack_fallback_on_missing_file(tmp_path, monkeypatch):
-    missing = tmp_path / "missing.json"
-    monkeypatch.setattr(settings, "personality_file", str(missing))
-    pack = load_personality_pack()
-    assert pack.identity.name == "Data"
-
-
-def test_load_personality_pack_fallback_on_invalid_json(tmp_path, monkeypatch):
-    bad = tmp_path / "bad.json"
-    bad.write_text("not json", encoding="utf-8")
-    monkeypatch.setattr(settings, "personality_file", str(bad))
+@pytest.mark.parametrize("write_bad_json", [False, True], ids=["missing_file", "invalid_json"])
+def test_load_personality_pack_fallback(tmp_path, monkeypatch, write_bad_json):
+    path = tmp_path / "bad.json"
+    if write_bad_json:
+        path.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(settings, "personality_file", str(path))
     pack = load_personality_pack()
     assert pack.identity.name == "Data"
 

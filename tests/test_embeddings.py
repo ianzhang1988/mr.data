@@ -64,65 +64,45 @@ class _RecordingEmbedding:
         return self._dim
 
 
-def test_personality_document_no_prefix_on_add():
+@pytest.mark.parametrize("kind", [
+    "personality_document", "personality_query", "memory_query", "memory_document",
+])
+def test_embeddings_no_prefix_on_add_and_query(kind):
+    """Jina v2 requires no prefix: 原始文本原样进嵌入，集合间互不串前缀。"""
     recorder = _RecordingEmbedding(dim=8)
+    other = _RecordingEmbedding(dim=8)
+    is_personality = kind.startswith("personality")
     store = ChromaStore(
         ephemeral=True,
-        personality_embedding_fn=recorder,
-        memory_embedding_fn=_RecordingEmbedding(dim=8),
+        personality_embedding_fn=recorder if is_personality else other,
+        memory_embedding_fn=recorder if not is_personality else other,
     )
-    event = PersonalityEvent(
-        content="测试台词",
-        context="测试场景",
-        dimension_ids=[1],
-        source_type="line",
-    )
-    doc_id = store.add_personality_event(event)
-    # Jina v2 requires no document prefix: the raw context is embedded and stored.
-    assert recorder.recorded == ["测试场景"]
-    assert store.personality.get(ids=[doc_id])["documents"] == ["测试场景"]
-
-
-def test_personality_query_no_prefix():
-    recorder = _RecordingEmbedding(dim=8)
-    store = ChromaStore(
-        ephemeral=True,
-        personality_embedding_fn=recorder,
-        memory_embedding_fn=_RecordingEmbedding(dim=8),
-    )
-    # Seed a doc so the query has something to retrieve.
-    store.add_personality_event(
-        PersonalityEvent(content="测试台词", dimension_ids=[1], source_type="line")
-    )
-    recorder.recorded.clear()
-
-    store.query_personality("测试查询")
-    assert recorder.recorded == ["测试查询"]
-
-
-def test_memory_query_no_prefix():
-    recorder = _RecordingEmbedding(dim=8)
-    store = ChromaStore(
-        ephemeral=True,
-        personality_embedding_fn=_RecordingEmbedding(dim=8),
-        memory_embedding_fn=recorder,
-    )
-    store.add_memory("s1", "用户：你好")
-    recorder.recorded.clear()
-
-    store.query_memories("你好", session_id="s1")
-    assert recorder.recorded == ["你好"]
-
-
-def test_memory_documents_no_prefix():
-    recorder = _RecordingEmbedding(dim=8)
-    store = ChromaStore(
-        ephemeral=True,
-        personality_embedding_fn=_RecordingEmbedding(dim=8),
-        memory_embedding_fn=recorder,
-    )
-    store.add_memory("s1", "用户：你好")
-    assert recorder.recorded == ["用户：你好"]
+    if kind == "personality_document":
+        event = PersonalityEvent(
+            content="测试台词",
+            context="测试场景",
+            dimension_ids=[1],
+            source_type="line",
+        )
+        doc_id = store.add_personality_event(event)
+        assert recorder.recorded == ["测试场景"]
+        assert store.personality.get(ids=[doc_id])["documents"] == ["测试场景"]
+    elif kind == "personality_query":
+        # Seed a doc so the query has something to retrieve.
+        store.add_personality_event(
+            PersonalityEvent(content="测试台词", dimension_ids=[1], source_type="line")
+        )
+        recorder.recorded.clear()
+        store.query_personality("测试查询")
+        assert recorder.recorded == ["测试查询"]
+    elif kind == "memory_query":
+        store.add_memory("s1", "用户：你好")
+        recorder.recorded.clear()
+        store.query_memories("你好", session_id="s1")
+        assert recorder.recorded == ["你好"]
+    else:  # memory_document
+        store.add_memory("s1", "用户：你好")
+        assert recorder.recorded == ["用户：你好"]
 
 
 @pytest.mark.slow

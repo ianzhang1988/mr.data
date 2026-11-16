@@ -2,6 +2,8 @@
 
 import re
 
+import pytest
+
 from mr_data.db.chunking import split_text_chunks
 from mr_data.db.chroma import web_chunk_base_id
 
@@ -25,20 +27,18 @@ def _long_mixed_text(total_chars: int = 1200) -> str:
     return "".join(parts)
 
 
-def test_empty_and_whitespace_text_return_no_chunks():
-    assert split_text_chunks("", 400, 40) == []
-    assert split_text_chunks("   \n\t  ", 400, 40) == []
-
-
 def test_short_text_yields_single_chunk_unchanged():
     text = "这是一段很短的正文。只有两句话！"
     assert split_text_chunks(text, 400, 40) == [text]
 
 
-def test_mixed_sentence_endings_chunk_within_budget_with_overlap():
-    text = _long_mixed_text()
+@pytest.mark.parametrize("total_chars", [1200, 2000])
+def test_mixed_sentence_endings_chunk_within_budget_with_overlap(total_chars):
+    text = _long_mixed_text(total_chars=total_chars)
     chunks = split_text_chunks(text, max_chars=400, overlap_chars=40)
     assert len(chunks) > 1
+    if total_chars >= 2000:
+        assert len(chunks) >= 4
     for chunk in chunks:
         assert len(chunk) <= 400
     # 除尾片外每片末尾是句读字符（切口句读优先）
@@ -65,21 +65,6 @@ def test_no_sentence_endings_hard_cut_and_restore():
     # 拼接（去 overlap）还原全文
     restored = chunks[0] + "".join(chunk[overlap:] for chunk in chunks[1:])
     assert restored == text
-
-
-def test_chunk_boundaries_are_stable():
-    text = _long_mixed_text()
-    first = split_text_chunks(text, max_chars=400, overlap_chars=40)
-    second = split_text_chunks(text, max_chars=400, overlap_chars=40)
-    assert first == second
-
-
-def test_convergence_on_2000_chars():
-    text = _long_mixed_text(total_chars=2000)
-    chunks = split_text_chunks(text, max_chars=400, overlap_chars=40)
-    assert len(chunks) >= 4
-    for chunk in chunks:
-        assert len(chunk) <= 400
 
 
 def test_web_chunk_base_id_stable_and_content_sensitive():

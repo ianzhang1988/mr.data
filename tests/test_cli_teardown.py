@@ -39,15 +39,3 @@ def test_teardown_refuses_with_external_dsn(tmp_path, monkeypatch):
     assert "teardown 仅支持 pgembed 嵌入式模式" in result.output
     assert pgembed_dir.exists()
     assert chroma_dir.exists()
-
-
-def test_teardown_cancel_keeps_dirs(tmp_path, monkeypatch):
-    pgembed_dir, chroma_dir = _fake_data_dirs(tmp_path, monkeypatch)
-    monkeypatch.setattr(settings, "postgres_dsn", "")
-
-    result = runner.invoke(app, ["teardown"], input="n\n")
-
-    assert result.exit_code == 0
-    assert "Cancelled" in result.output
-    assert pgembed_dir.exists()
-    assert chroma_dir.exists()

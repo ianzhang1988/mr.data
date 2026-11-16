@@ -2,7 +2,6 @@ import uuid
 
 import pytest
 
-from mr_data.db import PostgresStore
 from mr_data.llm import LLMClient
 from mr_data.online import DialogueGraph
 
@@ -54,14 +53,7 @@ def recording_fake_llm():
     return RecordingFakeLLM()
 
 
-def test_seed_user_identities(pg_available):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
+def test_seed_user_identities(pg):
 
     identities = pg.list_user_identities()
     assert len(identities) >= 2
@@ -80,27 +72,13 @@ def test_seed_user_identities(pg_available):
     assert normal.is_default is False
 
 
-def test_protected_identity_cannot_be_deleted(pg_available):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
+def test_protected_identity_cannot_be_deleted(pg):
 
     with pytest.raises(ValueError):
         pg.delete_user_identity("Picard")
 
 
-def test_user_identity_crud(pg_available):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
+def test_user_identity_crud(pg):
 
     unique_name = f"test-user-{uuid.uuid4().hex[:8]}"
     identity_id = pg.insert_user_identity(
@@ -132,15 +110,8 @@ def test_user_identity_crud(pg_available):
 
 
 def test_user_identity_in_system_prompt(
-    pg_available, chroma_store, recording_fake_llm, test_session_id
+    pg, chroma_store, recording_fake_llm, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.set_default_user_identity("Picard")
     pg.create_session(test_session_id)
 
@@ -159,14 +130,7 @@ def test_user_identity_in_system_prompt(
     assert "Enterprise-D" in system
 
 
-def test_chat_help_output(pg_available, capsys):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
+def test_chat_help_output(pg, capsys):
 
     from mr_data.cli import _print_chat_help
 

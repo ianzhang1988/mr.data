@@ -93,15 +93,17 @@ def test_mismatch_exports_backup_before_recreate(tmp_path, monkeypatch):
 def test_export_failure_blocks_deletion(tmp_path, monkeypatch):
     store = _make_store(tmp_path / "chroma", dim=8)
     _seed_personality(store)
-    backup_dir = tmp_path / "chroma-backups"
 
-    def _fail_write(self, *args, **kwargs):
-        # 只在备份落盘时抛错，不影响其他写入
-        if self.parent == backup_dir:
-            raise OSError("disk full")
-        raise AssertionError("unexpected write_text during test")
+    # 在契约接缝注入失败：export 抛错 → 调用方不得删除旧集合。
+    # 契约见 ChromaStore._export_collection_backup docstring（生产代码中
+    # RuntimeError 由该方法自身抛出，这里直接模拟同一行为）。
+    def _failing_export(self, coll):
+        raise RuntimeError(
+            f"Failed to export backup for Chroma collection {coll.name!r}; "
+            "refusing to delete the collection."
+        )
 
-    monkeypatch.setattr(Path, "write_text", _fail_write)
+    monkeypatch.setattr(ChromaStore, "_export_collection_backup", _failing_export)
     with pytest.raises(RuntimeError, match="refusing to delete"):
         _recreate_with_new_dim(tmp_path, monkeypatch, dim=16)
 

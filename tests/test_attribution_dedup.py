@@ -173,9 +173,10 @@ def test_dedup_skipped_when_disabled(
     assert len(pg.list_dimensions()) == SEEDED_DIMENSIONS + 1
 
 
-def test_deltas_truncated_to_max_per_session(
-    pg_available, chroma_store, temp_log_dir, test_session_id
+def test_deltas_truncation_logs_event(
+    pg_available, chroma_store, temp_log_dir, test_session_id, caplog, monkeypatch
 ):
+    """deltas 超限时仅前 N 条落库（先去重后截断），截断丢弃记录 offline.deltas_truncated（截断调查改进项 A1）。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -183,35 +184,6 @@ def test_deltas_truncated_to_max_per_session(
     pg = PostgresStore()
     logs = _setup_session(pg, test_session_id)
     before = pg.get_dimension(1)
-    deltas = [
-        {
-            "dimension_id": 1,
-            "delta_success": 1,
-            "delta_failure": 0,
-            "reason": f"第 {i} 条归因",
-        }
-        for i in range(settings.offline_max_deltas_per_session + 1)
-    ]
-    llm = DedupFakeLLM(deltas=deltas)
-
-    result = _attribute_and_apply(pg, chroma_store, llm, test_session_id, logs)
-
-    assert len(result.deltas) == settings.offline_max_deltas_per_session
-    assert llm.dedup_calls == 0  # 全部挂既有维度，无候选需要去重
-    after = pg.get_dimension(1)
-    assert after.success_count == before.success_count + settings.offline_max_deltas_per_session
-
-
-def test_deltas_truncation_logs_event(
-    pg_available, chroma_store, temp_log_dir, test_session_id, caplog, monkeypatch
-):
-    """截断丢弃的 delta 记录 offline.deltas_truncated（截断调查改进项 A1）。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    logs = _setup_session(pg, test_session_id)
     deltas = [
         {
             "dimension_id": 1,
@@ -231,6 +203,9 @@ def test_deltas_truncation_logs_event(
     engine._apply(result, test_session_id, logs)
 
     assert len(result.deltas) == settings.offline_max_deltas_per_session
+    assert llm.dedup_calls == 0  # 全部挂既有维度，无候选需要去重
+    after = pg.get_dimension(1)
+    assert after.success_count == before.success_count + settings.offline_max_deltas_per_session
     truncated = capture_events(caplog, "offline.deltas_truncated")
     assert len(truncated) == 1
     details = truncated[0].details

@@ -130,14 +130,32 @@ def fake_embedding():
     return FakeEmbedding(dim=8)
 
 
-@pytest.fixture
-def chroma_store():
-    """In-memory ChromaStore with lightweight fake embeddings for tests."""
+@pytest.fixture(scope="session")
+def _chroma_base():
+    """进程级共享的 ChromaStore。chromadb EphemeralClient 本就是进程级单例
+    （src 注释自述 SharedSystemClient），但 __init__ 的 drop+create 两集合
+    每测试 ~0.39s；改为 session 级建一次、每测试只清空文档（实测 ~8ms）。
+    隔离语义不变：测试可见状态=文档+metadata，清空 == 重建；embedding 由
+    ChromaStore 显式传入（集合上绑定的 fn 无关），索引内部细节持久不影响。
+    注意：ephemeral 集合名（personality/memories）进程内共享，测试中自建
+    ChromaStore(ephemeral=True)（如 test_embeddings）会重建同名集合，
+    fixture 每次先清空，隔离仍成立。"""
     return ChromaStore(
         ephemeral=True,
         personality_embedding_fn=FakeEmbedding(dim=8),
         memory_embedding_fn=FakeEmbedding(dim=8),
     )
+
+
+@pytest.fixture
+def chroma_store(_chroma_base):
+    """共享 store 的清空视图：每测试删除两集合全部文档，等价于 fresh store。"""
+    for name in ("personality", "memories"):
+        col = _chroma_base._client.get_collection(name)
+        ids = col.get()["ids"]
+        if ids:
+            col.delete(ids=ids)
+    return _chroma_base
 
 
 @pytest.fixture(scope="session")
@@ -219,23 +237,59 @@ _PG_BUSINESS_TABLES = (
 )
 
 
+@pytest.fixture(scope="session")
+def _pg_schema_ready(pg_available):
+    """Session 级一次性建表。SCHEMA_SQL 全部 IF NOT EXISTS，幂等；
+    每测试重放 DDL 是纯浪费（~90ms × 百余测试）。PG 不可用时 skip，
+    与 reset_pg_state 原守卫等价。"""
+    pytest.importorskip("pgembed", reason="pgembed not installed")
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+    PostgresStore().init_schema()
+
+
 @pytest.fixture
-def reset_pg_state(pg_available):
+def reset_pg_state(_pg_schema_ready):
     """Reset the shared pgembed database to a clean seeded state before each test.
 
     PG tests share one session-scoped database; without this fixture mutations
     (dimension flags, user identities, unprocessed dialogues) leak across tests.
+    Schema creation is session-scoped (see _pg_schema_ready); here only data resets.
     """
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
     store = PostgresStore()
-    store.init_schema()  # ensure tables exist before truncating (fresh database)
     with store._cursor(commit=True) as cur:
         cur.execute(
             f"TRUNCATE {', '.join(_PG_BUSINESS_TABLES)} RESTART IDENTITY CASCADE"
         )
     store.seed()
+
+
+@pytest.fixture
+def pg(reset_pg_state):
+    """共享 pgembed 连接的 store；reset_pg_state 已保证逐测试 TRUNCATE+seed。"""
+    return PostgresStore()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cache_personality_pack_for_seed():
+    """seed() 每个测试都经 load_personality_pack 重读人格文件（~40ms）。
+    按解析路径缓存（wrapper 只作用于 postgres 模块内的引用；
+    personality_loader 的直接调用方与 cli 的引用不受影响，
+    且测试均不改变 settings.personality_file）。"""
+    from mr_data.db import postgres as _postgres
+
+    original = _postgres.load_personality_pack
+    cache: dict = {}
+
+    def cached(path=None):
+        key = path or settings.personality_file
+        if key not in cache:
+            cache[key] = original(path)
+        return cache[key]
+
+    _postgres.load_personality_pack = cached
+    yield
+    _postgres.load_personality_pack = original
 
 
 @pytest.fixture

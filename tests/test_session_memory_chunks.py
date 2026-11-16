@@ -1,5 +1,7 @@
 """chunk_dialogue_logs 分段逻辑的纯单元测试（不依赖 DB fixtures）。"""
 
+import pytest
+
 from mr_data.models import DialogueLog
 from mr_data.db.chunking import chunk_dialogue_logs
 
@@ -35,10 +37,11 @@ def test_short_session_single_chunk():
     assert chunk.last_dialogue_log_id == 4
 
 
-def test_long_session_multiple_chunks_with_overlap():
+@pytest.mark.parametrize("overlap_lines", [1, 0])
+def test_long_session_multiple_chunks_with_overlap(overlap_lines):
     # 每行 "user: "/"assistant: " + 40 字符内容，max_chars=100 时每段最多覆盖 2 行
     logs = _make_logs(["x" * 40] * 6)
-    chunks = chunk_dialogue_logs(logs, max_chars=100, overlap_lines=1)
+    chunks = chunk_dialogue_logs(logs, max_chars=100, overlap_lines=overlap_lines)
 
     assert len(chunks) == 3
     assert [c.chunk_index for c in chunks] == [0, 1, 2]
@@ -48,35 +51,24 @@ def test_long_session_multiple_chunks_with_overlap():
     assert (chunks[1].first_dialogue_log_id, chunks[1].last_dialogue_log_id) == (3, 4)
     assert (chunks[2].first_dialogue_log_id, chunks[2].last_dialogue_log_id) == (5, 6)
 
-    # 相邻段之间存在 overlap 行（前一段末行 == 后一段首行）
+    # 相邻段之间的关系：overlap>=1 时前一段末行 == 后一段首行；overlap=0 时无重叠行
+    all_lines: list[str] = []
     for prev, nxt in zip(chunks, chunks[1:]):
         prev_lines = prev.content.split("\n")
         next_lines = nxt.content.split("\n")
-        # overlap 行也要贡献到 content
-        assert next_lines[0] == prev_lines[-1]
-        assert len(next_lines) >= 2
-
-
-def test_zero_overlap_lines():
-    logs = _make_logs(["x" * 40] * 6)
-    chunks = chunk_dialogue_logs(logs, max_chars=100, overlap_lines=0)
-
-    assert len(chunks) == 3
-    # 相邻段无重叠行，且拼接后行序与原会话一致
-    all_lines = []
-    for prev, nxt in zip(chunks, chunks[1:]):
-        prev_lines = prev.content.split("\n")
-        next_lines = nxt.content.split("\n")
-        assert next_lines[0] != prev_lines[-1]
+        if overlap_lines:
+            # overlap 行也要贡献到 content
+            assert next_lines[0] == prev_lines[-1]
+            assert len(next_lines) >= 2
+        else:
+            assert next_lines[0] != prev_lines[-1]
     for chunk in chunks:
         all_lines.extend(chunk.content.split("\n"))
-    assert all_lines == [f"{'user' if i % 2 == 0 else 'assistant'}: {'x' * 40}" for i in range(6)]
-    assert (chunks[0].first_dialogue_log_id, chunks[0].last_dialogue_log_id) == (1, 2)
-    assert (chunks[-1].first_dialogue_log_id, chunks[-1].last_dialogue_log_id) == (5, 6)
-
-
-def test_empty_logs():
-    assert chunk_dialogue_logs([], max_chars=100, overlap_lines=2) == []
+    if not overlap_lines:
+        # 无重叠时拼接后行序与原会话一致
+        assert all_lines == [
+            f"{'user' if i % 2 == 0 else 'assistant'}: {'x' * 40}" for i in range(6)
+        ]
 
 
 def test_overlong_single_line_split_at_sentence_boundary():

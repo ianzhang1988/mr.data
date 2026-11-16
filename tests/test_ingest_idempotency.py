@@ -8,10 +8,7 @@
 
 import pytest
 
-pytest.importorskip("pgembed", reason="pgembed not installed")
-
 from mr_data.cli import ingest
-from mr_data.db import PostgresStore
 from mr_data.models import (
     FixedIdentity,
     PersonalityPack,
@@ -22,12 +19,8 @@ pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 
 def test_ingest_is_idempotent_and_counts_skipped(
-    pg_available, chroma_store, temp_log_dir, monkeypatch, capsys
+    pg, chroma_store, temp_log_dir, monkeypatch, capsys
 ):
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
 
     pack = PersonalityPack(
         identity=FixedIdentity(name="Data", role="android", base_prompt="x"),

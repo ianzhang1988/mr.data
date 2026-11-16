@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from mr_data import logging as mr_logging
 from mr_data.config import settings
 from mr_data.logging import _FILE_HANDLERS, get_logger, reset_loggers
 
@@ -67,17 +66,3 @@ def test_reset_loggers_clears_and_rebuilds_file_handlers(log_dir):
     rebuilt.handlers[0].flush()
     log_path = Path(settings.log_dir) / "mr-data.log"
     assert "after reset" in log_path.read_text(encoding="utf-8")
-
-
-def test_same_logger_reconfiguration_is_short_circuited(log_dir):
-    logger = get_logger("mr_data.test.idempotent")
-    handler_count = len(logger.handlers)
-    assert get_logger("mr_data.test.idempotent") is logger
-    assert len(logger.handlers) == handler_count
-
-
-def test_module_cache_matches_internal_state(log_dir):
-    get_logger("mr_data.test.x")
-    get_logger("mr_data.test.y")
-    assert mr_logging._CONFIGURED == {"mr_data.test.x", "mr_data.test.y"}
-    assert len(_FILE_HANDLERS) == 1

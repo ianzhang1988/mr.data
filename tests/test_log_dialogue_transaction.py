@@ -65,15 +65,8 @@ def _count(pg: PostgresStore, sql: str, params: tuple = ()) -> int:
 
 
 def test_vector_refs_failure_rolls_back_dialogue_writes(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     graph = DialogueGraph(
@@ -106,15 +99,8 @@ def test_vector_refs_failure_rolls_back_dialogue_writes(
 
 
 def test_log_dialogue_commits_all_rows(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     graph = DialogueGraph(
@@ -153,17 +139,10 @@ def test_log_dialogue_commits_all_rows(
 
 
 def test_log_dialogue_registers_memory_docs(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id
 ):
     """改进 88：进入 prompt 的 memory_docs（filter 之后的集合）登记进
     dialogue_vector_refs——dialogue 段按段、web 旧片按片，dimension_ids 恒空。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     graph = DialogueGraph(
@@ -217,15 +196,8 @@ def test_log_dialogue_registers_memory_docs(
 
 
 def test_web_memory_write_failure_does_not_abort_turn(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     graph = DialogueGraph(

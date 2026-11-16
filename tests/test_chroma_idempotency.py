@@ -8,7 +8,6 @@
 
 import pytest
 
-from mr_data.db import PostgresStore
 from mr_data.db.chroma import (
     dialogue_chunk_memory_id,
     evidence_doc_id,
@@ -93,15 +92,8 @@ def test_add_memory_with_stable_id_preserves_metadata(chroma_store):
 
 @pytest.mark.usefixtures("reset_pg_state")
 def test_apply_replay_does_not_duplicate_chroma_docs(
-    pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
+    pg, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
     pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="user", content="测试输入"))
     pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="assistant", content="测试回复"))

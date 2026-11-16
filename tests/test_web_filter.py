@@ -1,3 +1,5 @@
+import pytest
+
 from conftest import capture_events, open_log_propagation
 
 from mr_data.config import settings
@@ -51,41 +53,39 @@ def test_irrelevant_doc_is_dropped():
     assert result[0].metadata.url == "http://a.com"
 
 
-def test_relevant_doc_with_empty_extraction_keeps_original():
-    doc = make_doc("原始内容")
-    llm = FakeLLM(results=[{"is_relevant": True, "extracted_text": "  "}])
+@pytest.mark.parametrize(
+    "llm_factory,doc_count",
+    [
+        pytest.param(
+            lambda: FakeLLM(results=[{"is_relevant": True, "extracted_text": "  "}]),
+            1,
+            id="empty_extraction_keeps_original",
+        ),
+        pytest.param(
+            lambda: FakeLLM(error=RuntimeError("llm failure")),
+            1,
+            id="llm_error_keeps_original",
+        ),
+        pytest.param(
+            lambda: FakeLLM(results=[
+                {"is_relevant": False, "extracted_text": ""},
+                {"is_relevant": False, "extracted_text": ""},
+            ]),
+            2,
+            id="all_irrelevant_falls_back",
+        ),
+    ],
+)
+def test_fallback_keeps_original_docs(llm_factory, doc_count):
+    """摘取为空 / LLM 报错 / 全部判不相关时，原 doc 原样保留。"""
+    docs = [
+        make_doc("原始内容" if doc_count == 1 else f"资料{'一二'[i]}", url=f"http://{'ab'[i]}.com")
+        for i in range(doc_count)
+    ]
 
-    result = filter_web_docs(llm, [doc], "用户输入")
-
-    assert result == [doc]
-
-
-def test_llm_error_keeps_original_doc():
-    doc = make_doc("原始内容")
-    llm = FakeLLM(error=RuntimeError("llm failure"))
-
-    result = filter_web_docs(llm, [doc], "用户输入")
-
-    assert result == [doc]
-
-
-def test_all_irrelevant_falls_back_to_original_docs():
-    docs = [make_doc("资料一", url="http://a.com"), make_doc("资料二", url="http://b.com")]
-    llm = FakeLLM(results=[
-        {"is_relevant": False, "extracted_text": ""},
-        {"is_relevant": False, "extracted_text": ""},
-    ])
-
-    result = filter_web_docs(llm, docs, "用户输入")
+    result = filter_web_docs(llm_factory(), docs, "用户输入")
 
     assert result == docs
-
-
-def test_empty_input_returns_empty_list():
-    llm = FakeLLM()
-
-    assert filter_web_docs(llm, [], "用户输入") == []
-    assert llm.calls == []
 
 
 def test_over_budget_head_truncates_llm_copy_only(monkeypatch, caplog):

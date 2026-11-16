@@ -26,15 +26,8 @@ def _make_engine(pg, chroma_store, fake_llm) -> AttributionEngine:
 
 
 def test_attribution_failure_does_not_mark_processed(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_closed_session(pg, test_session_id)
 
     def _failing_structured_chat(system_prompt, user_prompt, response_format, temperature=0.2):
@@ -55,15 +48,8 @@ def test_attribution_failure_does_not_mark_processed(
 
 
 def test_attribution_retry_after_failure(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_closed_session(pg, test_session_id)
 
     def _failing_structured_chat(system_prompt, user_prompt, response_format, temperature=0.2):
@@ -95,16 +81,9 @@ def test_attribution_retry_after_failure(
 
 
 def test_attribution_failure_counts_attempts(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
     """未达死信阈值时：会话保持 unprocessed 等重试，attempts 计数递增。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_closed_session(pg, test_session_id)
     monkeypatch.setattr(settings, "offline_max_attribution_attempts", 3)
 
@@ -124,16 +103,9 @@ def test_attribution_failure_counts_attempts(
 
 
 def test_attribution_dead_letter_after_threshold(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
     """连续失败达到阈值后：会话未处理日志置为已处理（死信），不再重试。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_closed_session(pg, test_session_id)
     monkeypatch.setattr(settings, "offline_max_attribution_attempts", 2)
 
@@ -164,18 +136,11 @@ def test_attribution_dead_letter_after_threshold(
 
 
 def test_dead_letter_logs_split_and_transcript_counts(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch, caplog
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch, caplog
 ):
     """拆批与死信可见性（截断调查改进项 B2，改进 82）：死信只落葬本批实际
     进过 transcript 的分片，不连坐 limit 之外从未取过的日志；
     never_in_transcript 字段保留（日志 schema 稳定）但分片级落葬后恒为 0。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_closed_session(pg, test_session_id)  # 2 条日志
     monkeypatch.setattr(settings, "offline_max_attribution_attempts", 2)
     monkeypatch.setattr(settings, "offline_max_session_logs", 1)  # 每批只取 1 条 → 拆批

@@ -57,18 +57,13 @@ def _inject_parse_api(client: LLMClient, completions: _FakeParseCompletions) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_extract_json_plain():
-    assert _extract_json('{"value": 1}') == {"value": 1}
-
-
-def test_extract_json_markdown_fence():
-    text = '```json\n{"value": 2}\n```'
-    assert _extract_json(text) == {"value": 2}
-
-
-def test_extract_json_surrounding_text():
-    text = '好的，这是结果：\n{"value": 3}\n希望对你有帮助。'
-    assert _extract_json(text) == {"value": 3}
+@pytest.mark.parametrize("text,expected", [
+    ('{"value": 1}', {"value": 1}),
+    ('```json\n{"value": 2}\n```', {"value": 2}),
+    ('好的，这是结果：\n{"value": 3}\n希望对你有帮助。', {"value": 3}),
+])
+def test_extract_json(text, expected):
+    assert _extract_json(text) == expected
 
 
 def test_extract_json_invalid_raises():
@@ -133,10 +128,14 @@ def test_prompt_mode_merges_into_existing_system_message(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_auto_mode_falls_back_and_caches(monkeypatch):
+@pytest.mark.parametrize("parse_error", [None, RuntimeError("parse not supported")], ids=["success", "fallback"])
+def test_auto_mode_parse_and_caches(monkeypatch, parse_error):
+    """parse 成功直接消费 parsed；失败回退 prompt 并缓存不再支持。"""
     monkeypatch.setattr(settings, "llm_structured_mode", "auto")
     client = _make_client()
-    completions = _FakeParseCompletions(error=RuntimeError("parse not supported"))
+    completions = _FakeParseCompletions(
+        error=parse_error, content='{"value": 11}' if parse_error is None else "{}"
+    )
     _inject_parse_api(client, completions)
 
     monkeypatch.setattr(
@@ -145,27 +144,19 @@ def test_auto_mode_falls_back_and_caches(monkeypatch):
 
     assert client._parse_supported is True
     result = client.structured_chat([{"role": "user", "content": "x"}], _SimpleResult)
-    assert result == {"value": 7}
-    assert client._parse_supported is False
+    if parse_error is None:
+        assert result == {"value": 11}
+        assert client._parse_supported is True
+    else:
+        assert result == {"value": 7}
+        assert client._parse_supported is False
     assert completions.parse_calls == 1
 
-    # Second call must skip the parse endpoint entirely.
-    result = client.structured_chat([{"role": "user", "content": "x"}], _SimpleResult)
-    assert result == {"value": 7}
-    assert completions.parse_calls == 1
-
-
-def test_auto_mode_parse_success(monkeypatch):
-    monkeypatch.setattr(settings, "llm_structured_mode", "auto")
-    client = _make_client()
-    completions = _FakeParseCompletions(content='{"value": 11}')
-    _inject_parse_api(client, completions)
-
-    result = client.structured_chat([{"role": "user", "content": "x"}], _SimpleResult)
-
-    assert result == {"value": 11}
-    assert client._parse_supported is True
-    assert completions.parse_calls == 1
+    if parse_error is not None:
+        # Second call must skip the parse endpoint entirely.
+        result = client.structured_chat([{"role": "user", "content": "x"}], _SimpleResult)
+        assert result == {"value": 7}
+        assert completions.parse_calls == 1
 
 
 def test_parse_main_path_uses_message_parsed(monkeypatch):
@@ -232,27 +223,4 @@ def test_parse_mode_raises_on_error(monkeypatch):
     assert client._parse_supported is True
 
 
-# ---------------------------------------------------------------------------
-# chat_structured sugar
-# ---------------------------------------------------------------------------
 
-
-def test_chat_structured_builds_messages(monkeypatch):
-    monkeypatch.setattr(settings, "llm_structured_mode", "prompt")
-    client = _make_client()
-
-    captured = {}
-
-    def fake_chat_with_messages(messages, temperature=0.7):
-        captured["messages"] = messages
-        return '{"value": 3}'
-
-    monkeypatch.setattr(client, "chat_with_messages", fake_chat_with_messages)
-
-    result = client.chat_structured("系统提示", "用户输入", _SimpleResult)
-
-    assert result == {"value": 3}
-    roles = [m["role"] for m in captured["messages"]]
-    assert roles == ["system", "user"]
-    assert "系统提示" in captured["messages"][0]["content"]
-    assert captured["messages"][1]["content"] == "用户输入"

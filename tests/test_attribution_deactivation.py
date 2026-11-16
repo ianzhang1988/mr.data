@@ -14,7 +14,37 @@ from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog, DialogueVectorRef, PersonalityEvent
 from mr_data.offline import AttributionEngine
 
+from conftest import FakeLLMClient
+
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
+
+
+class _SingleFailureDeltaLLM(FakeLLMClient):
+    """自包含桩：AttributionResult 恰好返回一条 dim 1 的 failure delta。
+
+    停用检查在归因批内按「本批触碰到的维度」执行（attribution.py 的
+    per-delta 循环尾部）：空 deltas 根本不会触发检查；而共享
+    FakeLLMClient 的默认应答会给 dim 1 塞一条 success delta，使
+    run() 后的实际比率偏离 SQL 名义值。本桩让输入精确可控：
+    SQL 设 6 败，本批再 +1 败，最终 7/10 = 0.7。
+    """
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        if response_format.__name__ == "AttributionResult":
+            return {
+                "deltas": [
+                    {
+                        "dimension_id": 1,
+                        "delta_success": 0,
+                        "delta_failure": 1,
+                        "reason": "测试归因原因",
+                        "evidence_snippets": [],
+                        "relation_to_personality": "体现",
+                        "target_dialogue_log_id": None,
+                    }
+                ]
+            }
+        return super().structured_chat(messages, response_format, temperature)
 
 
 def _setup_closed_session(pg: PostgresStore, session_id: str) -> int:
@@ -54,15 +84,8 @@ def _seed_evidence(pg: PostgresStore, chroma_store, session_id: str):
 
 
 def test_high_success_count_avoids_deactivation(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
 
     with pg._cursor(commit=True) as cur:
         cur.execute(
@@ -79,46 +102,35 @@ def test_high_success_count_avoids_deactivation(
 
 
 def test_ratio_and_min_samples_trigger_deactivation_and_purge(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+    pg, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
+    """比率贴阈值上边界（0.7 > 0.6）+ 样本量恰好达标（10）触发停用，
+    并清理 PG refs 与 Chroma 向量。用 _SingleFailureDeltaLLM 使输入自包含。"""
     pg.create_session(test_session_id)
 
     doc_id = _seed_evidence(pg, chroma_store, test_session_id)
 
     with pg._cursor(commit=True) as cur:
         cur.execute(
-            "UPDATE personality_dimensions SET core = FALSE, success_count = 0, failure_count = %s WHERE id = 1",
-            (settings.failure_min_samples,),
+            "UPDATE personality_dimensions SET core = FALSE, success_count = %s, failure_count = %s WHERE id = 1",
+            (3, 6),
         )
 
     _setup_closed_session(pg, test_session_id)
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=_SingleFailureDeltaLLM())
     engine.run()
 
     dim = pg.get_dimension(1)
     assert dim is not None
     assert dim.active is False
+    assert dim.failure_count == 7
     assert len(pg.get_dialogue_vector_refs_by_dimension(1)) == 0
     assert doc_id not in chroma_store.get_personality_event_ids_by_dimension(1)
 
 
 def test_insufficient_samples_avoid_deactivation(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
 
     with pg._cursor(commit=True) as cur:
         cur.execute(
@@ -135,15 +147,8 @@ def test_insufficient_samples_avoid_deactivation(
 
 
 def test_core_dimension_exempt_from_deactivation(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id
+    fake_llm, pg, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
 
     with pg._cursor(commit=True) as cur:
         cur.execute(

@@ -76,16 +76,29 @@ def test_transcript_lines_carry_log_ids(
     assert f"assistant[#{assistant_id}]: 测试回复" in transcript
 
 
+@pytest.mark.parametrize(
+    "invalid_target_kind",
+    ["nonexistent", "other_session", "user_row"],
+    ids=["nonexistent-id", "other-session-id", "user-row-id"],
+)
 def test_hallucinated_target_id_nulled_and_evidence_skipped(
-    pg_available, chroma_store, temp_log_dir, test_session_id
+    invalid_target_kind, pg_available, chroma_store, temp_log_dir, test_session_id
 ):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    logs, _, _ = _setup_session(pg, test_session_id)
-    llm = DedupFakeLLM(deltas=[_delta(target_dialogue_log_id=999)])
+    if invalid_target_kind == "user_row":
+        logs, invalid_target_id, _ = _setup_session(pg, test_session_id)
+    else:
+        logs, _, _ = _setup_session(pg, test_session_id)
+        if invalid_target_kind == "nonexistent":
+            invalid_target_id = 999
+        else:
+            other_session = f"{test_session_id}-other"
+            _, _, invalid_target_id = _setup_session(pg, other_session)
+    llm = DedupFakeLLM(deltas=[_delta(target_dialogue_log_id=invalid_target_id)])
 
     result = _attribute_and_apply(pg, chroma_store, llm, test_session_id, logs)
 
@@ -94,45 +107,6 @@ def test_hallucinated_target_id_nulled_and_evidence_skipped(
     assert len(rows) == 1 and rows[0]["dialogue_log_id"] is None
     # evidence 与 event 均跳过，不产生 "None" 污染文档
     assert chroma_store.get_personality_event_ids_by_dimension(1) == []
-
-
-def test_target_id_from_other_session_nulled(
-    pg_available, chroma_store, temp_log_dir, test_session_id
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    logs, _, _ = _setup_session(pg, test_session_id)
-    other_session = f"{test_session_id}-other"
-    _, _, other_assistant_id = _setup_session(pg, other_session)
-
-    llm = DedupFakeLLM(deltas=[_delta(target_dialogue_log_id=other_assistant_id)])
-    result = _attribute_and_apply(pg, chroma_store, llm, test_session_id, logs)
-
-    assert result.deltas[0].target_dialogue_log_id is None
-    rows = _fetch_adjustments(pg)
-    assert len(rows) == 1 and rows[0]["dialogue_log_id"] is None
-    assert chroma_store.get_personality_event_ids_by_dimension(1) == []
-
-
-def test_target_id_pointing_to_user_row_nulled(
-    pg_available, chroma_store, temp_log_dir, test_session_id
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    logs, user_id, _ = _setup_session(pg, test_session_id)
-    llm = DedupFakeLLM(deltas=[_delta(target_dialogue_log_id=user_id)])
-
-    result = _attribute_and_apply(pg, chroma_store, llm, test_session_id, logs)
-
-    assert result.deltas[0].target_dialogue_log_id is None
-    rows = _fetch_adjustments(pg)
-    assert len(rows) == 1 and rows[0]["dialogue_log_id"] is None
 
 
 def test_hallucinated_dimension_id_discarded_without_fk_violation(

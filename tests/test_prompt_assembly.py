@@ -31,8 +31,10 @@ def test_fit_under_budget_returns_verbatim():
     assert _text("web", fitted) == "网页内容" * 50
 
 
-def test_priority_gradient_keeps_high_priority_verbatim():
-    """预算只够装一个时，priority 70 的 personality 原文保留，web 被压缩。"""
+def test_priority_gradient_keeps_high_priority_verbatim(caplog, monkeypatch):
+    """预算只够装一个时，priority 70 的 personality 原文保留，web 被压缩；
+    按比例压缩记录 prompt.section_compressed（截断调查改进项 A5）。"""
+    _open_log(caplog, monkeypatch)
     personality_text = "人格素材" * 20
     web_text = "网页资料" * 500
     sections = [
@@ -54,6 +56,11 @@ def test_priority_gradient_keeps_high_priority_verbatim():
     web_fitted = _text("web", fitted)
     assert web_fitted != web_text
     assert len(web_fitted) < len(web_text) // 10
+
+    compressed = _records(caplog, "prompt.section_compressed")
+    assert [r.details["section"] for r in compressed] == ["web"]
+    assert compressed[0].details["target_tokens"] > 0
+    assert compressed[0].details["original_tokens"] > compressed[0].details["target_tokens"]
 
 
 def test_same_priority_shares_budget_proportionally(monkeypatch):
@@ -117,8 +124,10 @@ def test_must_keep_extreme_overage_uses_priority_gradient(monkeypatch):
     assert _text("user_input", fitted) != user_input_text
 
 
-def test_exhausted_budget_yields_omission_placeholder():
-    """预算耗尽后，低优先级段输出省略占位符。"""
+def test_exhausted_budget_yields_omission_placeholder(caplog, monkeypatch):
+    """预算耗尽后，低优先级段输出省略占位符；
+    省略占位记录 prompt.section_omitted（截断调查改进项 A5）。"""
+    _open_log(caplog, monkeypatch)
     personality_text = "人格" * 100
     memory_text = "记忆" * 100
     web_text = "网页" * 100
@@ -138,6 +147,10 @@ def test_exhausted_budget_yields_omission_placeholder():
     fitted = asm.fit_sections(sections, limit)
     assert _text("personality", fitted) == personality_text
     assert "因上下文限制已省略" in _text("web", fitted)
+    omitted = _records(caplog, "prompt.section_omitted")
+    assert [r.details["section"] for r in omitted] == ["web"]
+    assert omitted[0].details["target_tokens"] == 0
+    assert omitted[0].details["original_tokens"] == counter.count(web_text)
 
 
 def _records(caplog, event: str):
@@ -146,51 +159,6 @@ def _records(caplog, event: str):
 
 def _open_log(caplog, monkeypatch, logger_name="mr_data.online"):
     open_log_propagation(caplog, monkeypatch, logger_name)
-
-
-def test_compressed_section_logged(caplog, monkeypatch):
-    """按比例压缩记录 prompt.section_compressed（截断调查改进项 A5）。"""
-    _open_log(caplog, monkeypatch)
-    personality_text = "人格素材" * 20
-    web_text = "网页资料" * 500
-    sections = [
-        PromptSection("personality", personality_text, 70, "assistant"),
-        PromptSection("web", web_text, 40, "assistant"),
-    ]
-    asm = _assembler()
-    counter = TokenCounter()
-    limit = counter.count(personality_text) + counter.count(personality_text) // 2
-
-    asm.fit_sections(sections, limit)
-
-    compressed = _records(caplog, "prompt.section_compressed")
-    assert [r.details["section"] for r in compressed] == ["web"]
-    assert compressed[0].details["target_tokens"] > 0
-    assert compressed[0].details["original_tokens"] > compressed[0].details["target_tokens"]
-
-
-def test_omitted_sections_logged(caplog, monkeypatch):
-    """预算耗尽后的省略占位记录 prompt.section_omitted（截断调查改进项 A5）。"""
-    _open_log(caplog, monkeypatch)
-    personality_text = "人格" * 100
-    memory_text = "记忆" * 100
-    web_text = "网页" * 100
-    sections = [
-        PromptSection("personality", personality_text, 70, "assistant"),
-        PromptSection("memory", memory_text, 60, "assistant"),
-        PromptSection("web", web_text, 40, "assistant"),
-    ]
-    asm = _assembler()
-    counter = TokenCounter()
-    limit = counter.count(personality_text) + 2
-
-    fitted = asm.fit_sections(sections, limit)
-
-    assert "因上下文限制已省略" in _text("web", fitted)
-    omitted = _records(caplog, "prompt.section_omitted")
-    assert [r.details["section"] for r in omitted] == ["web"]
-    assert omitted[0].details["target_tokens"] == 0
-    assert omitted[0].details["original_tokens"] == counter.count(web_text)
 
 
 def test_must_keep_overage_omits_adjustable_with_log(caplog, monkeypatch):

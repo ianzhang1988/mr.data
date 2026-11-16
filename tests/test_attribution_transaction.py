@@ -3,6 +3,7 @@
 覆盖：
 - _apply 中途崩溃 → 事务回滚：维度计数不变、adjustment_logs 无新增、对话仍 unprocessed；
 - 崩溃恢复后重跑 → 只应用一次，不重复；
+- post-commit Chroma 写入失败（purge 清理 / add 新证据）不回滚已提交的 PG 会话；
 - 非事务态自动 commit 行为回归；
 - 嵌套事务被拒绝。
 """
@@ -41,8 +42,6 @@ def test_apply_crash_rolls_back_and_retry_applies_once(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_closed_session(pg, test_session_id)
 
     dim = pg.get_dimension(1)
@@ -89,8 +88,6 @@ def test_crash_on_vector_refs_rolls_back_pg_writes(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     assistant_id = _setup_closed_session(pg, test_session_id)
     # 改进 54 移除 fallback 后，需显式给归因 target 才能走到 vector refs 崩溃点。
     fake_llm.attribution_target_log_id = assistant_id
@@ -127,8 +124,6 @@ def test_failed_session_does_not_abort_batch(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     session_a = test_session_id
     session_b = f"{test_session_id}-b"
     _setup_closed_session(pg, session_a)
@@ -166,8 +161,6 @@ def test_non_transactional_writes_still_autocommit(pg_available):
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
 
     dim = pg.get_dimension(1)
     pg.update_dimension(1, delta_success=2, delta_failure=1)
@@ -197,8 +190,6 @@ def test_rollback_does_not_touch_chroma(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     # Pre-seed an evidence doc tied to dimension 1 so we can verify rollback leaves it alone.
@@ -258,16 +249,16 @@ def test_rollback_does_not_touch_chroma(
     assert doc_id not in chroma_store.get_personality_event_ids_by_dimension(1)
 
 
+@pytest.mark.parametrize("failing_chroma_op", ["purge", "add"])
 def test_purge_failure_does_not_fail_committed_session(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    failing_chroma_op, fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
+    """post-commit Chroma 写入失败（purge 清理 / add 新证据）不回滚已提交的 PG 会话（改进 55）。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     dummy_id = pg.insert_dialogue(
@@ -299,14 +290,23 @@ def test_purge_failure_does_not_fail_committed_session(
             (settings.failure_min_samples,),
         )
 
-    _setup_closed_session(pg, test_session_id)
+    assistant_id = _setup_closed_session(pg, test_session_id)
 
     engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
 
-    def _failing_delete_personality_events(doc_ids):
-        raise RuntimeError("模拟 Chroma purge 失败")
+    if failing_chroma_op == "purge":
+        def _failing_delete_personality_events(doc_ids):
+            raise RuntimeError("模拟 Chroma purge 失败")
 
-    monkeypatch.setattr(chroma_store, "delete_personality_events", _failing_delete_personality_events)
+        monkeypatch.setattr(chroma_store, "delete_personality_events", _failing_delete_personality_events)
+    else:
+        # 改进 54 移除了 target fallback：需显式给归因 target 才会走到 evidence/event 的 Chroma 写入。
+        fake_llm.attribution_target_log_id = assistant_id
+
+        def _failing_add_personality_event(event):
+            raise RuntimeError("模拟 Chroma 写入失败")
+
+        monkeypatch.setattr(chroma_store, "add_personality_event", _failing_add_personality_event)
 
     engine.run()
 
@@ -314,32 +314,6 @@ def test_purge_failure_does_not_fail_committed_session(
     assert len(unprocessed) == 0
     dim = pg.get_dimension(1)
     assert dim is not None
-    assert dim.active is False
-    assert _adjustment_count(pg) == 1
-
-
-def test_chroma_write_failure_after_commit_does_not_fail_session(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    assistant_id = _setup_closed_session(pg, test_session_id)
-    fake_llm.attribution_target_log_id = assistant_id
-
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
-
-    def _failing_add_personality_event(event):
-        raise RuntimeError("模拟 Chroma 写入失败")
-
-    monkeypatch.setattr(chroma_store, "add_personality_event", _failing_add_personality_event)
-
-    engine.run()
-
-    unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
-    assert len(unprocessed) == 0
+    if failing_chroma_op == "purge":
+        assert dim.active is False
     assert _adjustment_count(pg) == 1

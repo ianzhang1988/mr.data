@@ -1,5 +1,7 @@
 """改进 65：检索链路修复（SearXNG 子路径、extract 保留、top_k 接线）。"""
 
+import pytest
+
 from mr_data.config import settings
 from mr_data.models import WebDoc, WebDocMetadata
 from mr_data.online import DialogueGraph
@@ -49,24 +51,34 @@ def _web_doc(url: str) -> WebDoc:
     )
 
 
-def test_extract_web_pages_keeps_docs_beyond_max_pages(
-    chroma_store, monkeypatch
+@pytest.mark.parametrize("keep_reason", ["beyond_max_pages", "extraction_fails"])
+def test_extract_web_pages_keeps_docs_beyond_limit_or_on_failure(
+    chroma_store, monkeypatch, keep_reason
 ):
-    """max_pages 之后的搜索结果不抓正文，但以 snippet 级内容保留在输出中。"""
+    """不抓正文的 doc 原样保留：max_pages 之后的搜索结果以 snippet 级内容保留；
+    抽取失败（extract 返回 None）时原 doc 原样返回（改进 78/79：抽取不重写身份）。"""
     monkeypatch.setattr(settings, "web_extract_max_pages", 2)
     graph = _make_graph(chroma_store)
 
-    class _StubExtractor:
-        def extract(self, url):
-            return ExtractedPage(text=f"full text of {url}", url=url)
+    if keep_reason == "beyond_max_pages":
+        class _StubExtractor:
+            def extract(self, url):
+                return ExtractedPage(text=f"full text of {url}", url=url)
 
-    monkeypatch.setattr(graph, "page_extractor", _StubExtractor())
+        monkeypatch.setattr(graph, "page_extractor", _StubExtractor())
+        docs = [
+            _web_doc("http://a.example"),
+            _web_doc("http://b.example"),
+            _web_doc("http://c.example"),
+        ]
+    else:
+        class _FailingExtractor:
+            def extract(self, url):
+                return None
 
-    docs = [
-        _web_doc("http://a.example"),
-        _web_doc("http://b.example"),
-        _web_doc("http://c.example"),
-    ]
+        monkeypatch.setattr(graph, "page_extractor", _FailingExtractor())
+        docs = [_web_doc("http://a.example")]
+
     state = {
         "session_id": "test-session",
         "user_input": "测试输入",
@@ -75,17 +87,20 @@ def test_extract_web_pages_keeps_docs_beyond_max_pages(
     result = graph._extract_web_pages(state)
 
     out = result["web_docs"]
-    # 改进 78/79：抽取不重写身份，url 原样保留。
-    assert [d.metadata.url for d in out] == [
-        "http://a.example",
-        "http://b.example",
-        "http://c.example",
-    ]
-    assert out[0].metadata.extracted is True
-    assert out[1].metadata.extracted is True
-    # 第三条原样保留（snippet 级）
-    assert out[2].page_content == "snippet of http://c.example"
-    assert out[2].metadata.extracted is False
+    if keep_reason == "beyond_max_pages":
+        # 改进 78/79：抽取不重写身份，url 原样保留。
+        assert [d.metadata.url for d in out] == [
+            "http://a.example",
+            "http://b.example",
+            "http://c.example",
+        ]
+        assert out[0].metadata.extracted is True
+        assert out[1].metadata.extracted is True
+        # 第三条原样保留（snippet 级）
+        assert out[2].page_content == "snippet of http://c.example"
+        assert out[2].metadata.extracted is False
+    else:
+        assert out[0] == docs[0]
 
 
 def test_retrieve_personality_uses_configured_top_k(chroma_store, monkeypatch):
@@ -199,27 +214,3 @@ def test_retrieve_memories_counts_web_recall(chroma_store, monkeypatch):
     assert meta.recall_count == 1
     assert meta.last_recalled_at
 
-
-def test_extract_web_pages_keeps_doc_when_extraction_fails(
-    chroma_store, monkeypatch
-):
-    """抽取失败（extract 返回 None）时原 doc 原样保留（改进 78 移除 re-id 后
-    该行为不变，迁自 test_web_reid.py）。"""
-    monkeypatch.setattr(settings, "web_extract_max_pages", 2)
-    graph = _make_graph(chroma_store)
-
-    class _FailingExtractor:
-        def extract(self, url):
-            return None
-
-    monkeypatch.setattr(graph, "page_extractor", _FailingExtractor())
-
-    docs = [_web_doc("http://a.example")]
-    state = {
-        "session_id": "test-session",
-        "user_input": "测试输入",
-        "web_docs": docs,
-    }
-    result = graph._extract_web_pages(state)
-
-    assert result["web_docs"][0] == docs[0]

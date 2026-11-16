@@ -2,7 +2,6 @@
 
 import pytest
 
-from mr_data.db import PostgresStore
 from mr_data.models import (
     PersonalityDocMetadata,
     ReplyBlock,
@@ -26,7 +25,7 @@ class _BothRepliesFailLLM(FakeLLMClient):
 
 @pytest.mark.usefixtures("reset_pg_state")
 def test_assemble_and_log_static_fallback(
-    test_session_id, pg_available, chroma_store, temp_log_dir
+    test_session_id, pg, chroma_store, temp_log_dir
 ):
     """结构化与纯文本回复都失败时，assemble 返回静态兜底且 log_dialogue 仍落库。
 
@@ -34,13 +33,6 @@ def test_assemble_and_log_static_fallback(
     偶发出现新连接看不到刚提交 session 的时序问题，而节点级调用能稳定复现
     相同的降级与落库语义。
     """
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     graph = DialogueGraph(

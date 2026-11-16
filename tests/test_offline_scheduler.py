@@ -335,32 +335,26 @@ def _patch_newsession_deps(monkeypatch, engine, dsn: str):
     )
 
 
-def test_newsession_triggers_async_run(pg_available, reset_pg_state, temp_log_dir, monkeypatch):
-    pg = PostgresStore()
-    engine = _FakeEngine(dsn=pg.dsn)
-    _patch_newsession_deps(monkeypatch, engine, pg.dsn)
-
-    result = runner.invoke(app, ["chat"])
-
-    assert result.exit_code == 0
-    assert engine.run_calls == 1  # /newsession 关闭会话后在后台执行了一轮归因
-    assert "离线归因在后台完成" in result.output
-    assert "New session: sess-1" in result.output
-
-
-def test_newsession_skips_run_when_locked(
-    pg_available, reset_pg_state, temp_log_dir, monkeypatch
+@pytest.mark.parametrize("hold_lock", [False, True])
+def test_newsession_async_run_respects_lock(
+    pg_available, reset_pg_state, temp_log_dir, monkeypatch, hold_lock
 ):
+    """改进 86：/newsession 关闭会话后后台执行一轮异步归因；
+    advisory lock 被持有时跳过（不阻断 chat，新会话照常开始）。"""
     pg = PostgresStore()
-    blocker = _hold_advisory_lock(pg)
+    blocker = _hold_advisory_lock(pg) if hold_lock else None
     engine = _FakeEngine(dsn=pg.dsn)
     _patch_newsession_deps(monkeypatch, engine, pg.dsn)
     try:
         result = runner.invoke(app, ["chat"])
     finally:
-        blocker.close()
+        if blocker is not None:
+            blocker.close()
 
-    assert result.exit_code == 0  # 护栏冲突不阻断 chat
-    assert engine.run_calls == 0
-    assert "跳过" in result.output
+    assert result.exit_code == 0
+    assert engine.run_calls == (0 if hold_lock else 1)
     assert "New session: sess-1" in result.output  # 新会话照常开始
+    if hold_lock:
+        assert "跳过" in result.output
+    else:
+        assert "离线归因在后台完成" in result.output

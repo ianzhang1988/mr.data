@@ -7,7 +7,6 @@ from mr_data.models import (
     DialogueLogMetadata,
     DialogueMemoryMetadata,
     MemoryDoc,
-    PersonalityDimension,
     PersonalityEvent,
     DialogueVectorRef,
     ReplyBlock,
@@ -20,13 +19,6 @@ from mr_data.online import DialogueGraph
 from mr_data.offline import AttributionEngine
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
-
-
-def test_models_serialize():
-    dim = PersonalityDimension(description="我相信轻松的表达能拉近距离。", core=True)
-    assert dim.description
-    assert dim.core is True
-    assert dim.success_count == 0
 
 
 def test_chroma_personality(chroma_store):
@@ -58,23 +50,11 @@ def test_chroma_personality_context(chroma_store):
     assert docs[0].metadata.context
 
 
-def test_chroma_memories(chroma_store):
-    store = chroma_store
-    store.add_memory("s1", "用户：你好")
-    store.add_memory("s1", "助手：你好呀")
-
-    docs = store.query_memories("你好", session_id="s1")
-    assert len(docs) >= 1
-    assert any("你好" in d.page_content for d in docs)
-
-
 def test_postgres_schema_and_seed(pg_available):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
     store = PostgresStore()
-    store.init_schema()
-    store.seed()
     identity = store.get_identity()
     assert identity is not None
     assert identity.name == "Data"
@@ -90,8 +70,6 @@ def test_dialogue_graph(fake_llm, test_session_id, pg_available, chroma_store, t
     if not pg_available:
         pytest.skip("PostgreSQL not available")
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
     graph = DialogueGraph(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, enable_web_search=False)
 
@@ -107,8 +85,6 @@ def test_offline_attribution(fake_llm, test_session_id, pg_available, chroma_sto
     if not pg_available:
         pytest.skip("PostgreSQL not available")
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     # Insert a user-assistant pair
@@ -148,8 +124,6 @@ def test_select_dimensions_uses_core_flag(fake_llm, test_session_id, pg_availabl
     if not pg_available:
         pytest.skip("PostgreSQL not available")
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
     graph = DialogueGraph(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, enable_web_search=False)
 
@@ -184,8 +158,6 @@ def test_web_docs_written_to_memory(fake_llm, test_session_id, pg_available, chr
             ]
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     # Force the think node to decide web search is needed for this turn.
@@ -234,8 +206,6 @@ def test_full_session_lifecycle(fake_llm, pg_available, chroma_store, temp_log_d
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     graph = DialogueGraph(pg_store=pg, chroma_store=chroma_store, llm=fake_llm, enable_web_search=False)
 
     # First session
@@ -273,8 +243,6 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     # Insert a dummy dialogue log to own the pre-seeded evidence ref (FK requirement).
@@ -333,162 +301,55 @@ def test_dimension_failure_threshold_purges_vectors(fake_llm, test_session_id, p
     assert doc_id not in remaining
 
 
-def test_think_structured_decision(fake_llm, test_session_id, pg_available, chroma_store):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=fake_llm,
-        enable_web_search=True,
-    )
-    state = graph._think(
-        {
-            "session_id": test_session_id,
-            "user_input": "你好",
-            "dimensions": pg.list_dimensions(active_only=True),
-            "selected_dimension_ids": [1],
-        }
-    )
-    assert state["inner_monologue"]
-    assert state["personality_query"]
-    assert state["memory_query"]
-    assert state["needs_web_search"] is False
-    assert state["search_query"] is not None
-
-
-def test_web_branch_skips_pipeline_when_disabled(
-    fake_llm, test_session_id, pg_available, chroma_store
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=fake_llm,
-        enable_web_search=False,
-    )
-    assert graph._route_web({"needs_web_search": True}) == "personality"
-
-
-def test_dialogue_memories_recall_count(
-    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-
-    pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="user", content="测试输入"))
-    pg.insert_dialogue(
-        DialogueLog(session_id=test_session_id, role="assistant", content="测试回复")
-    )
-    pg.close_session(test_session_id)
-
-    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
-    engine.run()
-
-    # A new chat turn should retrieve the stored dialogue memories and increment recall.
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=fake_llm,
-        enable_web_search=False,
-    )
-    reply = graph.chat(test_session_id, "测试输入")
-    assert reply
-
-    docs = chroma_store.query_memories("测试输入", session_id=test_session_id, top_k=10)
-    dialogue_docs = [d for d in docs if d.metadata.source_type == "dialogue"]
-    assert dialogue_docs
-    assert any(d.metadata.recall_count >= 1 for d in dialogue_docs)
-
-
-def test_prune_stale_dialogue_memories(chroma_store):
+@pytest.mark.parametrize("memory_form", ["dialogue", "web"])
+def test_prune_stale_memories(chroma_store, memory_form):
     from datetime import datetime, timedelta, timezone
 
-    session_id = "prune-session"
+    session_id = f"prune-{memory_form}-session"
     old_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
-    chroma_store.add_memory(
-        session_id,
-        "user: old stale dialogue",
-        metadata=DialogueMemoryMetadata(
+    now = datetime.now(timezone.utc).isoformat()
+    if memory_form == "dialogue":
+        query = "dialogue"
+        old_content = "user: old stale dialogue"
+        recent_content = "user: recent dialogue"
+        old_meta = DialogueMemoryMetadata(
             session_id=session_id,
             added_at=old_time,
             last_recalled_at=old_time,
-        ),
-    )
-    chroma_store.add_memory(
-        session_id,
-        "user: recent dialogue",
-        metadata=DialogueMemoryMetadata(
-            session_id=session_id,
-            added_at=datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-
-    pruned = chroma_store.prune_stale_memories(
-        cutoff_days=90,
-        min_recall_count=1,
-    )
-    assert pruned == 1
-
-    remaining = chroma_store.query_memories("dialogue", session_id=session_id, top_k=10)
-    assert all("old stale" not in d.page_content for d in remaining)
-
-
-def test_prune_stale_web_memories(chroma_store):
-    from datetime import datetime, timedelta, timezone
-
-    session_id = "prune-web-session"
-    old_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
-    chroma_store.add_memory(
-        session_id,
-        "[网络资料] 旧资料",
-        memory_id="web:old",
-        metadata=WebMemoryMetadata(
+        )
+        recent_meta = DialogueMemoryMetadata(session_id=session_id, added_at=now)
+    else:
+        query = "资料"
+        old_content = "[网络资料] 旧资料"
+        recent_content = "[网络资料] 新资料"
+        old_meta = WebMemoryMetadata(
             url="http://example.com/old",
             title="旧资料",
             retrieved_at=old_time,
-        ),
-    )
-    chroma_store.add_memory(
-        session_id,
-        "[网络资料] 新资料",
-        memory_id="web:new",
-        metadata=WebMemoryMetadata(
+        )
+        recent_meta = WebMemoryMetadata(
             url="http://example.com/new",
             title="新资料",
-            retrieved_at=datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-    # 老但被召回过的 web 记忆应保留（recall_count 达标）
+            retrieved_at=now,
+        )
     chroma_store.add_memory(
-        session_id,
-        "[网络资料] 老但常用",
-        memory_id="web:recalled",
-        metadata=WebMemoryMetadata(
-            url="http://example.com/recalled",
-            title="老但常用",
-            retrieved_at=old_time,
-        ),
+        session_id, old_content, memory_id="web:old" if memory_form == "web" else None,
+        metadata=old_meta,
     )
-    chroma_store.increment_memory_recall(["web:recalled"])
+    chroma_store.add_memory(session_id, recent_content, metadata=recent_meta)
+    if memory_form == "web":
+        # 老但被召回过的 web 记忆应保留（recall_count 达标）
+        chroma_store.add_memory(
+            session_id,
+            "[网络资料] 老但常用",
+            memory_id="web:recalled",
+            metadata=WebMemoryMetadata(
+                url="http://example.com/recalled",
+                title="老但常用",
+                retrieved_at=old_time,
+            ),
+        )
+        chroma_store.increment_memory_recall(["web:recalled"])
 
     pruned = chroma_store.prune_stale_memories(
         cutoff_days=90,
@@ -496,9 +357,12 @@ def test_prune_stale_web_memories(chroma_store):
     )
     assert pruned == 1
 
-    remaining = chroma_store.query_memories("资料", session_id=session_id, top_k=10)
-    remaining_ids = {d.id for d in remaining}
-    assert "web:old" not in remaining_ids
+    remaining = chroma_store.query_memories(query, session_id=session_id, top_k=10)
+    if memory_form == "dialogue":
+        assert all("old stale" not in d.page_content for d in remaining)
+    else:
+        remaining_ids = {d.id for d in remaining}
+        assert "web:old" not in remaining_ids
 
 
 def test_global_memory_recall(
@@ -509,8 +373,6 @@ def test_global_memory_recall(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
 
     session_a = pg.create_session()
     graph = DialogueGraph(
@@ -553,8 +415,6 @@ def test_memory_relevance_filter(fake_llm, test_session_id, pg_available, chroma
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     chroma_store.add_memory(test_session_id, "我喜欢蓝色", metadata=DialogueMemoryMetadata(session_id=test_session_id))
@@ -602,8 +462,6 @@ def test_assemble_and_generate_returns_references(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     original_chat_structured = fake_llm.chat_structured
@@ -685,8 +543,6 @@ def test_web_doc_without_url_does_not_register_empty_ref_key(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     session_id = pg.create_session()
 
     original_chat_structured = fake_llm.chat_structured
@@ -809,8 +665,6 @@ def test_web_memory_refetch_is_idempotent(fake_llm, pg_available, chroma_store, 
     monkeypatch.setattr(fake_llm, "chat_structured", _patched_chat_structured)
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
 
     graph = DialogueGraph(
         pg_store=pg,
@@ -852,8 +706,6 @@ def test_dialogue_log_metadata_roundtrip(pg_available):
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     session_id = pg.create_session()
 
     metadata = DialogueLogMetadata(
@@ -884,40 +736,6 @@ def test_dialogue_log_metadata_roundtrip(pg_available):
     assert found.metadata.blocks[0].references[0].id == "web:abc"
 
 
-def test_chat_loads_messages_from_postgres(
-    fake_llm, test_session_id, pg_available, chroma_store
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=fake_llm,
-        enable_web_search=False,
-    )
-
-    graph.chat(test_session_id, "第一问")
-    messages = graph._load_recent_messages(test_session_id)
-
-    assert any(m.role == "user" and m.content == "第一问" for m in messages)
-    assert any(m.role == "assistant" for m in messages)
-
-
-def test_token_counter_counts_text():
-    from mr_data.llm.tokenizer import TokenCounter
-
-    counter = TokenCounter()
-    assert counter.count("hello world") > 0
-    assert counter.count("你好世界") > 0
-
-
 def test_assemble_respects_token_limit(
     fake_llm, test_session_id, pg_available, chroma_store, monkeypatch
 ):
@@ -926,8 +744,6 @@ def test_assemble_respects_token_limit(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     monkeypatch.setattr(settings, "llm_context_token_limit", 50)

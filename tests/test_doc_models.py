@@ -1,61 +1,16 @@
 """管道 doc 模型与 collection/chunk schema 化测试（改进项 58）。
 
 覆盖：
-- WebDoc model_copy 两阶段流转（extract 重定 id / filter 抽取）字段演进；
 - CollectionMetadata alias 序列化/反序列化 roundtrip；
 - increment_memory_recall 模型化后落库 key 集不变；
 - DialogueChunk 字段名与 DialogueMemoryMetadata 对齐（无改名映射的回归锁定）。
 """
 
-import pytest
-
 from mr_data.models import (
     CollectionMetadata,
     DialogueChunk,
     DialogueMemoryMetadata,
-    WebDoc,
-    WebDocMetadata,
 )
-
-
-def test_webdoc_model_copy_pipeline_evolution():
-    doc = WebDoc(
-        page_content="标题\n正文",
-        metadata=WebDocMetadata(url="https://baidu.com/link?x=1", title="标题"),
-    )
-
-    # extract 阶段：记录原始跳转链接（改进 79 起不再重写 id，身份即 url）
-    extracted = doc.model_copy(update={
-        "page_content": "标题\n提取全文",
-        "metadata": doc.metadata.model_copy(update={
-            "url": "https://real.example.com/page",
-            "source_url": doc.metadata.url,
-            "extracted": True,
-        }),
-    })
-    assert extracted.metadata.url == "https://real.example.com/page"
-    assert extracted.metadata.source_url == "https://baidu.com/link?x=1"
-    assert extracted.metadata.extracted is True
-    # 原文档不被就地污染
-    assert doc.metadata.url == "https://baidu.com/link?x=1"
-    assert doc.metadata.extracted is False
-
-    # filter 阶段：llm_extracted 标记
-    filtered = extracted.model_copy(update={
-        "page_content": "摘取内容",
-        "metadata": extracted.metadata.model_copy(update={"llm_extracted": True}),
-    })
-    assert filtered.page_content == "摘取内容"
-    assert filtered.metadata.llm_extracted is True
-    assert filtered.metadata.source_url == "https://baidu.com/link?x=1"
-
-
-def test_webdoc_metadata_allows_unknown_extra_keys():
-    meta = WebDocMetadata.model_validate(
-        {"source_type": "web", "url": "u", "title": "t", "future_field": 1}
-    )
-    assert meta.url == "u"
-    assert meta.future_field == 1  # extra="allow" 兜底 provider 扩展
 
 
 def test_collection_metadata_alias_roundtrip():

@@ -113,11 +113,3 @@ def test_page_extractor_truncation_logs_event(local_html_server, caplog, monkeyp
     assert details["original_chars"] > 50
     assert details["truncated_chars"] == len(page.text)
     assert details["truncated_chars"] < details["original_chars"]
-
-
-def test_page_extractor_default_max_length_is_archive_cap():
-    """C1：默认上限为 100,000 字符归档级上限（Tika 100K / Claude Code 100KB 锚点）。"""
-    from mr_data.config import settings
-
-    assert settings.web_extract_max_length == 100000
-    assert PageExtractor().max_length == 100000

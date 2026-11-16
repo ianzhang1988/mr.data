@@ -4,22 +4,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
 from mr_data.db.chunking import chunk_dialogue_logs
 
 
 @pytest.mark.usefixtures("reset_pg_state")
-def test_get_recent_dialogues_tiebreaks_by_id_desc(test_session_id, pg_available):
+def test_get_recent_dialogues_tiebreaks_by_id_desc(test_session_id, pg):
     """同事务插入的两条对话 created_at 相同（NOW() 是事务时间），
     查询必须按 id DESC 确定性排序，后插入的（assistant）排在前面。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     with pg.transaction():

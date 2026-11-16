@@ -60,22 +60,17 @@ def _reset_provider_map(monkeypatch):
     web_search._PROVIDER_MAP = original_map
 
 
-def test_dispatcher_returns_first_successful_provider():
-    tool = web_search.WebSearchTool(providers=["fake_success", "fake_empty"])
-    results = tool.search("hello")
-    assert len(results) == 1
-    assert results[0].metadata.title == "Success"
-
-
-def test_dispatcher_falls_back_when_first_is_empty():
-    tool = web_search.WebSearchTool(providers=["fake_empty", "fake_success"])
-    results = tool.search("hello")
-    assert len(results) == 1
-    assert results[0].metadata.title == "Success"
-
-
-def test_dispatcher_falls_back_when_first_raises():
-    tool = web_search.WebSearchTool(providers=["fake_error", "fake_success"])
+@pytest.mark.parametrize(
+    "providers",
+    [
+        pytest.param(["fake_success", "fake_empty"], id="first_success"),
+        pytest.param(["fake_empty", "fake_success"], id="falls_back_empty"),
+        pytest.param(["fake_error", "fake_success"], id="falls_back_raises"),
+    ],
+)
+def test_dispatcher_skips_to_next_provider_until_success(providers):
+    """首个 provider 成功 / 返回空 / 抛异常，调度都跳到下一个直到拿到结果。"""
+    tool = web_search.WebSearchTool(providers=providers)
     results = tool.search("hello")
     assert len(results) == 1
     assert results[0].metadata.title == "Success"

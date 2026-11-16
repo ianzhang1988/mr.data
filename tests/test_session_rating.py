@@ -52,9 +52,11 @@ def test_reactivate_session_resets_rating(pg_available, test_session_id):
     assert session.rating_comment is None
 
 
-def test_context_includes_session_rating(
-    pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
+@pytest.mark.parametrize("with_rating", [True, False])
+def test_context_includes_session_rating_when_present(
+    pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id, with_rating
 ):
+    """离线归因 _build_context：有评分时注入用户评分与评论段落，无评分时段落省略。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
@@ -62,31 +64,18 @@ def test_context_includes_session_rating(
     pg = PostgresStore()
     pg.create_session(test_session_id)
     pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="user", content="你好"))
-    pg.update_session_rating(test_session_id, -1, "一直在重复套话，很死板")
+    if with_rating:
+        pg.update_session_rating(test_session_id, -1, "一直在重复套话，很死板")
 
     engine = _make_engine(pg, chroma_store, fake_llm)
     context = engine._build_context(test_session_id)
 
-    assert "用户对本会话的评价" in context
-    assert "用户评分：-1（差）" in context
-    assert "用户评论：一直在重复套话，很死板" in context
-
-
-def test_context_omits_rating_when_absent(
-    pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.create_session(test_session_id)
-    pg.insert_dialogue(DialogueLog(session_id=test_session_id, role="user", content="你好"))
-
-    engine = _make_engine(pg, chroma_store, fake_llm)
-    context = engine._build_context(test_session_id)
-
-    assert "用户对本会话的评价" not in context
+    if with_rating:
+        assert "用户对本会话的评价" in context
+        assert "用户评分：-1（差）" in context
+        assert "用户评论：一直在重复套话，很死板" in context
+    else:
+        assert "用户对本会话的评价" not in context
 
 
 def test_cli_rating_prompt_writes_valid_input(pg_available, test_session_id, monkeypatch):

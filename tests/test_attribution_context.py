@@ -33,8 +33,9 @@ def _insert_turn(pg: PostgresStore, session_id: str, monologue: str | None = Non
     )
 
 
+@pytest.mark.parametrize("has_dimension_refs", [True, False])
 def test_context_splits_dimensions_by_session_activation(
-    pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
+    has_dimension_refs, pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
@@ -42,39 +43,26 @@ def test_context_splits_dimensions_by_session_activation(
 
     pg = PostgresStore()
     assistant_id = _insert_turn(pg, test_session_id)
-    pg.insert_dialogue_dimension_refs(assistant_id, [1, 3])
+    if has_dimension_refs:
+        pg.insert_dialogue_dimension_refs(assistant_id, [1, 3])
 
     engine = _make_engine(pg, chroma_store, fake_llm)
     context = engine._build_context(test_session_id)
 
     activated_section = context.split("本次会话中实际激活的性格维度：")[1].split("其余活跃的性格维度")[0]
     remaining_section = context.split("其余活跃的性格维度")[1]
-    assert "[1]" in activated_section and "[3]" in activated_section
-    assert "[2]" in remaining_section and "[4]" in remaining_section and "[5]" in remaining_section
-    assert "[1]" not in remaining_section and "[3]" not in remaining_section
+    if has_dimension_refs:
+        assert "[1]" in activated_section and "[3]" in activated_section
+        assert "[2]" in remaining_section and "[4]" in remaining_section and "[5]" in remaining_section
+        assert "[1]" not in remaining_section and "[3]" not in remaining_section
+    else:
+        # 无维度引用记录：激活组为空占位，全部维度进其余组
+        assert "（无记录）" in activated_section
+        for dim_id in range(1, 6):
+            assert f"[{dim_id}]" in remaining_section
     # 已移除的段落
     assert "人格素材" not in context
     assert "思考过程" not in context
-
-
-def test_context_without_dimension_refs_puts_all_in_remaining(
-    pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
-):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    _insert_turn(pg, test_session_id)
-
-    engine = _make_engine(pg, chroma_store, fake_llm)
-    context = engine._build_context(test_session_id)
-
-    activated_section = context.split("本次会话中实际激活的性格维度：")[1].split("其余活跃的性格维度")[0]
-    assert "（无记录）" in activated_section
-    remaining_section = context.split("其余活跃的性格维度")[1]
-    for dim_id in range(1, 6):
-        assert f"[{dim_id}]" in remaining_section
 
 
 def test_transcript_inlines_inner_monologue(

@@ -74,8 +74,6 @@ def test_web_doc_filtering_not_undone_by_state_merge(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     docs = [
@@ -203,29 +201,41 @@ def _memory_filter_overhead(user_input: str) -> int:
     )
 
 
+@pytest.mark.parametrize("over_budget", [True, False])
 def test_memory_filter_proportional_compression(
-    fake_llm, chroma_store, temp_log_dir, monkeypatch, caplog
+    fake_llm, chroma_store, temp_log_dir, monkeypatch, caplog, over_budget
 ):
     """D：整份过滤 prompt 超 memory_relevance_filter_max_tokens 时按条数等比压缩
 
     每条展示文本（水填充同哲学，源 doc 不动），记
-    retrieve.memory_filter_prompt_truncated。"""
+    retrieve.memory_filter_prompt_truncated。预算内各条展示原文，无压缩无日志
+    （旧 1500 字内场景零变化）。"""
     user_input = "你喜欢什么颜色"
-    long_text = "关于星际旅行的记忆片段，包含曲速引擎的细节。" * 40  # ~720 字
-    mid_text = "关于蓝色海洋的记忆。" * 10
-    short_text = "喜欢蓝色"
-    docs = [
-        MemoryDoc(id="d0", page_content=long_text,
-                  metadata=DialogueMemoryMetadata(session_id="s")),
-        MemoryDoc(id="d1", page_content=mid_text,
-                  metadata=DialogueMemoryMetadata(session_id="s")),
-        MemoryDoc(id="d2", page_content=short_text,
-                  metadata=DialogueMemoryMetadata(session_id="s")),
-    ]
-    monkeypatch.setattr(
-        settings, "memory_relevance_filter_max_tokens",
-        _memory_filter_overhead(user_input) + 30,  # 记忆展示总预算仅 30 token
-    )
+    if over_budget:
+        long_text = "关于星际旅行的记忆片段，包含曲速引擎的细节。" * 40  # ~720 字
+        mid_text = "关于蓝色海洋的记忆。" * 10
+        short_text = "喜欢蓝色"
+        docs = [
+            MemoryDoc(id="d0", page_content=long_text,
+                      metadata=DialogueMemoryMetadata(session_id="s")),
+            MemoryDoc(id="d1", page_content=mid_text,
+                      metadata=DialogueMemoryMetadata(session_id="s")),
+            MemoryDoc(id="d2", page_content=short_text,
+                      metadata=DialogueMemoryMetadata(session_id="s")),
+        ]
+        # 记忆展示总预算仅 30 token
+        max_tokens = _memory_filter_overhead(user_input) + 30
+        llm_results = [{"index": i, "is_relevant": True} for i in range(3)]
+    else:
+        docs = [
+            MemoryDoc(id="d0", page_content="我喜欢蓝色",
+                      metadata=DialogueMemoryMetadata(session_id="s")),
+            MemoryDoc(id="d1", page_content="今天天气很好",
+                      metadata=DialogueMemoryMetadata(session_id="s")),
+        ]
+        max_tokens = 32768
+        llm_results = [{"index": 0, "is_relevant": True}]
+    monkeypatch.setattr(settings, "memory_relevance_filter_max_tokens", max_tokens)
     graph = _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch)
     open_log_propagation(caplog, monkeypatch)  # 须在引擎构造后（构造会重置 propagate）
 
@@ -235,7 +245,7 @@ def test_memory_filter_proportional_compression(
     def _patched(system_prompt, user_prompt, response_format, temperature=0.2):
         if response_format.__name__ == "MemoryRelevanceFilterResult":
             captured["prompt"] = user_prompt
-            return {"results": [{"index": i, "is_relevant": True} for i in range(3)]}
+            return {"results": llm_results}
         return original(system_prompt, user_prompt, response_format, temperature)
 
     monkeypatch.setattr(fake_llm, "chat_structured", _patched)
@@ -244,61 +254,31 @@ def test_memory_filter_proportional_compression(
         {"session_id": "s", "user_input": user_input, "memory_docs": docs}
     )
 
-    # 三条全部保留（LLM 全判相关），但展示文本被等比压缩
-    assert len(state["memory_docs"]) == 3
     prompt = captured["prompt"]
-    assert "[记忆过长，已省略后续内容]" in prompt
-    assert long_text not in prompt  # 长片不再整段进 prompt
-    body = prompt.split("记忆列表：\n", 1)[1].rsplit("\n\n请返回", 1)[0]
-    fitted = dict(
-        (int(i), t) for i, t in re.findall(r"\[(\d+)\] (.*?)(?=\n\n\[\d+\] |$)", body, re.S)
-    )
-    assert len(fitted) == 3
-    assert len(fitted[0]) > len(fitted[1]) > 0  # 等比：长片分到的展示预算更多
-    assert fitted[2].endswith("[记忆过长，已省略后续内容]")
-    assert docs[0].page_content == long_text  # 源 doc 本体不动
-    assert docs[2].page_content == short_text
-    events = capture_events(caplog, "retrieve.memory_filter_prompt_truncated")
-    assert len(events) == 1
-    details = events[0].details
-    assert details["original_tokens"] > details["truncated_tokens"]
-    assert details["doc_count"] == 3
-
-
-def test_memory_filter_within_budget_unchanged(
-    fake_llm, chroma_store, temp_log_dir, monkeypatch, caplog
-):
-    """D 回归：预算内各条展示原文，无压缩无日志（旧 1500 字内场景零变化）。"""
-    user_input = "你喜欢什么颜色"
-    docs = [
-        MemoryDoc(id="d0", page_content="我喜欢蓝色",
-                  metadata=DialogueMemoryMetadata(session_id="s")),
-        MemoryDoc(id="d1", page_content="今天天气很好",
-                  metadata=DialogueMemoryMetadata(session_id="s")),
-    ]
-    monkeypatch.setattr(settings, "memory_relevance_filter_max_tokens", 32768)
-    graph = _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch)
-    open_log_propagation(caplog, monkeypatch)  # 须在引擎构造后（构造会重置 propagate）
-
-    captured: dict = {}
-    original = fake_llm.chat_structured
-
-    def _patched(system_prompt, user_prompt, response_format, temperature=0.2):
-        if response_format.__name__ == "MemoryRelevanceFilterResult":
-            captured["prompt"] = user_prompt
-            return {"results": [{"index": 0, "is_relevant": True}]}
-        return original(system_prompt, user_prompt, response_format, temperature)
-
-    monkeypatch.setattr(fake_llm, "chat_structured", _patched)
-
-    state = graph._filter_memory_docs(
-        {"session_id": "s", "user_input": user_input, "memory_docs": docs}
-    )
-
-    assert len(state["memory_docs"]) == 1
-    assert "我喜欢蓝色" in captured["prompt"]
-    assert "[记忆过长" not in captured["prompt"]
-    assert capture_events(caplog, "retrieve.memory_filter_prompt_truncated") == []
+    if over_budget:
+        # 三条全部保留（LLM 全判相关），但展示文本被等比压缩
+        assert len(state["memory_docs"]) == 3
+        assert "[记忆过长，已省略后续内容]" in prompt
+        assert long_text not in prompt  # 长片不再整段进 prompt
+        body = prompt.split("记忆列表：\n", 1)[1].rsplit("\n\n请返回", 1)[0]
+        fitted = dict(
+            (int(i), t) for i, t in re.findall(r"\[(\d+)\] (.*?)(?=\n\n\[\d+\] |$)", body, re.S)
+        )
+        assert len(fitted) == 3
+        assert len(fitted[0]) > len(fitted[1]) > 0  # 等比：长片分到的展示预算更多
+        assert fitted[2].endswith("[记忆过长，已省略后续内容]")
+        assert docs[0].page_content == long_text  # 源 doc 本体不动
+        assert docs[2].page_content == short_text
+        events = capture_events(caplog, "retrieve.memory_filter_prompt_truncated")
+        assert len(events) == 1
+        details = events[0].details
+        assert details["original_tokens"] > details["truncated_tokens"]
+        assert details["doc_count"] == 3
+    else:
+        assert len(state["memory_docs"]) == 1
+        assert "我喜欢蓝色" in prompt
+        assert "[记忆过长" not in prompt
+        assert capture_events(caplog, "retrieve.memory_filter_prompt_truncated") == []
 
 
 class _RecordingReplyLLM(FakeLLMClient):
@@ -337,8 +317,6 @@ def _seed_turn(
 
 
 def _setup_seeded_graph(pg, chroma_store, llm):
-    pg.init_schema()
-    pg.seed()
     return DialogueGraph(
         pg_store=pg,
         chroma_store=chroma_store,
@@ -377,22 +355,23 @@ def test_history_messages_not_duplicated(
     assert llm_messages[-1] == {"role": "user", "content": "用户说：新问题"}
 
 
+@pytest.mark.parametrize("selected_empty", [False, True])
 def test_log_dialogue_records_only_selected_dimensions(
-    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir
+    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, selected_empty
 ):
+    """selected_dimension_ids 只登记选中维度；空选择（改进 70 三态）时
+    dimension_refs 如实写空。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     dimensions = pg.list_dimensions(active_only=True)
     assert len(dimensions) >= 2
     all_ids = [d.id for d in dimensions if d.id is not None]
-    selected = all_ids[:1]
+    selected: list = [] if selected_empty else all_ids[:1]
     unselected = set(all_ids[1:])
 
     graph = DialogueGraph(
@@ -427,22 +406,25 @@ def test_log_dialogue_records_only_selected_dimensions(
     assert not (ref_ids & unselected)
 
 
+@pytest.mark.parametrize("selected_empty", [False, True])
 def test_assemble_uses_only_selected_dimensions(
-    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
+    fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch,
+    selected_empty,
 ):
+    """selected_dimension_ids 只拼选中维度进 identity 段；空选择（改进 70 三态）时
+    prompt 不含任何维度行，以占位文案代替。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
 
     dimensions = pg.list_dimensions(active_only=True)
     assert len(dimensions) >= 2
     selected_dim = dimensions[0]
     unselected_dims = [d for d in dimensions[1:] if d.id is not None]
+    selected_ids: list = [] if selected_empty else [selected_dim.id]
 
     graph = DialogueGraph(
         pg_store=pg,
@@ -458,7 +440,7 @@ def test_assemble_uses_only_selected_dimensions(
         "identity": pg.get_identity(),
         "user_identity": None,
         "dimensions": dimensions,
-        "selected_dimension_ids": [selected_dim.id],
+        "selected_dimension_ids": selected_ids,
         "personality_docs": [],
         "memory_docs": [],
         "messages": [],
@@ -471,9 +453,14 @@ def test_assemble_uses_only_selected_dimensions(
     assert sections, "fit_sections should have been called"
     identity_section = next(s for s in sections if s.name == "identity")
 
-    assert selected_dim.description in identity_section.text
-    for dim in unselected_dims:
-        assert dim.description not in identity_section.text
+    if selected_empty:
+        assert "（未特别选中）" in identity_section.text
+        for dim in dimensions:
+            assert dim.description not in identity_section.text
+    else:
+        assert selected_dim.description in identity_section.text
+        for dim in unselected_dims:
+            assert dim.description not in identity_section.text
 
 
 class _HallucinatingSelectionLLM(FakeLLMClient):
@@ -494,8 +481,6 @@ def test_select_dimensions_drops_hallucinated_ids(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
     dimensions = pg.list_dimensions(active_only=True)
 
@@ -533,17 +518,17 @@ class _FailingSelectionLLM(FakeLLMClient):
         return super().structured_chat(messages, response_format, temperature)
 
 
-def test_select_dimensions_llm_empty_selection_yields_empty(
-    test_session_id, pg_available, chroma_store, temp_log_dir
+@pytest.mark.parametrize("llm_cls", [_EmptySelectionLLM, _FailingSelectionLLM])
+def test_select_dimensions_empty_or_failure_yields_empty(
+    test_session_id, pg_available, chroma_store, temp_log_dir, llm_cls
 ):
-    """改进 70：LLM 返回空列表时 selected_dimension_ids 为 []，不回退全量。"""
+    """改进 70：LLM 返回空列表或抛异常时 selected_dimension_ids 为 []
+    （失败=无维度起作用），不回退全量维度。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     pg.create_session(test_session_id)
     dimensions = pg.list_dimensions(active_only=True)
     assert len(dimensions) >= 2
@@ -551,39 +536,7 @@ def test_select_dimensions_llm_empty_selection_yields_empty(
     graph = DialogueGraph(
         pg_store=pg,
         chroma_store=chroma_store,
-        llm=_EmptySelectionLLM(),
-        enable_web_search=False,
-    )
-    state = {
-        "session_id": test_session_id,
-        "user_input": "测试输入",
-        "dimensions": dimensions,
-    }
-    result = graph._select_dimensions(state)
-
-    assert result["selected_dimension_ids"] == []
-
-
-def test_select_dimensions_failure_yields_empty_not_all(
-    test_session_id, pg_available, chroma_store, temp_log_dir
-):
-    """改进 70：LLM 抛异常时 selected_dimension_ids 为 []（失败=无维度起作用），
-    不再回退为全量维度。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-    dimensions = pg.list_dimensions(active_only=True)
-    assert len(dimensions) >= 2
-
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=_FailingSelectionLLM(),
+        llm=llm_cls(),
         enable_web_search=False,
     )
     state = {
@@ -597,102 +550,6 @@ def test_select_dimensions_failure_yields_empty_not_all(
     assert set(result["selected_dimension_ids"]) != {
         d.id for d in dimensions if d.id is not None
     }
-
-
-def test_log_dialogue_records_empty_refs_when_selection_empty(
-    test_session_id, pg_available, chroma_store, temp_log_dir
-):
-    """改进 70：空选择三态——selected_dimension_ids=[] 时 dimension_refs 如实写空。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-
-    dimensions = pg.list_dimensions(active_only=True)
-    assert len(dimensions) >= 1
-
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=FakeLLMClient(),
-        enable_web_search=False,
-    )
-
-    state = {
-        "session_id": test_session_id,
-        "user_input": "测试输入",
-        "reply": "测试回复",
-        "reply_blocks": [],
-        "dimensions": dimensions,
-        "selected_dimension_ids": [],
-        "personality_docs": [],
-        "web_docs": [],
-        "inner_monologue": None,
-    }
-    result = graph._log_dialogue(state)
-    assistant_log_id = result["assistant_log_id"]
-
-    with pg._cursor() as cur:
-        cur.execute(
-            "SELECT dimension_id FROM dialogue_dimension_refs WHERE dialogue_log_id = %s",
-            (assistant_log_id,),
-        )
-        ref_ids = {row["dimension_id"] for row in cur.fetchall()}
-
-    assert ref_ids == set()
-
-
-def test_assemble_omits_dimension_lines_when_selection_empty(
-    test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
-):
-    """改进 70：空选择三态——selected_dimension_ids=[] 时 prompt 不含任何维度行，
-    以占位文案代替。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    pg.create_session(test_session_id)
-
-    dimensions = pg.list_dimensions(active_only=True)
-    assert len(dimensions) >= 1
-
-    graph = DialogueGraph(
-        pg_store=pg,
-        chroma_store=chroma_store,
-        llm=FakeLLMClient(),
-        enable_web_search=False,
-    )
-    captured = _capture_fit_sections(graph, monkeypatch)
-
-    state = {
-        "session_id": test_session_id,
-        "user_input": "测试输入",
-        "identity": pg.get_identity(),
-        "user_identity": None,
-        "dimensions": dimensions,
-        "selected_dimension_ids": [],
-        "personality_docs": [],
-        "memory_docs": [],
-        "messages": [],
-        "web_docs": [],
-        "inner_monologue": None,
-    }
-    graph._assemble_and_generate(state)
-
-    sections = captured.get("sections")
-    assert sections, "fit_sections should have been called"
-    identity_section = next(s for s in sections if s.name == "identity")
-
-    assert "（未特别选中）" in identity_section.text
-    for dim in dimensions:
-        assert dim.description not in identity_section.text
 
 
 def test_history_turns_become_alternating_messages(
@@ -756,16 +613,17 @@ def test_history_trimmed_to_token_budget_keeps_recent_turns(
     graph = _setup_seeded_graph(pg, chroma_store, llm)
     pg.create_session(test_session_id)
 
-    # 6 对历史轮，每轮内容约 800 token（中文字符 ≈ 1 token）。
+    # 6 对历史轮，每轮内容约 100 token（中文字符 ≈ 1 token）；limit 下调后
+    # 触发同一裁剪分支（最老整轮被裁），数据量约为原 6×1600 字的 1/10。
     for i in range(6):
         _seed_turn(
             pg,
             test_session_id,
-            question=f"第{i}问" + "问" * 800,
-            answer=f"第{i}答" + "答" * 800,
+            question=f"第{i}问" + "问" * 100,
+            answer=f"第{i}答" + "答" * 100,
         )
 
-    monkeypatch.setattr(settings, "llm_context_token_limit", 5000)
+    monkeypatch.setattr(settings, "llm_context_token_limit", 2500)
 
     reply = graph.chat(test_session_id, "当前问题")
     assert reply

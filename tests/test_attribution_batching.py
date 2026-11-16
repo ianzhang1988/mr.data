@@ -49,20 +49,25 @@ def _capture_llm(monkeypatch, fake_llm, captured: dict, payload: dict):
     monkeypatch.setattr(fake_llm, "chat_structured", _chat)
 
 
+@pytest.mark.parametrize("overlap_lines", [2, 0])
 def test_batch_partition_and_overlap_context(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
+    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch,
+    overlap_lines,
 ):
-    """103 条日志 limit=100：run1 本批 100 条（第 4~103）、剩最旧 3 条；
+    """7 条日志 limit=4：run1 本批 4 条（第 4~7）、剩最旧 3 条；
     上文回顾 = 已处理行中按时间紧邻本批上方的最旧 overlap 条（借插入序验证内容）。
-    run2 本批 = 剩余 3 条全取，上文回顾第 4、5 条，标记后归零。"""
+    run2 本批 = 剩余 3 条全取，上文回顾第 4、5 条，标记后归零。
+    overlap_lines=0（参数化）：拆批仍标注第 x/y 批，但 transcript 不上文回顾段。
+    兼 B4：拆批时会话级评分段落替换为「背景校准 + 锚定本批事件」规则。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    _setup_session(pg, test_session_id, 103)
+    _setup_session(pg, test_session_id, 7)
+    pg.update_session_rating(test_session_id, 1, "太冷漠了")
+    monkeypatch.setattr(settings, "offline_max_session_logs", 4)  # 7 条拆 2 批：4 + 3
+    monkeypatch.setattr(settings, "offline_attribution_batch_overlap_lines", overlap_lines)
 
     captured1: dict = {}
     _capture_llm(monkeypatch, fake_llm, captured1, {"deltas": []})
@@ -70,10 +75,14 @@ def test_batch_partition_and_overlap_context(
     engine.run()
 
     unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
-    assert len(unprocessed) == 3  # 本批 100 条已标记，窗口外剩最旧 3 条
+    assert len(unprocessed) == 3  # 本批 4 条已标记，窗口外剩最旧 3 条
     assert "第 1/2 批" in captured1["system"]
     assert "第 1/2 批" in captured1["user"]
     assert "上文回顾" not in captured1["user"]  # 首批无已处理行
+    # B4：评分段落替换为「背景校准 + 锚定本批事件」规则
+    assert "最直接的成败信号" not in captured1["system"]
+    assert "校准判断倾向" in captured1["system"]
+    assert "锚定本批对话中的具体事件" in captured1["system"]
 
     captured2: dict = {}
     _capture_llm(monkeypatch, fake_llm, captured2, {"deltas": []})
@@ -83,34 +92,13 @@ def test_batch_partition_and_overlap_context(
     assert pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True) == []
     assert "第 2/2 批" in captured2["system"]
     assert "第 2/2 批" in captured2["user"]
-    assert "上文回顾" in captured2["user"]
-    assert "第4条" in captured2["user"]  # 回顾行：紧邻本批的第 4、5 条
-    assert "第5条" in captured2["user"]
-    assert "第103条" not in captured2["user"]  # 第 1 批最新行不属邻接上文
-
-
-def test_batched_prompt_replaces_rating_paragraph(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
-):
-    """B4：拆批时会话级评分段落替换为「背景校准 + 锚定本批事件」规则。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    _setup_session(pg, test_session_id, 103)
-    pg.update_session_rating(test_session_id, 1, "太冷漠了")
-
-    captured: dict = {}
-    _capture_llm(monkeypatch, fake_llm, captured, {"deltas": []})
-    engine = _make_engine(pg, chroma_store, fake_llm)
-    engine.run()
-
-    assert "最直接的成败信号" not in captured["system"]
-    assert "校准判断倾向" in captured["system"]
-    assert "锚定本批对话中的具体事件" in captured["system"]
+    if overlap_lines > 0:
+        assert "上文回顾" in captured2["user"]
+        assert "第4条" in captured2["user"]  # 回顾行：紧邻本批的第 4、5 条
+        assert "第5条" in captured2["user"]
+        assert "第7条" not in captured2["user"]  # 第 1 批最新行不属邻接上文
+    else:
+        assert "上文回顾" not in captured2["user"]
 
 
 def test_unbatched_prompt_unchanged(
@@ -122,8 +110,6 @@ def test_unbatched_prompt_unchanged(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
     _setup_session(pg, test_session_id, 2)
     pg.update_session_rating(test_session_id, 5, "很棒")
 
@@ -144,7 +130,7 @@ def test_context_line_cannot_be_target(
 ):
     """B1 边界：上文回顾行的 assistant id 不在 target 校验白名单内。
 
-    第 1 批（最新 100 条）正常归因；第 2 批的上文回顾 = 紧邻的第 4、5 条。
+    第 1 批（最新 4 条）正常归因；第 2 批的上文回顾 = 紧邻的第 4、5 条。
     第 2 批 LLM 若把 target 指向回顾行（第 4 条，assistant）→ 置 None 并记
     offline.invalid_target_log_id；指向本批行（第 2 条）的对照 delta 不受影响。"""
     pytest.importorskip("pgembed", reason="pgembed not installed")
@@ -152,9 +138,8 @@ def test_context_line_cannot_be_target(
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    ids = _setup_session(pg, test_session_id, 103)
+    ids = _setup_session(pg, test_session_id, 7)
+    monkeypatch.setattr(settings, "offline_max_session_logs", 4)  # 7 条拆 2 批：4 + 3
     context_id = ids[3]  # 第 4 条：run2 的上文回顾行（assistant）
     batch_id = ids[1]  # 第 2 条：run2 本批行（assistant）
     dim_id = pg.list_dimensions(active_only=True)[0].id
@@ -193,29 +178,3 @@ def test_context_line_cannot_be_target(
     invalid = capture_events(caplog, "offline.invalid_target_log_id")
     assert len(invalid) == 1
     assert invalid[0].details["target_dialogue_log_id"] == context_id
-
-
-def test_overlap_disabled_by_config(
-    fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
-):
-    """overlap=0：拆批仍标注第 x/y 批，但 transcript 不上文回顾段。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
-    if not pg_available:
-        pytest.skip("PostgreSQL not available")
-
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-    _setup_session(pg, test_session_id, 103)
-    monkeypatch.setattr(settings, "offline_attribution_batch_overlap_lines", 0)
-
-    _capture_llm(monkeypatch, fake_llm, {}, {"deltas": []})
-    engine = _make_engine(pg, chroma_store, fake_llm)
-    engine.run()
-
-    captured2: dict = {}
-    _capture_llm(monkeypatch, fake_llm, captured2, {"deltas": []})
-    engine.run()
-
-    assert "第 2/2 批" in captured2["system"]
-    assert "上文回顾" not in captured2["user"]

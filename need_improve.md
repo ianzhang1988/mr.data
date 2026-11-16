@@ -12,21 +12,16 @@
 
 # 待改进
 
-1.  改进：vector_refs 补全 memory_docs 登记
-
-  • 问题：dialogue_vector_refs 现状只登记 personality_docs + 本轮新沉淀 web 片；retrieve_memories 召回的 memory_docs（dialogue 段 + 旧 web 片）零登记。
-  • 建议实现：
-    1. graph.py::_log_dialogue 组装 vector_refs 时纳入 state["memory_docs"]；
-    2. dialogue 段：DialogueVectorRefSourceType 扩 "dialogue" 值域，同步 database-design「素材来源类型约定」表（本表将出现 dialogue），排查下游按 source_type 分支的消费者；
+（暂无）
 
 # 已完成的改进项
-（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-83 已迁移归档）
-
-84. ✅ 记忆相关性过滤预算统一 TokenCounter（截断调查改进项 D）：`memory_relevance_filter_max_tokens=32768` 总预算，超额按条数等比压缩每条展示文本（源 doc 不动）记 `retrieve.memory_filter_prompt_truncated`，删 1500 字符魔法数；降级语义不变。详见 finished_improvement.md #84。
+（保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
 
 85. ✅ 离线归因定时调度（chat 内嵌守护线程）：croniter 解析 `offline_schedule_cron`（默认每小时整点）定时执行归因，进程内 `_RUN_LOCK` + 跨进程 PG advisory lock 双层互斥，手动 `offline` 同锁。详见 finished_improvement.md #85。
 
 86. ✅ /newsession 异步触发离线归因：chat 内 `/newsession` 关闭会话后在守护线程异步执行一轮归因，护栏主体收敛为 `guarded_offline_run`（source 区分事件名），与定时调度/手动 offline 共用 `_RUN_LOCK` + advisory lock 双层互斥，持锁冲突自动跳过不阻断对话。详见 finished_improvement.md #86。
+
+88. ✅ vector_refs 补全 memory_docs 登记：`_log_dialogue` 把过滤后进入 prompt 的 memory_docs（dialogue 段按段、web 旧片按片）登记进 `dialogue_vector_refs`，`DialogueVectorRefSourceType` 扩 `dialogue` 值域，同轮按 vector_doc_id 去重。详见 finished_improvement.md #88。
 
 # 未来可选增强（计划中）
 

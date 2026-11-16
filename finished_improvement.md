@@ -191,3 +191,12 @@
     - 范围外建议（未改）：`/exit` 不触发归因（需求只点名 /newsession）；运行中进程被 kill 靠 PG 连接关闭兜底释放 advisory lock（原型可接受）。
 
 87. ✅ **维度淘汰失败率阈值上调 0.33 → 0.6**（用户拍板，依据「现实中习惯不坏到一定程度不会改」的稳定优先观察）：人格系统目标是性格连贯而非每维度优异；failure 是 LLM 相关性标签非因果真值，误杀代价不对称——purge 不可逆、无 reactivate（计数历史+素材全丢、重新发现从 0 开始），误留仅多占一个候选位。实现：`config.py` `failure_ratio_threshold` 默认值 0.33 → 0.6，判据结构（非 core 且总样本 ≥ `failure_min_samples`(10) 且失败比率严格 > 阈值）不变。语义变化：n=10 时最小出局从 4 败升为 7 败（6/10=0.6 不满足严格大于）；真实失败率 40~55% 的平庸维度不再被淘汰——明示接受的取舍（对应「人类坏习惯靠惯性留存」的另一半观察：0.6 以下无任何降级信号，介于 0.33~0.6 的维度终身服役）。文档同步：offline-attribution.md#淘汰（含改进 87 标注）、overview.md 淘汰条目。测试：既有用例（test_attribution_deactivation.py / test_attribution_transaction.py / test_e2e.py）均动态引用 settings、无硬编码 0.33，零改动通过。
+
+
+88. ✅ **vector_refs 补全 memory_docs 登记**（need_improve.md 待改进；兑现 design/memory-and-retrieval.md §6「dialogue_vector_refs 记录本轮进入 prompt 的全部素材」契约）：原 `_log_dialogue` 只登记 personality_docs + 本轮新沉淀 web 片，retrieve_memories 召回并进入 prompt 的 memory_docs（dialogue 段 + 旧 web 片）零登记——审计链断一截。实现（改进 88）：
+    1. **值域扩展**：`DialogueVectorRefSourceType` 扩 `"dialogue"`（本表合法值 5 种，line/event/evidence/web/dialogue）。下游消费者排查：唯一读者是离线归因 `_purge_dimension_vectors`（按 dimension_ids 过滤，dimension_ids IS NOT NULL 才可见）——memory refs 写 []→落库 NULL 天然不可见、不误删 memories 集合文档；LLM 侧 prompt（graph.py L676）与 known_refs 早已支持 dialogue 值，回复引用链本就通，只差 refs 登记。无其它按 source_type 分支的消费者受影响。
+    2. **登记实现**（`graph.py::_log_dialogue`，同一 PG 事务）：纳入 `state.get("memory_docs", [])`——管道时序保证这是 `_filter_memory_docs` 之后、实际进入 prompt 的集合（用户拍板：被相关性过滤掉的素材不登记，无需额外过滤逻辑）。dialogue 段按段、web 旧片按片，dimension_ids 恒空（记忆无维度归属）。同轮按 `vector_doc_id` 去重：旧 web 片被召回 + 同页重抓正文未变时分片 id 相同，跳过重复登记（顺带收敛同 URL 重复 web doc 的历史重复行行为）。
+    3. **可观测性**：`chat.turn` 日志 details 补 `memory_doc_count`（与 personality_doc_count/web_doc_count 并列）。
+    - 文档同步：database-design.md「素材来源类型约定」——DialogueVectorRefSourceType 五值、dialogue 行写入路径/存储列、规则 1 改写（本表 dialogue 行来自 _log_dialogue 登记、dimension_ids 恒空不参与 purge）；表字段说明与表描述补记忆召回；memory-and-retrieval.md §6 实现注释更新为已落地。
+    - 测试：`test_source_type.py` 翻转旧行为反断言（原 `test_dialogue_vector_ref_rejects_dialogue_source_type` 正是被消除的行为）为 accepts_dialogue + 未知值仍拒；`test_log_dialogue_transaction.py` +1（`test_log_dialogue_registers_memory_docs`——state 含 1 dialogue 段 + 1 web 旧片，断言 4 行齐全、source_type 序列、memory 行 dimension_ids 落库 NULL）；既有 ==2 行数断言的两个用例（state 无 memory_docs）不变通过。全量回归 **241 passed, 1 skipped**（239 基线 +2）。
+    - 范围外建议（未改）：无。

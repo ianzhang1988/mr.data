@@ -200,3 +200,12 @@
     - 文档同步：database-design.md「素材来源类型约定」——DialogueVectorRefSourceType 五值、dialogue 行写入路径/存储列、规则 1 改写（本表 dialogue 行来自 _log_dialogue 登记、dimension_ids 恒空不参与 purge）；表字段说明与表描述补记忆召回；memory-and-retrieval.md §6 实现注释更新为已落地。
     - 测试：`test_source_type.py` 翻转旧行为反断言（原 `test_dialogue_vector_ref_rejects_dialogue_source_type` 正是被消除的行为）为 accepts_dialogue + 未知值仍拒；`test_log_dialogue_transaction.py` +1（`test_log_dialogue_registers_memory_docs`——state 含 1 dialogue 段 + 1 web 旧片，断言 4 行齐全、source_type 序列、memory 行 dimension_ids 落库 NULL）；既有 ==2 行数断言的两个用例（state 无 memory_docs）不变通过。全量回归 **241 passed, 1 skipped**（239 基线 +2）。
     - 范围外建议（未改）：无。
+
+
+89. ✅ **PostgresStore 连接池**（need_improve.md 待改进）：`_cursor` 非事务路径原每次 `psycopg.connect` + 用完即关，chat 每轮十余次 store 调用 = 十余次连接建立。实现（改进 89）：
+    1. **依赖**：`psycopg[binary]` → `psycopg[binary,pool]`（psycopg-pool 3.3.3）。
+    2. **共享池**（`postgres.py` 模块级 `_POOLS`，键为 dsn）：懒建 `ConnectionPool(min_size=1, max_size=8, kwargs={"row_factory": dict_row})`。按 dsn 进程级共享而非每实例自持——测试中 68+ 处临时 `PostgresStore()` 从不 close，每实例一条 min_size 连接会累积撑爆 pgembed。`row_factory` 经 kwargs 透传，checkout 连接自带 dict_row，690 行方法体零改动。
+    3. **语义保持**：`_cursor` commit 语义不变；`transaction()` 从池取固定连接作 `_tx_conn`、结束归还（不再 close），嵌套禁止（`_tx_conn is not None` 抛错）不变；psycopg_pool 默认 reset 归还时回滚，commit=False 读路径的残留事务不污染下次 checkout。`scheduler.py` advisory lock 独立连接不动（会话锁必须独占连接）。
+    - 测试：`tests/test_postgres_pool.py` +3（同 dsn 实例共享池对象；事务归还后 _cursor 可再 checkout；30 次高频 _cursor 后服务端连接数不增长 ≤8）。全量回归 **218 passed(+3), 1 skipped**。
+    - **全量测试耗时对比**：基线 118.46s → 池化后 92.86s（**-25.6s，约 -22%**；real 2m3.9s → 1m38.7s）。
+    - 范围外建议（未改）：无。

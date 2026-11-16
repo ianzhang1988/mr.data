@@ -17,11 +17,11 @@
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
 
-85. ✅ 离线归因定时调度（chat 内嵌守护线程）：croniter 解析 `offline_schedule_cron`（默认每小时整点）定时执行归因，进程内 `_RUN_LOCK` + 跨进程 PG advisory lock 双层互斥，手动 `offline` 同锁。详见 finished_improvement.md #85。
-
 86. ✅ /newsession 异步触发离线归因：chat 内 `/newsession` 关闭会话后在守护线程异步执行一轮归因，护栏主体收敛为 `guarded_offline_run`（source 区分事件名），与定时调度/手动 offline 共用 `_RUN_LOCK` + advisory lock 双层互斥，持锁冲突自动跳过不阻断对话。详见 finished_improvement.md #86。
 
 88. ✅ vector_refs 补全 memory_docs 登记：`_log_dialogue` 把过滤后进入 prompt 的 memory_docs（dialogue 段按段、web 旧片按片）登记进 `dialogue_vector_refs`，`DialogueVectorRefSourceType` 扩 `dialogue` 值域，同轮按 vector_doc_id 去重。详见 finished_improvement.md #88。
+
+89. ✅ PostgresStore 连接池：`_cursor`/`transaction` 改走 psycopg_pool（按 dsn 进程级共享池 min_size=1/max_size=8），消除每轮十余次 connect/close；全量测试 118.46s → 92.86s（-22%）。详见 finished_improvement.md #89。
 
 # 未来可选增强（计划中）
 

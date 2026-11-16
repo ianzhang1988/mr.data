@@ -108,4 +108,4 @@ web **管道文档**（web 子管道内流转的 WebDoc）身份即 metadata.url
 - `dialogue_vector_refs`：素材引用登记表，**设计契约：记录本轮进入 prompt 的全部素材**——人格素材（按 doc）、记忆素材 memory_docs（dialogue 段按段、web 旧片按片）、本轮新沉淀 web 片（按片）；每行 = `vector_doc_id`（出处指针，目标可能已被 prune 删除）+ `content`（原文快照，行的价值所在）+ source_type + dimension_ids。离线归因的 evidence 也登记（指向 target 日志）。注意登记发生在 retrieve 阶段，是「实际检索到」而非「实际被引用」的审计链。
 - `dialogue_dimension_refs`：在线每轮实际选中的维度；离线用它区分会话激活维度。
 - dimension_ids 在 Chroma metadata 落库为 CSV、读出还原为 list[int]，非数字 token 跳过并 warning（脏数据容错）。
-- **memory_docs 必须登记**——refs 覆盖「本轮进入 prompt 的全部素材」才算完整：web 旧片按片、dialogue 段按段，与人格素材、新沉淀 web 片并列。`DialogueVectorRefSourceType` 值域含 `dialogue`，database-design「素材来源类型约定」同步包含。refs 行为历史完整记录，prune 删向量后行保留不清理（D-88）。（实现注释：`_log_dialogue` 尚未纳入 memory_docs、`dialogue` 值域待扩——改进项见 last_time_left #14）
+- **memory_docs 必须登记**——refs 覆盖「本轮进入 prompt 的全部素材」才算完整：web 旧片按片、dialogue 段按段，与人格素材、新沉淀 web 片并列。`DialogueVectorRefSourceType` 值域含 `dialogue`，database-design「素材来源类型约定」同步包含。refs 行为历史完整记录，prune 删向量后行保留不清理（D-88）。（改进 88 已落地：`_log_dialogue` 登记过滤后进入 prompt 的 memory_docs，`dialogue` 值域已扩。）

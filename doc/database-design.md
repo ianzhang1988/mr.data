@@ -165,14 +165,14 @@ CREATE INDEX idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
 
 ## `dialogue_vector_refs`
 
-记录每次助手回复时，从 Chroma `personality` 集合或网络搜索实际检索到的素材。
+记录每次助手回复时，实际检索进入 prompt 的素材（人格素材、记忆召回、网络资料）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | SERIAL PK | 自增主键 |
 | `dialogue_log_id` | INTEGER FK → `dialogue_logs(id)` | 关联的助手回复 |
 | `vector_doc_id` | TEXT | Chroma 中的文档 ID 或网络结果 ID |
-| `source_type` | TEXT | `line`、`event`、`evidence` 或 `web` |
+| `source_type` | TEXT | `line`、`event`、`evidence`、`web` 或 `dialogue` |
 | `content` | TEXT | 向量库/网络返回的文本快照 |
 | `dimension_ids` | TEXT | 该素材关联的维度 ID 列表，逗号分隔 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
@@ -195,7 +195,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 
 - `PersonalitySourceType = Literal["line", "event", "evidence"]` —— Chroma `personality` 集合
 - `MemorySourceType = Literal["web", "dialogue"]` —— Chroma `memories` 集合
-- `DialogueVectorRefSourceType = Literal["line", "event", "evidence", "web"]` —— 本表 `source_type` 列
+- `DialogueVectorRefSourceType = Literal["line", "event", "evidence", "web", "dialogue"]` —— 本表 `source_type` 列
 
 规范值共 5 种，含义与写入路径：
 
@@ -205,11 +205,11 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 | `event` | 离线归因的事件摘要 | `offline/attribution.py` | Chroma `personality` + PG `adjustment_logs.event_summary` |
 | `evidence` | 离线归因的证据片段 | `offline/attribution.py` | Chroma `personality` + 本表 |
 | `web` | 网络检索资料 | `online/search_providers.py`、`online/graph.py` | Chroma `memories` + 本表 |
-| `dialogue` | 会话分块沉淀的记忆 | `offline/attribution.py` | Chroma `memories` |
+| `dialogue` | 会话分块沉淀的记忆（离线沉淀）+ 在线召回的记忆素材（段/旧片） | `offline/attribution.py`、`online/graph.py`（`_log_dialogue` 登记过滤后进入 prompt 的 memory_docs） | Chroma `memories` + 本表（在线召回登记） |
 
 规则：
 
-1. **值域按集合划分**：`personality` 集合只会出现 `line/event/evidence`，`memories` 集合只会出现 `web/dialogue`；本表不会出现 `dialogue`（分块记忆不回写引用）。
+1. **值域按集合划分**：`personality` 集合只会出现 `line/event/evidence`，`memories` 集合只会出现 `web/dialogue`；本表五值皆可能出现——`dialogue` 行来自在线管道对召回 memory_docs 的登记（`graph.py _log_dialogue`，改进 88），dimension_ids 恒空（落库 NULL），不参与维度 purge。
 2. **存储侧强校验**：`PersonalityEvent.source_type` 与 `DialogueVectorRef.source_type` 使用上述 Literal 别名，非规范值在模型构造时即报错。新写入路径必须复用这些别名，禁止字面量扩散。
 3. **LLM 边界宽松**：`ReplyReference.source_type`（回复引用）保持自由 `str`——该值由系统按检索结果覆盖填充（`graph.py` 的 `known_refs`），LLM 输出仅供参考，不做强校验以避免小模型输出不规范导致整个回复解析失败。
 4. **读取路径**：`chroma.prune_stale_memories` 覆盖 `dialogue` 与 `web` 两类（超时基准 `last_recalled_at`，dialogue 回退 `added_at`、web 回退 `retrieved_at`）；graph 在线召回对两类记忆统一递增 recall_count 并刷新 `last_recalled_at`（dialogue 走模型读-改-写、web 走裸 dict 容错）；离线归因的 `_purge_dimension_vectors` 依赖本表回溯 `personality` 集合文档。

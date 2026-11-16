@@ -28,7 +28,7 @@
 
 划分理由 `[推断]`：personality 集合的文档参与「性格塑造」、带 dimension_ids 且会被维度淘汰 purge；memories 集合参与「上下文回忆」、带召回计数且会被 prune。生命周期管理策略完全不同，故分集合。
 
-五值 source_type 的完整约定（含义/写入路径/读取路径）是数据层契约，见 [database-design.md](../database-design.md)「素材来源类型约定」，本文不重复。 `[记录·改进 39]`
+五值 source_type 的完整约定（含义/写入路径/读取路径）是数据层契约，见 [database-design.md](../database-design.md)「素材来源类型约定」，本文不重复；术语入口见 [02-glossary.md](02-glossary.md#2)。 `[记录·改进 39]`
 
 **嵌入文本与存储文本**：personality 集合的 line/event/evidence 以「上下文+内容」中较长者嵌入（`event.context or event.content`），文档原文存储即嵌入文本；检索返回时 `page_content` 取 utterance（台词本体），完整 context 留在 metadata。 `[记录·改进 8, chroma.add_personality_event]`
 

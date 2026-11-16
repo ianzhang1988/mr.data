@@ -9,6 +9,7 @@
 | 我想…… | 去读 |
 |---|---|
 | 快速了解系统全貌 | [01-birdseye.md](01-birdseye.md) |
+| 查项目专有名词/类型值定义 | [02-glossary.md](02-glossary.md) |
 | 新接手项目，建立概念框架 | [overview.md](overview.md#2) 核心概念 |
 | 改动某个管道节点的行为 | [online-pipeline.md](online-pipeline.md#2) 节点职责卡 + #7 降级链 |
 | 新增/修改 DialogueState 的 key | [online-pipeline.md](online-pipeline.md#3) 契约表 + #2 相关节点 |
@@ -36,3 +37,4 @@
 | 项目目标、原则、非目标 | [overview.md](overview.md#1) / #3 / #4 |
 | 降级总原则 | [overview.md](overview.md#3) 原则 6（D-80） |
 | 跨库写入顺序 | [offline-attribution.md](offline-attribution.md#6)（D-81 折中定位） |
+| 项目专有名词/type 值唯一定义 | [02-glossary.md](02-glossary.md) |

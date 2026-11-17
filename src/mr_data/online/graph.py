@@ -1,7 +1,8 @@
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from typing import Callable, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
@@ -140,6 +141,35 @@ def _render_web_doc(d: WebDoc) -> str:
     （该 doc 不进 known_refs，引用会被丢弃）。供 _assemble_and_generate 使用。"""
     marker = f"[url: {d.metadata.url}]" if d.metadata.url else "[web]"
     return f"- {marker} [{d.metadata.title or 'web'}] {d.page_content}"
+
+
+class _EventTapHandler(logging.Handler):
+    """invoke 期间挂在 graph logger 上的临时 tap：把带 event extra 的
+    record 旁路一份给回调（chat-http-api 计划 §4 方案 a）。
+
+    只转发属于本轮会话的记录（record 无 session_id 或等于本轮 session_id），
+    避免并发会话污染事件流；日志落盘路径不变（tap 只是额外挂的 handler）。
+    """
+
+    def __init__(self, session_id: str, sink: Callable[[dict], None]) -> None:
+        super().__init__(level=logging.INFO)
+        self._session_id = session_id
+        self._sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        event = getattr(record, "event", None)
+        if event is None:
+            return
+        sid = getattr(record, "session_id", None)
+        if sid is not None and sid != self._session_id:
+            return
+        entry: dict = {"event": event}
+        if sid is not None:
+            entry["session_id"] = sid
+        details = getattr(record, "details", None)
+        if details is not None:
+            entry["details"] = details
+        self._sink(entry)
 
 
 @dataclass
@@ -991,19 +1021,31 @@ class DialogueGraph:
                 )
         return messages
 
-    def chat(self, session_id: str, user_input: str) -> ChatResult:
-        self.logger.info(
-            "Chat turn started",
-            extra={"event": "chat.start", "session_id": session_id,
-                   "details": {"user_input": user_input}},
-        )
-        messages = self._load_recent_messages(session_id)
-        state: DialogueState = {
-            "session_id": session_id,
-            "user_input": user_input,
-            "messages": messages,
-        }
+    def chat(
+        self,
+        session_id: str,
+        user_input: str,
+        on_event: Optional[Callable[[dict], None]] = None,
+    ) -> ChatResult:
+        """单轮对话。on_event 非 None 时，本轮管道内每个结构化事件
+        （与日志 extra 同构的 {event, session_id?, details}）按序回调一份，
+        供 HTTP 层/agent 测试断言降级路径；默认 None 行为与旧签名一致。"""
+        tap: Optional[_EventTapHandler] = None
+        if on_event is not None:
+            tap = _EventTapHandler(session_id, on_event)
+            self.logger.addHandler(tap)
         try:
+            self.logger.info(
+                "Chat turn started",
+                extra={"event": "chat.start", "session_id": session_id,
+                       "details": {"user_input": user_input}},
+            )
+            messages = self._load_recent_messages(session_id)
+            state: DialogueState = {
+                "session_id": session_id,
+                "user_input": user_input,
+                "messages": messages,
+            }
             final_state = self.graph.invoke(state)
             return ChatResult(
                 text=final_state["reply"],
@@ -1016,3 +1058,6 @@ class DialogueGraph:
                        "details": {"error": str(exc)}},
             )
             raise
+        finally:
+            if tap is not None:
+                self.logger.removeHandler(tap)

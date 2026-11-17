@@ -120,8 +120,8 @@ def test_chat_dimension_dispatches_to_mode(monkeypatch):
     def fake_mode(store, *, chroma=None, input_fn=None, entry="chat", status_bar=True):
         calls.append((chroma, entry))
 
-    monkeypatch.setattr("mr_data.cli.DialogueGraph", _FakeGraph)
-    monkeypatch.setattr("mr_data.cli.PostgresStore", _FakePG)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", _FakePG)
     monkeypatch.setattr(dimmode, "run_dimension_mode", fake_mode)
     monkeypatch.setattr(
         "mr_data.cli.Prompt.ask", _sequential_prompt(["/dimension", "/exit", ""])
@@ -135,8 +135,8 @@ def test_chat_dimension_dispatches_to_mode(monkeypatch):
 
 
 def test_chat_help_mentions_dimension(monkeypatch):
-    monkeypatch.setattr("mr_data.cli.DialogueGraph", _FakeGraph)
-    monkeypatch.setattr("mr_data.cli.PostgresStore", _FakePG)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", _FakePG)
     monkeypatch.setattr(
         "mr_data.cli.Prompt.ask", _sequential_prompt(["/help", "/exit", ""])
     )

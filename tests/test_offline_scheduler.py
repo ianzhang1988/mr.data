@@ -226,13 +226,13 @@ def _sequential_prompt(inputs: list[str]):
 
 
 def _patch_chat_deps(monkeypatch, scheduler_cls):
-    monkeypatch.setattr("mr_data.cli.OfflineScheduler", scheduler_cls)
+    monkeypatch.setattr("mr_data.runtime.OfflineScheduler", scheduler_cls)
     monkeypatch.setattr(
-        "mr_data.cli.AttributionEngine",
+        "mr_data.runtime.AttributionEngine",
         lambda **kwargs: SimpleNamespace(),
     )
-    monkeypatch.setattr("mr_data.cli.DialogueGraph", _FakeDialogueGraph)
-    monkeypatch.setattr("mr_data.cli.PostgresStore", _FakePostgresStore)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeDialogueGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", _FakePostgresStore)
     monkeypatch.setattr("mr_data.cli.Prompt.ask", _sequential_prompt(["/exit", ""]))
 
 
@@ -280,7 +280,7 @@ def test_chat_invalid_cron_degrades_gracefully(monkeypatch, caplog, temp_log_dir
             raise AssertionError("invalid cron 不应 stop")
 
     _patch_chat_deps(monkeypatch, FakeScheduler)
-    open_log_propagation(caplog, monkeypatch, "mr_data.cli")
+    open_log_propagation(caplog, monkeypatch, "mr_data.runtime")
 
     result = runner.invoke(app, ["chat"])
 
@@ -325,10 +325,10 @@ def _patch_newsession_deps(monkeypatch, engine, dsn: str):
         def next_fire(self):
             return datetime(2026, 11, 15, 11, 0, tzinfo=timezone.utc)
 
-    monkeypatch.setattr("mr_data.cli.OfflineScheduler", FakeScheduler)
-    monkeypatch.setattr("mr_data.cli.AttributionEngine", lambda **kwargs: engine)
-    monkeypatch.setattr("mr_data.cli.DialogueGraph", FakeGraph)
-    monkeypatch.setattr("mr_data.cli.PostgresStore", _FakePostgresStore)
+    monkeypatch.setattr("mr_data.runtime.OfflineScheduler", FakeScheduler)
+    monkeypatch.setattr("mr_data.runtime.AttributionEngine", lambda **kwargs: engine)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", FakeGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", _FakePostgresStore)
     monkeypatch.setattr(
         "mr_data.cli.Prompt.ask", _sequential_prompt(["/newsession", "", "/exit", ""])
     )

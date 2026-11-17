@@ -12,6 +12,7 @@
 5. 引用与可解释性 — 引用即 URL、known_refs 对账
 6. web 子管道 — 搜索→提取→过滤→沉淀
 7. 降级链总表 — 每节点一行的降级方向与理由
+8. 事件回调（on_event）— chat() 的可选事件流出口与事件形状契约
 
 ## 1. 管道总览
 
@@ -147,3 +148,14 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 | assemble 压缩 | LLM 压缩失败 | 硬截断 | 预算铁律不可破 |
 | log_dialogue | PG 事务失败 | **整轮回滚，异常穿透到 chat()**；REPL 捕获后 continue | 对话数据写入不可静默（D-80）；`_log_dialogue` 失败 = user/assistant/ refs 任何一步失败 |
 | log_dialogue | 单 web 记忆片写失败 | 跳过该片继续其余 | Chroma 侧故障隔离 |
+
+## 8. 事件回调（on_event）
+
+**本节回答：驱动方（HTTP server / agent 测试）如何不解析日志文件就拿到本轮管道的结构化事件流。**
+
+`DialogueGraph.chat(session_id, user_input, on_event=None)` 的第三参数为可选回调（改进 92）：非 None 时，invoke 期间每个带 `event` extra 的结构化日志记录按序旁路一份给回调，默认 None 时行为与旧签名逐字一致。
+
+- **事件形状** = `{event, session_id?, details}`，与日志结构化 extra 同构（AGENTS.md 约定），消费方原样透传、不做再加工。
+- **边界**：只转发属于本轮会话的记录（record 无 session_id 或等于本轮 session_id），并发会话互不污染；事件源是各节点经 graph logger 打的结构化日志，日志落盘路径不变。
+- **消费方**：HTTP server 把事件列表放进每轮响应的 `events` 字段（chat-http-api-plan.md §3.5），驱动方据此断言降级路径/检索命中/落库结果；测试亦可用它替代 caplog 解析。
+- **断言纪律**：events 是稳定契约可精确锁定（顺序 + event 名 + details 键）；文案与日志措辞仍是易变面，不做断言（testing-guidelines.md §2.1）。

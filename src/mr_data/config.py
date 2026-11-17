@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     # 是否在 CLI 回复后显示参考来源
     show_references: bool = False
 
+    # HTTP server（chat-http-api）：仅绑定回环的本地工具，v1 不做鉴权
+    server_host: str = "127.0.0.1"
+    server_port: int = 8080
+
     # DialogueState 中保留的最近对话轮数
     dialogue_state_message_turns: int = 10
 

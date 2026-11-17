@@ -17,7 +17,6 @@ from mr_data.interactive.dimensions import cmd_list
 from mr_data.llm import LLMClient
 from mr_data.logging import get_logger
 from mr_data.models import DialogueLog, PersonalityEvent, UserIdentity
-from mr_data.online import DialogueGraph
 from mr_data.offline import (
     OFFLINE_ADVISORY_LOCK_KEY,
     AttributionEngine,
@@ -25,6 +24,7 @@ from mr_data.offline import (
     advisory_lock,
     guarded_offline_run,
 )
+from mr_data.runtime import build_runtime
 
 logger = get_logger("mr_data.cli")
 
@@ -190,49 +190,17 @@ def chat(
     show_references: bool = typer.Option(settings.show_references, "--show-references/--hide-references", help="Show reference sources after each reply"),
 ) -> None:
     """Start an interactive chat with mr.data."""
-    import os
-
-    graph = DialogueGraph(enable_web_search=web_search)
-    pg = PostgresStore()
-    pg.init_schema()
-    pg.seed()
-
-    # 内嵌离线归因定时调度（改进 85）：复用 graph 的 store/llm，避免重复加载
-    # embedding 模型；守护线程随 chat 退出而停止。任何初始化失败只降级
-    # （告警 + 不启用调度），不阻断 chat。offline_engine 同时供 /newsession
-    # 异步触发复用（改进 86），故在调度器构造之前先取出。
-    offline_engine = None
-    scheduler = None
-    try:
-        offline_engine = AttributionEngine(
-            pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm
-        )
-        scheduler = OfflineScheduler(offline_engine)
-        scheduler.validate()
-    except ValueError as exc:
-        logger.warning(
-            "Invalid offline schedule cron, scheduler disabled",
-            extra={
-                "event": "offline.schedule_invalid_cron",
-                "details": {"error": str(exc)},
-            },
-        )
-        rprint(
-            f"[yellow]离线归因定时调度的 cron 串非法（{settings.offline_schedule_cron!r}），"
-            "定时调度未启用。[/yellow]"
-        )
-        scheduler = None
-    except Exception as exc:
-        logger.warning(
-            "Failed to initialize offline scheduler, scheduler disabled",
-            extra={
-                "event": "offline.schedule_init_failed",
-                "details": {"error": repr(exc)},
-            },
-        )
-        scheduler = None
+    # 装配收敛到 runtime.build_runtime()（chat-http-api 计划 §8.2 薄壳重构）：
+    # 启动序列、调度器降级语义、offline_engine 全在通用层，此处只留交互层。
+    runtime = build_runtime(enable_web_search=web_search)
+    graph = runtime.graph
+    pg = runtime.pg
+    offline_engine = runtime.offline_engine
+    scheduler = runtime.scheduler
+    for warning in runtime.startup_warnings:
+        rprint(warning)
+    runtime.start()
     if scheduler is not None:
-        scheduler.start()
         rprint(
             f"[dim]离线归因定时任务已启动（cron: {scheduler.cron_expr}，"
             f"下次触发: {scheduler.next_fire().strftime('%Y-%m-%d %H:%M:%S %Z')}）[/dim]"
@@ -312,8 +280,7 @@ def chat(
                 rprint()
 
     finally:
-        if scheduler is not None:
-            scheduler.stop()
+        runtime.stop()
         # 给在途的 /newsession 归因线程收尾机会（daemon 线程，超时即弃）
         for t in run_threads:
             t.join(timeout=5)
@@ -342,6 +309,17 @@ def chat(
             )
 
     rprint("[dim]Goodbye.[/dim]")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option(settings.server_host, "--host", help="Bind host"),
+    port: int = typer.Option(settings.server_port, "--port", help="Bind port"),
+) -> None:
+    """Start the chat HTTP API server (agent 驱动对话生命周期)."""
+    from mr_data.server.main import serve as run_server
+
+    run_server(host=host, port=port)
 
 
 @app.command()

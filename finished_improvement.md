@@ -244,3 +244,12 @@
 
     - 测试基建：`_isolate_logs` 与 `temp_log_dir`/test_logging 本地 `log_dir` fixture 的 mkdir 冲突以 `exist_ok=True` 解决。
     - 范围外建议（未改）：evals 层缺口（审计建议记录而非修复，审计报告即记录）；pgembed 冷启动 flake 根治；CLI 8 个未覆盖命令从真实 bug 出发再补；xdist 并行需先解决 pgembed 共享集群 worker 隔离。
+
+92. ✅ **Chat HTTP 交互 API（agent 测试 agent）**（need_improve.md 待改进；doc/chat-http-api-plan.md v1.6 定稿的完整落地，实施记 v1.7）：新增 `mr_data.server`（FastAPI app 工厂 + uvicorn 入口），REST 驱动完整对话生命周期：POST `/sessions`（可指定 ID，冲突 409 不静默复用）、GET `/sessions/{id}`、POST `/sessions/{id}/message`（一次调用=一轮=一条用户消息，服务端历史衔接，响应含 reply/references/events）、POST `/sessions/{id}/close`（可带评分，评分写入失败不关会话可重试）、POST `/offline`（同步等待归因完成，D-92）、GET `/health`。错误统一形状 `{error:{code,message}}`，9 个 code 全集即契约（§3.1）；节点级降级≠HTTP 失败（200 + events 断言），整轮失败才 500（§5）。启动：`mr-data serve`（默认 127.0.0.1:8080，config 新增 `server_host`/`server_port`）。实现（改进 92）：
+    - **通用装配层** `mr_data/runtime.py`（计划 v1.4/§8.2）：`build_runtime() -> Runtime`（graph/pg/offline_engine/scheduler + start/stop），cli.chat 降为薄适配壳（输入循环/slash/评分//newsession 线程/finally 清理全留交互层），TUI 可观察行为逐字不变——既有 test_cli/test_offline_scheduler 全绿守护，装配假件 patch 目标随之迁到 `mr_data.runtime.*`。
+    - **事件回调**（§4 方案 a）：`DialogueGraph.chat(..., on_event=None)` 第三参数；实现为 invoke 期间挂在 graph logger 上的临时 tap handler（`_EventTapHandler`），按 session_id 过滤旁路 `{event, session_id?, details}`，**不改任何节点代码**、日志落盘路径不变；默认 None 行为与旧签名逐字一致。契约回填 design/online-pipeline.md#8。
+    - **应用工厂 + 依赖注入**：`create_app(graph=None, pg=None, start_scheduler=None)`，注入 FakeLLM/假 store 时零真实基建（测试路径默认不启动调度器）；默认路径与 TUI 同一套装配（build_runtime + Runtime.start/stop 经 lifespan 接驳）。
+    - **依赖**：pyproject 显式声明 `fastapi`/`uvicorn`（uv.lock 无冲突），dev 组加 `httpx`（TestClient）。
+    - **测试**：tests/test_server_api.py 17 用例（TestClient + 真实 pgembed + FakeLLM）——响应形状/错误码全集（parametrize 非法评分 4 种）/事件顺序锚点/两轮历史衔接/关会话后 PG 终态（进入归因候选、评分落库、评分失败不关会话）/chat_turn_failed 500//offline 同步完成且会话处理完毕；tests/test_chat_events.py 3 用例（事件顺序与形状、无回调不变式、异常路径 tap 摘除）。全量 277+3 passed。
+    - **文档回填**：计划文档状态转「已实施」并记 v1.7；§8.3 一处实施微调（调度器初始化失败告警不进 startup_warnings，原 TUI 只记日志不 rprint，守 §8.1 行为逐字不变，server 经 `offline.schedule_init_failed` 日志事件取同一信息）；§5 与 D-92 矛盾的旧句修正；00-index 路由（chat HTTP 行 + on_event 新行）、02-glossary（on_event 事件回调、Runtime 两条）。
+    - 实施中暴露的自身 bug：薄壳重构首版漏接 `runtime.start()`（原 `scheduler.start()` 迁出后被悬空），test_chat_starts_and_stops_scheduler 拦截——回归网有效性的又一例证。

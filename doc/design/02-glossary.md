@@ -47,6 +47,7 @@
 | block（引用块） | 回复的内容组织单位：每块携带引用列表（id + source_type + 一句话总结） | online-pipeline.md#5 |
 | known_refs 对账 | 引用守卫：assemble 建立本轮素材清单，LLM 回传引用 id 不在清单即丢弃，source_type 以系统真值覆盖 | online-pipeline.md#5 |
 | 降级 / 兜底 | 节点失败时的保守行为（宁多勿漏、保守不联网等）；总原则 D-80：LLM/检索失败不扰用户，数据写入失败不静默 | online-pipeline.md#7；decisions.md D-80 |
+| on_event 事件回调 | `chat()` 的可选第三参数：本轮管道结构化事件按序旁路给回调（形状与日志 extra 同构），HTTP `events` 字段的数据源；默认 None 行为不变 | online-pipeline.md#8 |
 
 ## 4. 离线归因
 
@@ -67,3 +68,4 @@
 | 幂等（稳定 id 派生） | 所有向量文档 id 由内容/外键确定性哈希派生，重放写入时「已存在则跳过」 | memory-and-retrieval.md#2 |
 | 两段式写入 | 跨库一致性折中：PG 事务先提交，Chroma 副作用在提交后逐条 flush（Chroma 失败不回滚 PG） | offline-attribution.md#6；decisions.md D-81 |
 | 单写者 | 离线归因同一时刻仅一个 run 在写：进程内锁 + PG advisory lock 双护栏 | offline-attribution.md#1 |
+| Runtime（通用装配层） | `build_runtime()` 装配产物（graph/pg/offline_engine/scheduler + start/stop 生命周期）：TUI 与 HTTP server 共用的唯一装配入口，启动告警经 `startup_warnings` 接驳 | ../chat-http-api-plan.md §8 |

@@ -4,6 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from mr_data.cli import app
+from mr_data.config import settings
 
 runner = CliRunner()
 
@@ -74,8 +75,8 @@ def test_chat_turn_exception_continues_and_closes_session(monkeypatch):
         def close_session(self, session_id: str) -> None:
             closed.append(session_id)
 
-    monkeypatch.setattr("mr_data.cli.DialogueGraph", FakeGraph)
-    monkeypatch.setattr("mr_data.cli.PostgresStore", FakePG)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", FakeGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", FakePG)
     monkeypatch.setattr(
         "mr_data.cli.Prompt.ask",
         _sequential_prompt(["hi", "again", "/exit", ""]),
@@ -99,8 +100,8 @@ def test_chat_rating_failure_still_closes_session(monkeypatch):
         def update_session_rating(self, session_id: str, score: int, comment: str | None) -> None:
             raise RuntimeError("db down")
 
-    monkeypatch.setattr("mr_data.cli.DialogueGraph", _FakeDialogueGraph)
-    monkeypatch.setattr("mr_data.cli.PostgresStore", FakePG)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeDialogueGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", FakePG)
     monkeypatch.setattr(
         "mr_data.cli.Prompt.ask",
         _sequential_prompt(["hi", "/exit", "1", "nice"]),
@@ -110,3 +111,31 @@ def test_chat_rating_failure_still_closes_session(monkeypatch):
 
     assert result.exit_code == 0
     assert closed == ["sess-1"]
+
+
+def test_serve_command_defaults_and_overrides(monkeypatch):
+    """serve 子命令：默认取 settings，--host/--port 可覆盖；装配走 create_app。"""
+    calls = {}
+
+    class FakeApp:
+        pass
+
+    def fake_create_app(**kwargs):
+        calls["create_app"] = kwargs
+        return FakeApp()
+
+    def fake_run(app, **kwargs):
+        calls["run"] = {"app": app, **kwargs}
+
+    monkeypatch.setattr("mr_data.server.main.create_app", fake_create_app)
+    monkeypatch.setattr("mr_data.server.main.uvicorn.run", fake_run)
+
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 0
+    assert calls["run"]["host"] == settings.server_host
+    assert calls["run"]["port"] == settings.server_port
+
+    result = runner.invoke(app, ["serve", "--host", "0.0.0.0", "--port", "9999"])
+    assert result.exit_code == 0
+    assert calls["run"]["host"] == "0.0.0.0"
+    assert calls["run"]["port"] == 9999

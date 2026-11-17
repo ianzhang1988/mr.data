@@ -157,5 +157,5 @@ context 材料从 system 拆到 assistant 消息（XML 标签分类），system 
 
 - **事件形状** = `{event, session_id?, details}`，与日志结构化 extra 同构（AGENTS.md 约定），消费方原样透传、不做再加工。
 - **边界**：只转发属于本轮会话的记录（record 无 session_id 或等于本轮 session_id），并发会话互不污染；事件源是各节点经 graph logger 打的结构化日志，日志落盘路径不变。
-- **消费方**：HTTP server 把事件列表放进每轮响应的 `events` 字段（chat-http-api-plan.md §3.5），驱动方据此断言降级路径/检索命中/落库结果；测试亦可用它替代 caplog 解析。
+- **消费方**：HTTP server 把事件列表放进每轮响应的 `events` 字段（chat-http-api.md §3.5），驱动方据此断言降级路径/检索命中/落库结果；测试亦可用它替代 caplog 解析。
 - **断言纪律**：events 是稳定契约可精确锁定（顺序 + event 名 + details 键）；文案与日志措辞仍是易变面，不做断言（testing-guidelines.md §2.1）。

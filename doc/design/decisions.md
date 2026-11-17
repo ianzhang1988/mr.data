@@ -44,7 +44,7 @@
 - 日期：2026-11-17
 - 问题：offline-attribution#3 原设计「停用维度不再参与归因，无复活信号源，reactivate 判为无意义路径」——引入人工维度编辑后是否维持？
 - 结论：推翻原设计。维度编辑模式（chat /dimension、CLI mr-data dimension）允许人工 reactivate——人就是复活信号源；复活必须同时清零 success/failure 计数，否则旧计数（如 7 败/10 样本，比率 > 0.6 阈值）会在下一轮归因立即再次触发淘汰，复活形同虚设。同时允许删除已停用维度：双重确认（y/N + 重输 id），清理 adjustment_logs 行（FK 无级联动作，阻断删除）、dialogue_dimension_refs（FK 级联自动）、Chroma 向量残留（与引擎 purge 同模式，复用同一函数）。core 维度在交互层与 store 层双重拒绝，永不淘汰语义延伸为全拒。
-- 依据：doc/dimension-editing-plan.md v4 定稿（用户裁决：状态化模式、全命令单斜杠、变更写审计日志）
+- 依据：doc/dimension-editing.md v4 定稿（用户裁决：状态化模式、全命令单斜杠、变更写审计日志）
 - 影响：① offline-attribution#3「无复活路径」条目改写为「人工复活与删除」；② 变更操作写审计日志（dimension.edit/deactivate/reactivate/delete，logs/ 应用日志，不建审计表）；③ 新建维度仍唯一归引擎自动发现，计数唯一合法变更路径是复活重置
 
 
@@ -54,7 +54,7 @@
 - 问题：chat HTTP API 的 `server_port` 默认值用设计稿提出的 8377 还是另指定？（Q-5）
 - 结论：取 **8080**。`server_host` 默认 `127.0.0.1` 不变。
 - 依据：用户答复（非选项，直接在 plan 文档 §11 批注「默认值 8080」）
-- 影响：doc/chat-http-api-plan.md §7 配置默认值；实施时 config.py 按此默认值
+- 影响：doc/chat-http-api.md §7 配置默认值；实施时 config.py 按此默认值
 
 ## D-92 v1 即暴露 `POST /offline`，同步等待归因完成
 
@@ -62,4 +62,4 @@
 - 问题：chat HTTP API 是否暴露手动触发离线归因端点？若加，是否等待归因完成再返回？（Q-6）
 - 结论：**v1 就加**。语义：请求线程内执行 `guarded_offline_run(source="http")` 并**同步等待完成**——agent 测试需要关会话后立即断言归因效果（维度计数、证据回写），异步触发会造成断言竞态。返回映射：`completed`→200 `{"status":"completed"}`；`busy`/`locked`→409 `offline_busy`；`failed`→500 `offline_failed`。护栏不变：与 cron/手动 CLI//newsession 完全互斥（双层锁），HTTP 只是互斥触发源新增一个通道，日志事件以 `offline.http_*` 命名。
 - 依据：用户答复（直接在 plan 文档 §11 批注「加上吧，让 agent 测试的能力完整」）；同步语义为实现方按「测试能力完整」目标所定，已在 plan §3.7 写明
-- 影响：doc/chat-http-api-plan.md §3.1 错误码表、§3.2 端点表、新增 §3.7；实施时 server 端点与测试用例按此契约
+- 影响：doc/chat-http-api.md §3.1 错误码表、§3.2 端点表、新增 §3.7；实施时 server 端点与测试用例按此契约

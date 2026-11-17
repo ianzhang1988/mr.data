@@ -2,7 +2,7 @@
 
 TestClient + create_app(graph=..., pg=...) 注入 FakeLLM/真实 pgembed：
 断言响应形状（reply/references/events）、错误码全集、关会话后 PG 最终状态。
-契约样例与 doc/chat-http-api-plan.md §3 对齐（机器消费格式 = 稳定契约，精确锁定）。
+契约样例与 doc/chat-http-api.md §3 对齐（机器消费格式 = 稳定契约，精确锁定）。
 """
 
 import pytest

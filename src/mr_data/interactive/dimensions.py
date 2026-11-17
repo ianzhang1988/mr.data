@@ -3,7 +3,7 @@
 状态化 mini-REPL：进入后仅识别维度维护 `/` 命令，每条命令直接落库生效，
 模式不持有未提交修改，`/quit` 随时安全退出。
 
-交互文案即设计契约（doc/dimension-editing-plan.md §2.5），测试对照锁定。
+交互文案即设计契约（doc/dimension-editing.md §2.5），测试对照锁定。
 测试用注入式 input_fn 脚本驱动全模式（input_fn 返回 None 表示结束）。
 """
 

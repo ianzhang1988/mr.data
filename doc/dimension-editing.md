@@ -1,9 +1,9 @@
-# 性格维度编辑交互 —— 实施计划
+# 性格维度编辑交互
 
-> 状态：**定稿（v4 裁决完毕），按第 7 节顺序实施。**
+> 状态：**已实施（改进 90，按本文裁决记录定稿）**。契约结论已回填：offline-attribution.md#3「无复活路径」已修订、decisions.md 已登记 D-90、00-index/02-glossary 已登记。
 > 一句话目标：实现一个「维度编辑模式」（stateful mini-REPL）——进入后只有维度维护命令可用，带状态条与帮助；chat 里 `/dimension` 进入，CLI 里 `mr-data dimension` 直接进入，两入口跑同一个模式循环。
-> 前置阅读：[doc/design/offline-attribution.md](design/offline-attribution.md#3)（维度调整规则、核心保护）、[doc/design/02-glossary.md](design/02-glossary.md)（维度定义）。本文是计划层文档，实施完成并验收后，其契约结论应回填进 doc/design/（见第 9 节）。
-> 修订记录：v2 应用户裁决加入 active 编辑/复活重置计数/删除已停用维度（推翻「无复活路径」，见第 5 节）；v3 应用户要求改为**状态化交互模式**（`/dimension` 进入子状态、TUI 状态条、CLI 直入模式）；v4 裁决完成（见第 8 节）：**全命令统一单斜杠**（模式内 `/list` `/edit` `/help` `/quit` 等，与 chat 主层同一前缀体系）、不保留直达形式、**变更操作加审计日志**——计划定稿；v4.2 移除本文对测试的全部要求（§2.5/§4.2/§6），测试编写统一由 testing-guidelines.md 指导。
+> 前置阅读：[doc/design/offline-attribution.md](design/offline-attribution.md#3)（维度调整规则、核心保护）、[doc/design/02-glossary.md](design/02-glossary.md)（维度定义）、[testing-guidelines.md](testing-guidelines.md)（测试编写指引）。本文是维度编辑模式的交互契约。
+> 修订记录：v2 应用户裁决加入 active 编辑/复活重置计数/删除已停用维度（推翻「无复活路径」，见「与既有设计的关系」节）；v3 应用户要求改为**状态化交互模式**（`/dimension` 进入子状态、TUI 状态条、CLI 直入模式）；v4 裁决完成（见裁决记录节）：**全命令统一单斜杠**（模式内 `/list` `/edit` `/help` `/quit` 等，与 chat 主层同一前缀体系）、不保留直达形式、**变更操作加审计日志**——定稿；v4.2 移除本文对测试的全部要求，测试编写统一由 testing-guidelines.md 指导。
 
 ## 1. 目标与范围
 
@@ -37,7 +37,7 @@
 | `/edit [id]` | 编辑描述；无 id 先列出非 core 维度供编号选择（交互流见 2.5） | 否 |
 | `/deactivate <id>` | 停用非 core 维度（幂等提示） | 否 |
 | `/reactivate <id>` | 复活非 core 维度并清零计数（提示 2/9 → 0/0） | 中 |
-| `/delete <id>` | 删除已停用维度（双重确认 + 清理链，见 3.5） | **高** |
+| `/delete <id>` | 删除已停用维度（双重确认 + 清理链，见 3.4） | **高** |
 | `/help` | 模式内帮助（命令表 + core 保护说明） | 否 |
 | `/quit` | 退出模式 | 否 |
 
@@ -45,7 +45,7 @@
 
 ### 2.3 chat 入口
 
-chat 循环（cli.py `chat()`）现有斜杠命令是硬编码 if 链 + 硬编码 help 文本 `_print_chat_help`，无注册机制——**不为此引入注册抽象**，沿用 if 链新增一条：
+chat 循环（cli.py `chat()`）的斜杠命令是硬编码 if 链 + 硬编码 help 文本 `_print_chat_help`，无注册机制——**不为此引入注册抽象**，沿用 if 链一条分派：
 
 ```python
 if user_input.strip().lower() == "/dimension":
@@ -53,7 +53,7 @@ if user_input.strip().lower() == "/dimension":
     continue
 ```
 
-`_print_chat_help` 同步加一行 `/dimension` 说明（chat help 文本正确性此前已有过教训，列入验收清单）。
+`_print_chat_help` 同步含 `/dimension` 说明行。
 
 ### 2.4 CLI 入口
 
@@ -148,9 +148,9 @@ dim> /quit
 
 删除必须清理三层痕迹：
 
-1. **PG 行**：删 `personality_dimensions` 行。
-2. **PG 引用**：`dialogue_dimension_refs` 有 FK ON DELETE CASCADE 自动清理；**`dialogue_vector_refs.dimension_ids` 与 `adjustment_logs` 是否引用 dimension_id 实施时核实**（前者 CSV 字段、后者可能无 FK），无 FK 的引用按「清除该 id 条目 / 保留历史审计行」分别处理。
-3. **Chroma 残留**：metadata `dimension_ids` 含该 id 的文档需清除——**复用引擎停用路径 `_purge_dimension_vectors` 的清理模式**（先按 refs 删、再兜底扫描 personality 集合），保证无悬挂 dimension_ids，顺带兜底引擎 purge 失败的历史残留（引擎 purge 失败仅 warning 不回滚）。
+1. **PG 行**：删 `personality_dimensions` 行（store 层 `delete_dimension`，core 拒绝、仅 active=False 可删）。
+2. **PG 引用**：`dialogue_dimension_refs` 由 FK ON DELETE CASCADE 自动清理；`adjustment_logs.dimension_id` 的 FK 无级联动作，由 store 层在删行前显式删除其行（返回条数，供删除前展示与审计日志）。
+3. **Chroma 残留**：metadata `dimension_ids` 含该 id 的文档需清除——复用引擎停用路径的 purge 函数（`purge_dimension_vectors`，已抽为 `mr_data.offline.attribution` 的共用函数，引擎与模式两条路径同一实现），保证无悬挂 dimension_ids，顺带兜底引擎 purge 失败的历史残留（引擎 purge 失败仅 warning 不回滚）。
 
 删除前必须展示：维度描述、计数、PG 引用数、预计 Chroma 清理量，经双重确认（y/N + 重输 id）后执行。
 
@@ -167,77 +167,26 @@ dim> /quit
 - **样例**：`dimension_reactivate id=5 counts=2/9->0/0 entry=chat`
 - list 与放弃/被拒的操作不写日志。
 
-## 4. 技术方案（分层改动清单）
+## 4. 实现结构
 
-### 4.1 store 层（src/mr_data/db/postgres.py）
-
-新增方法（签名建议，异常类型实施时按现有风格定）：
-
-```
-update_dimension_description(dimension_id, description) -> None   # core 拒绝；只动 description+updated_at
-set_dimension_active(dimension_id, active: bool) -> None          # core 拒绝；active=True 时清零计数
-delete_dimension(dimension_id) -> None                            # core 拒绝；仅 active=False 可删；行删除（refs 级联自动）
-```
-
-现有 `update_dimension`（引擎计数专用）与 `deactivate_dimension`（引擎淘汰专用）语义不变；新命令走新方法以承载 core 校验与计数重置。删除的引用清理（3.4 第 2、3 条）放模式层编排（store 只负责 PG 行），Chroma 清理不进 store 层。
-
-### 4.2 模式核心（新模块 src/mr_data/interactive/dimensions.py）
-
-- `run_dimension_mode(store, *, input_fn=None, confirm_fn=None)`：模式主循环。`input_fn`/`confirm_fn` 可注入（默认 rich `Prompt.ask`），模式可被脚本化输入驱动，不依赖真实终端。
-- 状态条：rich `Live` 常驻一行，进入时启动、`/quit`/Ctrl-C 时关闭；内容 = 模式名 + 快捷提示（见 2.5）。
-- 命令实现：`cmd_list` / `cmd_edit` / `cmd_deactivate` / `cmd_reactivate` / `cmd_delete`，各自 2.5 交互流的承载者；`/help`/`/quit`/未知命令/非 `/` 输入的分派在 `run_dimension_mode` 内；每个变更命令成功后写审计日志（见 3.6）。
-- banner、`dim>` prompt、所有文案集中为模块级常量（实现单一来源）。
-- `cmd_delete` 编排：校验已停用与 core → 统计引用数展示 → 双重确认 → store 删行 + PG 引用清理 + Chroma 清理（复用 attribution 的 purge 模式，抽取为可复用函数）。
-
-### 4.3 CLI 层（src/mr_data/cli.py）
-
-- 新增 `dimension` Typer subgroup：`list`、`edit`、`dimension`（无子命令默认进模式）三个暴露面；`edit` 无参数进模式、带 `--description` 走 one-shot。实现薄到只解析参数调 4.2/4.1。
-- 模式在 CLI 下与 chat 下行为一致，唯一差异是 `/quit` 后 CLI 进程结束。
-
-### 4.4 chat 层（src/mr_data/cli.py chat()）
-
-- if 链新增 `/dimension` → `run_dimension_mode(pg)` → `continue`；`_print_chat_help` 同步加说明行。chat 主循环不做其他改造。
-
-### 4.5 生效时机核实（实施时验证项）
-
-维度描述/活跃集是否在进程内有缓存（settings/模块级变量）？在线 `_load_personality` 与离线归因均为每轮查询则编辑即时生效；若发现缓存，清空点写进命令实现。
+- **store 层**（`PostgresStore` 三个专用方法，承载 core 校验与计数重置；现有 `update_dimension`/`deactivate_dimension` 为引擎计数/淘汰专用，语义不变，新命令不走它们）：
+  - `update_dimension_description(dimension_id, description)`：core 拒绝；只动 description + updated_at。
+  - `set_dimension_active(dimension_id, active)`：core 拒绝；active=True 时清零计数。
+  - `delete_dimension(dimension_id)`：core 拒绝、仅 active=False 可删；先显式删 `adjustment_logs` 行再删维度行（见 3.4）。
+- **模式核心**（`src/mr_data/interactive/dimensions.py`）：`run_dimension_mode(store, *, chroma=None, input_fn=None, entry=...)` 为模式主循环，`input_fn`/`confirm_fn` 可注入（默认 rich `Prompt.ask`），模式可被脚本化输入驱动，不依赖真实终端；状态条为 rich `Live` 常驻一行，进入时启动、`/quit`/Ctrl-C 时关闭；命令实现 `cmd_list`/`cmd_edit`/`cmd_deactivate`/`cmd_reactivate`/`cmd_delete` 各承载 2.5 交互流，`/help`/`/quit`/未知命令/非 `/` 输入的分派在主循环内；banner、`dim>` prompt、所有文案集中为模块级常量（单一来源）；`cmd_delete` 负责清理链编排（store 删行 + Chroma purge），Chroma 清理不进 store 层。
+- **入口层**（cli.py）：`dimension` Typer subgroup 三个暴露面——`list`、`edit`（带 `--description` 走 one-shot，`--force` 跳过确认）、无子命令默认进模式；chat 入口为 if 链一条分派（2.3）。模式在 CLI 下与 chat 下行为一致，唯一差异是 `/quit` 后 CLI 进程结束。
+- **生效时机**：维度描述/活跃集无进程内缓存——在线 `_load_personality` 与离线归因均为每轮/每 run 查询 PG，编辑即时生效。
 
 ## 5. 与既有设计的关系（含一项被推翻的决策）
 
-- **「无复活路径」被本计划推翻**：offline-attribution.md#3 有意设计「停用维度不再参与归因，无复活信号源，reactivate 判为无意义路径」。本计划引入人工编辑后，**人就是复活信号源**，且复活必须重置计数（否则旧计数立即触发再淘汰，3.3）。实施时按维护协议同步修订 offline-attribution.md#3 该句，并在 decisions.md 登记新 D 决策：「允许人工复活（deactive→active 重置计数）+ 允许删除已停用维度，取代『无复活路径』」。
+- **「无复活路径」被维度编辑能力推翻**（改进 90）：offline-attribution.md#3 有意设计「停用维度不再参与归因，无复活信号源，reactivate 判为无意义路径」。维度编辑模式引入人工编辑后，**人就是复活信号源**，且复活必须重置计数（否则旧计数立即触发再淘汰，3.3）。offline-attribution.md#3 该句已同步修订，decisions.md 已登记 D-90「允许人工复活（deactive→active 重置计数）+ 允许删除已停用维度，取代『无复活路径』」。
 - **核心保护**：归因淘汰路径跳过 core；本计划的 core 只读/不可停用/不可删除是同一语义在人工编辑路径的延伸。
 - **引擎自动路径不受影响**：引擎淘汰仍走 `deactivate_dimension` + purge；自动发现维度（insert_dimension）不变；人工 delete 的 Chroma 清理与引擎 purge 同模式，两条路径清理逻辑保持一致。
 
-## 6. 测试
-
-测试要求由 [testing-guidelines.md](testing-guidelines.md) 统一指导，本文不规定。
-
-## 7. 实施步骤
-
-按依赖顺序，每步独立可验证、可提交：
-
-1. store 层三个新方法 + 单测（纯 PG 层）。
-2. 模式核心 `interactive/dimensions.py`：`cmd_*` + banner/文案常量 + 注入式 `run_dimension_mode`（暂以简单打印代替状态条）+ 状态机全分支单测。
-3. rich `Live` 状态条接入模式循环 + smoke 验证。
-4. **引用核实定点**：`dialogue_vector_refs.dimension_ids`、`adjustment_logs` 对 dimension_id 的引用形态与处理策略（3.4 第 2 条），定案后补 `cmd_delete` 的清理链实现。
-5. CLI 入口（Typer subgroup）。
-6. chat 入口（`/dimension` 分派 + help 文本）。
-7. 全量回归 + 文档回填（第 9 节）+ 用户验收。
-
-预计改动面：src 3-4 文件（postgres.py 增量、cli.py 增量、新 interactive/dimensions.py、可能 touch attribution 的 purge 复用抽取）+ 测试与文档（测试要求见 testing-guidelines.md）。
-
-## 8. 裁决记录（v4 定稿）
+## 6. 裁决记录（v4 定稿）
 
 | # | 议题 | 裁决 |
 |---|---|---|
 | 1 | 命令前缀方案 | **全命令统一单斜杠**——chat 主层 `/dimension` 进入，模式内 `/list` `/edit` `/deactivate` `/reactivate` `/delete` `/help` `/quit` 同为 `/` 前缀；模式优先于 chat 主层同名命令，退出后恢复。不用双斜杠，前缀体系统一。 |
 | 2 | 是否保留 chat 直达形式（`/dimension edit 5` 不进模式直接执行） | **不保留**。三入口统一先进模式再操作，只维护一套交互路径；CLI 的 one-shot（`list`、`edit --description --force`）保留供脚本使用。 |
 | 3 | 审计痕迹 | **加日志**。edit/deactivate/reactivate/delete 成功后写审计日志（复用现有 logs/ 应用日志，不建审计表），格式见 3.6。 |
-
-## 9. 实施完成后的文档回填
-
-- 契约结论（模式交互、`/` 命令集、core 保护、复活重置、删除清理、审计日志、三入口）提炼进 doc/design/：offline-attribution.md#3 修订「无复活路径」表述并指向新交互文档。
-- decisions.md 登记新 D 决策：「允许人工复活（重置计数）与删除已停用维度，取代『无复活路径』」。
-- 00-index.md 路由表追加「维护性格维度（维度编辑模式）」一行。
-- 02-glossary.md 登记新专有名词：「维度编辑模式（dimension mode）」。
-- 本文档（计划）完成后可留在 doc/ 作过程存档，或归档至 review/（按用户习惯，review/ 永不提交）。

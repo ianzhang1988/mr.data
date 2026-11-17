@@ -1,8 +1,8 @@
-# Chat HTTP 交互 API —— 设计文档
+# Chat HTTP 交互 API
 
 > 状态：**已实施（改进 92，2026-11-17）**。契约结论已回填：事件回调契约见 [design/online-pipeline.md](design/online-pipeline.md#8)，端点/错误码/事件形状仍以本文 §3 为准；00-index 路由已同步。
 > 一句话目标：为对话管道加一个本地 HTTP 交互层，让外部 agent（含测试 agent）能通过 REST 驱动完整对话生命周期（建会话 → 逐轮对话 → 关会话），并拿到每轮的结构化中间事件——实现「agent 测试 agent」：测试 agent 扮演用户，对被测系统做端到端驱动与断言。
-> 前置阅读：[doc/design/overview.md](design/overview.md#3)（降级总原则）、[doc/design/online-pipeline.md](design/online-pipeline.md#7)（降级链）、[doc/testing-guidelines.md](testing-guidelines.md)。本文是计划层文档。
+> 前置阅读：[doc/design/overview.md](design/overview.md#3)（降级总原则）、[doc/design/online-pipeline.md](design/online-pipeline.md#7)（降级链）、[doc/testing-guidelines.md](testing-guidelines.md)。本文是在线对话的 HTTP 交互契约（端点/错误码/事件形状）；管道内部机制见 design/。
 > 修订记录：v1 初稿；v1.1 按用户要求增设「与 chat TUI 的兼容」专节——**不做抽取公共装配函数的重构，server 侧自建兼容层，cli.py 现有行为逐字不变**；v1.2 应用户问询在 §3 显式写明 message 端点的逐轮语义（单轮输入、服务端历史衔接、驱动方无状态）；v1.3 **端点改名单数 `/message`（一次调用=一轮=一条用户消息）**，§3 扩写为逐端点完整契约（错误码全集表 + 每端点请求字段表/响应全例/执行序），消除「messages 复数 vs 单轮语义」等歧义；v1.4 **应用户意见把装配逻辑提升为通用层**（新增 `mr_data/runtime.py` 装配模块、cli.chat 改为薄适配壳）——graph.py 管对话、runtime.py 管运行环境装配，TUI 与 HTTP 同为薄壳，消除原「装配序列双写」风险；TUI 行为不变由 §8.1 行为清单 + 回归测试守住；v1.5 应用户追问把「行为保持风险」落实为 **§8.3 装配边界裁决**（启动告警经 `Runtime.startup_warnings` 接驳，TUI 逐字 rprint / server 记日志）——重构的非机械点全部钉死，原风险条从 §11 移除；v1.6 用户在文档内直接裁决 Q-5（默认端口 **8080**）与 Q-6（**v1 即加 `POST /offline`**，同步等待完成，为 agent 测试提供确定性的归因后断言点）——两裁决归档 decisions.md D-91/D-92，§11 随未决清零而移除；v1.7 **实施完成（改进 92）**：`mr_data/runtime.py` 装配层 + cli.chat 薄壳重构（TUI 行为由既有测试守护，零改动）、`mr_data/server/`（app 工厂 + uvicorn 入口）、`graph.chat(on_event=...)` 事件 tap（实现取「invoke 期间挂临时 logging handler 旁路」，不改任何节点代码）、`mr-data serve` 子命令、config 新增 `server_host`/`server_port`。两处文档随实施对齐：① §8.3 裁决微调——调度器初始化失败告警**不进 `startup_warnings`**（原 cli 对此只记日志不 rprint，为守 §8.1「TUI 可见行为逐字不变」；server 侧可经 `offline.schedule_init_failed` 结构化日志事件获取同一信息）；② §5「关会话后归因」段补上 D-92 已引入的同步 `POST /offline` 触发点（原句「v1 不为 HTTP 增加同步归因等待」与 D-92 矛盾，按裁决修正）。
 
 ## 文档地图
@@ -14,9 +14,7 @@
 - §5 HTTP 语义与降级链映射：什么算成功、什么算失败。
 - §6 并发与资源生命周期：共享单例的线程姿态。
 - §7 配置与入口：新配置键与启动方式。
-- §8 与 chat TUI 的兼容：TUI 行为不变清单与兼容层设计。
-- §9 实施时的代码改动清单：仅列出，实施阶段才动手。
-- §10 测试策略：对照 testing-guidelines.md。
+- §8 与 chat TUI 的兼容：TUI 行为清单与 TUI/HTTP 薄壳划分。
 
 ## 1. 目标与范围
 
@@ -50,7 +48,7 @@ flowchart LR
 
 1. **模块即新增，不动现有模块**。`mr_data.server` 下分 `app.py`（FastAPI 工厂与端点）与 `main.py`（uvicorn 启动入口）；唯一被触碰的现有文件是 config.py 增加两个配置键（§7）与 graph.py 增加一个可选参数（§4），均为向后兼容的纯增量。
 2. **应用工厂 + 共享单例**：`create_app(graph=None, pg=None, start_scheduler=None)`。各参数为 None 时按现有默认值装配（等价于 cli.chat 的装配段）；非 None 时原样使用——测试经 TestClient 注入 `FakeLLMClient` 时零真实基建。装配出的 `DialogueGraph` 是进程级单例（内部已持有 pg pool/chroma/llm，连接按 dsn 进程级共享，天然适合复用）。
-3. **通用装配层：新增 `mr_data/runtime.py`，cli.chat 降为薄适配壳**。装配逻辑（schema init/seed、离线归因引擎、调度器及其降级语义）从 cli.chat 提升到 `build_runtime() -> Runtime`（Runtime 持有 graph/pg/offline_engine/scheduler 与 start/stop 生命周期）；server 与 TUI 共用这一个装配入口，杜绝双写漂移。cli.chat 只保留交互层职责（输入循环、slash 命令、评分询问、/newsession 线程），其可观察行为逐字不变——由 §8.1 行为清单和回归测试守住（重构不改行为，测试先行）。graph.py 与 runtime.py 共同构成「TUI 与 HTTP 之下的通用层」：前者是通用对话引擎，后者是通用运行环境。
+3. **通用装配层：`mr_data/runtime.py`，cli.chat 为薄适配壳**。装配逻辑（schema init/seed、离线归因引擎、调度器及其降级语义）收敛在 `build_runtime() -> Runtime`（Runtime 持有 graph/pg/offline_engine/scheduler 与 start/stop 生命周期）；server 与 TUI 共用这一个装配入口，杜绝双写漂移。cli.chat 只保留交互层职责（输入循环、slash 命令、评分询问、/newsession 线程），其可观察行为由 §8.1 行为清单钉住。graph.py 与 runtime.py 共同构成「TUI 与 HTTP 之下的通用层」：前者是通用对话引擎，后者是通用运行环境。
 
 ## 3. API 契约
 
@@ -211,7 +209,7 @@ flowchart LR
 
 事件项的形状直接复用 logging 的结构化 extra：`{event, session_id?, details}`（与 AGENTS.md 约定一致），server 原样透传、不做再加工。事件源是各节点已在打的结构化日志（`personality.loaded`、`think.decision_generated`、`retrieve.*`、降级类 `*.reply_fallback`、收尾 `chat.turn` 等），实现上是把这些事件在 invoke 期间旁路一份给回调，日志落盘路径不变。
 
-实施时的契约同步：`ChatResult` 契约的变更（新增可选回调参数）需回填 doc/design/online-pipeline.md 相应节，并自查 00-index 路由。
+该契约（chat() 的可选回调参数与事件形状）已回填 [design/online-pipeline.md](design/online-pipeline.md#8)。
 
 ## 5. HTTP 语义与降级链映射
 
@@ -231,15 +229,15 @@ flowchart LR
 
 ## 7. 配置与入口
 
-- config.py 新增两键（实施时才加）：`server_host`（默认 `127.0.0.1`）、`server_port`（默认 `8080`，用户裁决 Q-5；env 前缀沿用 `MR_DATA_`）。
-- 启动方式：CLI 新子命令 `mr-data serve`（`--host/--port` 可覆盖），内部调 `mr_data.server.main:serve()`；pyproject 不加第二个 script 入口，与现有单入口风格一致。
-- 依赖：pyproject 增加 `fastapi`（uvicorn 已作为 chromadb 传递依赖存在于锁文件，仍应显式声明 `uvicorn` 为直接依赖）。
+- config.py 两键：`server_host`（默认 `127.0.0.1`）、`server_port`（默认 `8080`，用户裁决 Q-5；env 前缀沿用 `MR_DATA_`）。
+- 启动方式：CLI 子命令 `mr-data serve`（`--host/--port` 可覆盖），内部调 `mr_data.server.main:serve()`；pyproject 不加第二个 script 入口，与现有单入口风格一致。
+- 依赖：`fastapi`、`uvicorn` 为 pyproject 直接依赖（uvicorn 原为 chromadb 传递依赖）。
 
 ## 8. 与 chat TUI 的兼容
 
-### 8.1 TUI 行为不变清单（兼容层的验收准绳）
+### 8.1 cli.chat（TUI）可观察行为清单
 
-以下行为由 cli.chat 定义，本功能的实施**不得改变其中任何一条**：
+以下行为由 cli.chat 定义，是 TUI/HTTP 薄壳划分的准绳（§8.2）：
 
 1. 启动装配序列与默认值：`DialogueGraph(enable_web_search=<flag>)` → `PostgresStore()` + `init_schema()` + `seed()` → `AttributionEngine` 复用 graph 的 store/llm → `OfflineScheduler`（cron 非法或初始化失败时降级为「不启用调度」，只告警不阻断）。
 2. slash 命令集与分派：`/exit|/quit|/bye`、`/help|/?`、`/dimension`（进入维度编辑模式）、`/newsession`；非命令输入才进 `graph.chat()`。
@@ -248,42 +246,18 @@ flowchart LR
 5. 退出清理序：停调度器 → join 归因线程 → 评分 → close_session（各步失败独立记日志、互不阻断）。
 6. 启动选项：`--session-id`、`--web-search/--no-web-search`（默认 `settings.enable_web_search`）、`--show-references/--hide-references`（默认 `settings.show_references`）。
 
-### 8.2 兼容层设计（v1.4 起：通用装配层 + 薄壳）
+### 8.2 通用层与薄壳划分
 
 - **共享边界**：TUI 与 HTTP 每轮对话都收敛到同一个 `DialogueGraph.chat()`；运行环境装配收敛到同一个 `mr_data/runtime.build_runtime()`。通用层之下无任何复制。
-- **通用层构成**：`graph.py`（通用对话引擎）+ `runtime.py`（通用装配：`build_runtime() -> Runtime`，持有 graph/pg/offline_engine/scheduler 及 start/stop，内含调度器降级语义）。`runtime.py` 是新增模块，不承担任何交互职责。
-- **cli.chat 薄适配壳**：chat 命令体重构为「`runtime = build_runtime(...)` + 输入循环 + slash 命令 + 评分询问 + /newsession 线程 + `finally` 清理」，装配语句全部移出；**可观察行为逐字不变**，以 §8.1 六条清单为验收准绳，且重构测试先行（先按清单给现有行为补测试/确认已有测试覆盖，再动结构）。会话级状态（`current_session_id` 游标、评分对话、后台归因线程）属于交互层，留在 cli.chat，不进通用层。
-- **server 直接用通用层**：`create_app()` 默认路径调 `build_runtime()`；server 进程启动 = `Runtime.start()`，进程退出 = `Runtime.stop()`（对应 TUI 的进入 `try` 之前与 `finally`）。会话级动作全部是一等端点：close 端点 = 评分 + close（对齐 §8.1 第 3 条），不在 server 侧保留「当前会话」隐式状态——HTTP 无状态，会话归属由路径参数显式给出（TUI 的隐式游标是交互循环的产物，HTTP 不模仿）。
+- **通用层构成**：`graph.py`（通用对话引擎）+ `runtime.py`（通用装配：`build_runtime() -> Runtime`，持有 graph/pg/offline_engine/scheduler 及 start/stop，内含调度器降级语义）。`runtime.py` 不承担任何交互职责。
+- **cli.chat 薄适配壳**：chat 命令体 =「`runtime = build_runtime(...)` + 输入循环 + slash 命令 + 评分询问 + /newsession 线程 + `finally` 清理」，装配语句全部在通用层。会话级状态（`current_session_id` 游标、评分对话、后台归因线程）属于交互层，留在 cli.chat，不进通用层。
+- **server 直接用通用层**：`create_app()` 默认路径调 `build_runtime()`；server 进程启动 = `Runtime.start()`，进程退出 = `Runtime.stop()`（lifespan 接驳，对应 TUI 的进入 `try` 之前与 `finally`）。会话级动作全部是一等端点：close 端点 = 评分 + close（对齐 §8.1 第 3 条），不在 server 侧保留「当前会话」隐式状态——HTTP 无状态，会话归属由路径参数显式给出（TUI 的隐式游标是交互循环的产物，HTTP 不模仿）。
 - **评分语义差异已声明**：§5 中 HTTP 对非法评分返回 400，而 TUI 是警告后跳过——这是两处刻意差异之一（另一处是 HTTP 恒返回 references，不受 `--show-references` 影响），其余行为逐字对齐。
 
-### 8.3 装配边界裁决（重构唯一允许非机械改写的地方）
+### 8.3 装配边界：组件归属与告警接驳
 
-抽取不是纯语句搬迁：cli.chat 装配段现有**直接 `rprint` 给 TUI 用户看的启动告警**（cron 非法、调度器初始化失败两类），搬进 runtime.py 后两端消费方式不同，必须改接法。裁决如下，实现者不得即兴变更：
-
-- **迁入 runtime.py**：五个组件的构造与接线（`DialogueGraph`→`PostgresStore`+`init_schema()`+`seed()`→`AttributionEngine`→`OfflineScheduler`+`validate()`+`start()`/`stop()`）；调度器降级语义（cron 非法或初始化失败 → `scheduler=None`，告警文案**逐字**迁入 `Runtime.startup_warnings: list[str]`，由 `build_runtime()`/`start()` 填充）。
-- **留在 cli.chat**：输入循环、slash 命令分派、评分询问、`run_threads`（/newsession 后台归因线程的创建与 `join(timeout=5)`）、`current_session_id` 游标、`finally` 中「评分 → close_session」序。
-- **接驳方式（唯一允许改写处）**：TUI 侧——cli.chat 拿到 `Runtime` 后逐条 `rprint(startup_warnings)` 原样输出，用户可见文本与今日逐字一致；server 侧——同一列表以结构化日志事件记录，不打控制台。
-- 除上述接驳外，重构 diff 仍只允许语句搬迁、不允许语句改写。
-
-## 9. 实施时的代码改动清单（本次不动手）
-
-仅列改动面，实施阶段逐项执行：
-
-1. 新增 `src/mr_data/runtime.py`：`Runtime` 数据类 + `build_runtime()`（装配序列从 cli.chat 迁入，行为以 §8.1 第 1 条为准绳）+ start/stop 生命周期。
-2. `src/mr_data/cli.py`：chat 命令体重构为薄适配壳（迁移边界与唯一允许改写的接驳点已按 §8.3 裁决；§8.1 清单测试先行）。
-3. 新增 `src/mr_data/server/__init__.py`、`app.py`（工厂 + 端点 + 事件缓冲）、`main.py`（uvicorn 启动 + 优雅关停）。
-4. `src/mr_data/online/graph.py`：`DialogueGraph.chat()` 增加可选事件回调参数（§4 方案 a），各节点事件旁路一份；默认 None 行为不变。该参数不触碰 doc/design 已钉契约（状态 key/降级方向/id 派生/维度规则），但属公共入口扩展——按 doc/design/README.md 维护协议，实施时在 online-pipeline.md 相应节补记并自查 00-index 路由。
-5. `src/mr_data/config.py`：新增 `server_host`/`server_port`。
-6. `src/mr_data/cli.py`：新增 `serve` 子命令（薄壳，调 `mr_data.server`）。
-7. `pyproject.toml`：新增 `fastapi`、`uvicorn` 直接依赖。注意：uvicorn 目前只是 chromadb 的传递依赖，显式声明后版本改由直接约束接管，改完需一次性 `uv lock` 验证无版本冲突。
-8. 文档回填：本计划的契约结论（端点、事件形状、降级映射）回填 doc/design/ 新篇或 online-pipeline 相应节；00-index 路由更新；新专有名词（若有）登记 02-glossary。
-
-## 10. 测试策略
-
-对照 testing-guidelines.md 三层模型与质检清单：
-
-- **单元/集成层（主力，进套件）**：FastAPI `TestClient` + `create_app(graph=..., pg=...)` 注入 `FakeLLMClient`/假 store——断言响应形状（reply/references/events）、事件列表内容与顺序、关会话后 PG 最终状态（closed + rating 落库）、降级路径用事件断言（不断言 prompt 文案，§2.1）。reset_pg_state 等现有 fixture 直接复用。
-- **状态断言优先**：测「close 后 list_closed_sessions_with_unprocessed 可见该会话」「events 含 chat.turn 且 details 落库 id 与 PG 行一致」，不测中间过程（§2.2）。
-- **慢速真实基建用例**：至多 1-2 个（真实 pgembed + 假 LLM 走通全生命周期），归入集成层，接受其耗时。
-- **「agent 测试 agent」最小驱动示例**：实施完成后可用独立脚本演示（TestClient 或真实 server + requests）：创建会话 → 注入剧本式 FakeLLM 逐轮驱动 → 断言事件与落库。示例脚本不属于测试套件，放 doc 或 scripts 由实施阶段决定。
+- **runtime.py 归属**：五个组件的构造与接线（`DialogueGraph`→`PostgresStore`+`init_schema()`+`seed()`→`AttributionEngine`→`OfflineScheduler`+`validate()`+`start()`/`stop()`）；调度器降级语义（cron 非法或初始化失败 → `scheduler=None`）。
+- **cli.chat 归属**：输入循环、slash 命令分派、评分询问、`run_threads`（/newsession 后台归因线程的创建与 `join(timeout=5)`）、`current_session_id` 游标、`finally` 中「评分 → close_session」序。
+- **启动告警接驳**：cron 非法的告警文案逐字存放在 `Runtime.startup_warnings: list[str]`（`build_runtime()` 填充）——TUI 侧 cli.chat 逐条 `rprint` 原样输出；server 侧同一列表以结构化日志事件记录（`server.startup_warning`），不打控制台。
+- **一处刻意不对称**：调度器初始化失败（非 cron 非法）不进 `startup_warnings`——原 cli 对此只记日志、不 rprint，为守 §8.1「TUI 可见行为」不变而维持原样；server 侧可经 `offline.schedule_init_failed` 结构化日志事件获取同一信息。
 

@@ -305,7 +305,7 @@ def _audit_records(caplog, event):
 
 def test_audit_log_written(pg, chroma_store, caplog, monkeypatch):
     """三种变更各写一条审计，事件名与 details 字段锁定（机器契约，
-    对齐 dimension-editing-plan §3.6 样例 dimension_reactivate 等）。"""
+    对齐 dimension-editing §3.6 样例 dimension_reactivate 等）。"""
     open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
     edit_id = _noncore(pg, "旧审计描述")
     re_id = _noncore(pg, delta_success=2, delta_failure=9)

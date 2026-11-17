@@ -210,7 +210,7 @@
     - **全量测试耗时对比**：基线 118.46s → 池化后 92.86s（**-25.6s，约 -22%**；real 2m3.9s → 1m38.7s）。
     - 范围外建议（未改）：无。
 
-90. ✅ **性格维度编辑交互（维度编辑模式）**（need_improve.md 待改进；doc/dimension-editing-plan.md v4 定稿的完整落地）：状态化 mini-REPL，chat `/dimension` 与 CLI `mr-data dimension` 两入口跑同一模式循环。实现（改进 90，按 4 提交）：
+90. ✅ **性格维度编辑交互（维度编辑模式）**（need_improve.md 待改进；doc/dimension-editing.md v4 定稿的完整落地）：状态化 mini-REPL，chat `/dimension` 与 CLI `mr-data dimension` 两入口跑同一模式循环。实现（改进 90，按 4 提交）：
     1. **store 层**（postgres.py 增量）：`update_dimension_description` / `set_dimension_active`（复活同时清零计数——否则旧失败率立即再触发 0.6 阈值淘汰，复活形同虚设）/ `delete_dimension`（core 拒绝、仅 active=False 可删；`adjustment_logs` 的 FK 无级联动作会阻断删除，先显式删其行返回条数；`dialogue_dimension_refs` 由 CASCADE 自动清理）。引擎路径（update_dimension/deactivate_dimension）语义不动。
     2. **模式核心**（新包 interactive/dimensions.py）：文案即契约（§2.5 逐条对照）；`/list` 20 行分页 + all/active/off 过滤 + 页脚翻页提示；`/edit` 无 id 列出非 core 维度重新编号选择（越界重输一次再错放弃）；`/deactivate`/`/reactivate` 幂等提示；`/delete` 双重确认（y/N + 重输 id），编排 adjustment 清理 + Chroma purge；空输入放弃、连续两次无效放弃、y/N 默认 N；rich Live 状态条仅真实终端开启。变更成功写审计日志（dimension.edit 等，INFO，details 含 id/旧值→新值/入口；list 与放弃/被拒不写）。
     3. **purge 复用抽取**：`purge_dimension_vectors(pg, chroma, dimension_id)` 提为 attribution.py 模块级函数，引擎 `_purge_dimension_vectors` 改委托，人工删除与引擎淘汰两条路径清理逻辑一致。
@@ -245,7 +245,7 @@
     - 测试基建：`_isolate_logs` 与 `temp_log_dir`/test_logging 本地 `log_dir` fixture 的 mkdir 冲突以 `exist_ok=True` 解决。
     - 范围外建议（未改）：evals 层缺口（审计建议记录而非修复，审计报告即记录）；pgembed 冷启动 flake 根治；CLI 8 个未覆盖命令从真实 bug 出发再补；xdist 并行需先解决 pgembed 共享集群 worker 隔离。
 
-92. ✅ **Chat HTTP 交互 API（agent 测试 agent）**（need_improve.md 待改进；doc/chat-http-api-plan.md v1.6 定稿的完整落地，实施记 v1.7）：新增 `mr_data.server`（FastAPI app 工厂 + uvicorn 入口），REST 驱动完整对话生命周期：POST `/sessions`（可指定 ID，冲突 409 不静默复用）、GET `/sessions/{id}`、POST `/sessions/{id}/message`（一次调用=一轮=一条用户消息，服务端历史衔接，响应含 reply/references/events）、POST `/sessions/{id}/close`（可带评分，评分写入失败不关会话可重试）、POST `/offline`（同步等待归因完成，D-92）、GET `/health`。错误统一形状 `{error:{code,message}}`，9 个 code 全集即契约（§3.1）；节点级降级≠HTTP 失败（200 + events 断言），整轮失败才 500（§5）。启动：`mr-data serve`（默认 127.0.0.1:8080，config 新增 `server_host`/`server_port`）。实现（改进 92）：
+92. ✅ **Chat HTTP 交互 API（agent 测试 agent）**（need_improve.md 待改进；doc/chat-http-api.md v1.6 定稿的完整落地，实施记 v1.7）：新增 `mr_data.server`（FastAPI app 工厂 + uvicorn 入口），REST 驱动完整对话生命周期：POST `/sessions`（可指定 ID，冲突 409 不静默复用）、GET `/sessions/{id}`、POST `/sessions/{id}/message`（一次调用=一轮=一条用户消息，服务端历史衔接，响应含 reply/references/events）、POST `/sessions/{id}/close`（可带评分，评分写入失败不关会话可重试）、POST `/offline`（同步等待归因完成，D-92）、GET `/health`。错误统一形状 `{error:{code,message}}`，9 个 code 全集即契约（§3.1）；节点级降级≠HTTP 失败（200 + events 断言），整轮失败才 500（§5）。启动：`mr-data serve`（默认 127.0.0.1:8080，config 新增 `server_host`/`server_port`）。实现（改进 92）：
     - **通用装配层** `mr_data/runtime.py`（计划 v1.4/§8.2）：`build_runtime() -> Runtime`（graph/pg/offline_engine/scheduler + start/stop），cli.chat 降为薄适配壳（输入循环/slash/评分//newsession 线程/finally 清理全留交互层），TUI 可观察行为逐字不变——既有 test_cli/test_offline_scheduler 全绿守护，装配假件 patch 目标随之迁到 `mr_data.runtime.*`。
     - **事件回调**（§4 方案 a）：`DialogueGraph.chat(..., on_event=None)` 第三参数；实现为 invoke 期间挂在 graph logger 上的临时 tap handler（`_EventTapHandler`），按 session_id 过滤旁路 `{event, session_id?, details}`，**不改任何节点代码**、日志落盘路径不变；默认 None 行为与旧签名逐字一致。契约回填 design/online-pipeline.md#8。
     - **应用工厂 + 依赖注入**：`create_app(graph=None, pg=None, start_scheduler=None)`，注入 FakeLLM/假 store 时零真实基建（测试路径默认不启动调度器）；默认路径与 TUI 同一套装配（build_runtime + Runtime.start/stop 经 lifespan 接驳）。

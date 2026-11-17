@@ -18,7 +18,7 @@
 | 素材 | 性格的**参考内容层**：示例台词、归因事件与证据，存人格向量库，按语义检索 top_k 进 prompt | 01-birdseye.md 核心机制；memory-and-retrieval.md#1 |
 | core 维度 | 初始化种子带 `core=TRUE` 的预置维度，永不淘汰；运行时新建维度永远非 core，无任何晋升机制 | offline-attribution.md#3 |
 | active / 停用（deactivate） | 维度开关：停用的维度不参与在线选择与归因；失败率超阈即停用，复活唯一合法路径是人工（维度编辑模式，重置计数） | offline-attribution.md#3（D-90） |
-| 维度编辑模式（dimension mode） | 状态化交互模式（chat /dimension、CLI mr-data dimension）：模式内仅识别 / 命令，/list /edit /deactivate /reactivate /delete /help /quit；变更直接落库并写审计日志；core 全拒 | ../dimension-editing-plan.md |
+| 维度编辑模式（dimension mode） | 状态化交互模式（chat /dimension、CLI mr-data dimension）：模式内仅识别 / 命令，/list /edit /deactivate /reactivate /delete /help /quit；变更直接落库并写审计日志；core 全拒 | ../dimension-editing.md |
 | delta（成败增量） | 一次归因产出的一条维度变化：维度 + delta_success/delta_failure + reason + evidence + event + target | offline-attribution.md#2 |
 | 证据（evidence） | 归因产出的**原文摘录**（对话/内心独白逐字引用），0-N 条；嵌入用 target 行前后窗口上下文；**登记 PG refs** | offline-attribution.md#4 |
 | 事件（event） | 归因产出的**一句话摘要**，0 或 1 条、可留空，记录维度被实际使用的过程；**不登记 PG refs**，仅靠 Chroma metadata 追溯 | offline-attribution.md#4 |
@@ -68,4 +68,4 @@
 | 幂等（稳定 id 派生） | 所有向量文档 id 由内容/外键确定性哈希派生，重放写入时「已存在则跳过」 | memory-and-retrieval.md#2 |
 | 两段式写入 | 跨库一致性折中：PG 事务先提交，Chroma 副作用在提交后逐条 flush（Chroma 失败不回滚 PG） | offline-attribution.md#6；decisions.md D-81 |
 | 单写者 | 离线归因同一时刻仅一个 run 在写：进程内锁 + PG advisory lock 双护栏 | offline-attribution.md#1 |
-| Runtime（通用装配层） | `build_runtime()` 装配产物（graph/pg/offline_engine/scheduler + start/stop 生命周期）：TUI 与 HTTP server 共用的唯一装配入口，启动告警经 `startup_warnings` 接驳 | ../chat-http-api-plan.md §8 |
+| Runtime（通用装配层） | `build_runtime()` 装配产物（graph/pg/offline_engine/scheduler + start/stop 生命周期）：TUI 与 HTTP server 共用的唯一装配入口，启动告警经 `startup_warnings` 接驳 | ../chat-http-api.md §8 |

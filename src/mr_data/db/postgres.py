@@ -436,6 +436,64 @@ class PostgresStore:
                 (dimension_id,),
             )
 
+    # --- Manual dimension editing (dimension mode, 改进 90) ---
+
+    def update_dimension_description(self, dimension_id: int, description: str) -> None:
+        """人工编辑描述（维度编辑模式专用）；core 拒绝。只动 description+updated_at。"""
+        dim = self.get_dimension(dimension_id)
+        if dim is None:
+            raise ValueError(f"dimension {dimension_id} not found")
+        if dim.core:
+            raise ValueError(f"core dimension {dimension_id} is read-only")
+        with self._cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE personality_dimensions SET description = %s, updated_at = NOW() WHERE id = %s",
+                (description, dimension_id),
+            )
+
+    def set_dimension_active(self, dimension_id: int, active: bool) -> None:
+        """人工停用/复活（维度编辑模式专用）；core 拒绝。
+        复活（active=True）同时清零计数——旧计数否则会按 0.6 失败率阈值
+        在下一轮归因立即再次触发淘汰，复活形同虚设。"""
+        dim = self.get_dimension(dimension_id)
+        if dim is None:
+            raise ValueError(f"dimension {dimension_id} not found")
+        if dim.core:
+            raise ValueError(f"core dimension {dimension_id} is read-only")
+        with self._cursor(commit=True) as cur:
+            if active:
+                cur.execute(
+                    """
+                    UPDATE personality_dimensions
+                    SET active = TRUE, success_count = 0, failure_count = 0, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (dimension_id,),
+                )
+            else:
+                cur.execute(
+                    "UPDATE personality_dimensions SET active = FALSE, updated_at = NOW() WHERE id = %s",
+                    (dimension_id,),
+                )
+
+    def delete_dimension(self, dimension_id: int) -> int:
+        """删除已停用维度（维度编辑模式专用）；core 拒绝、仅 active=False 可删。
+        adjustment_logs.dimension_id 的 FK 无级联动作，先显式删其行（返回条数，
+        供删除前展示与审计日志）；dialogue_dimension_refs 由 ON DELETE CASCADE 自动清理。
+        Chroma 清理不在 store 层，由模式层编排 purge。"""
+        dim = self.get_dimension(dimension_id)
+        if dim is None:
+            raise ValueError(f"dimension {dimension_id} not found")
+        if dim.core:
+            raise ValueError(f"core dimension {dimension_id} is read-only")
+        if dim.active:
+            raise ValueError(f"dimension {dimension_id} is still active")
+        with self._cursor(commit=True) as cur:
+            cur.execute("DELETE FROM adjustment_logs WHERE dimension_id = %s", (dimension_id,))
+            adjustments = cur.rowcount
+            cur.execute("DELETE FROM personality_dimensions WHERE id = %s", (dimension_id,))
+        return adjustments
+
     # --- Session management ---
 
     def create_session(self, session_id: Optional[str] = None) -> str:

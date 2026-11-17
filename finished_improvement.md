@@ -209,3 +209,13 @@
     - 测试：`tests/test_postgres_pool.py` +3（同 dsn 实例共享池对象；事务归还后 _cursor 可再 checkout；30 次高频 _cursor 后服务端连接数不增长 ≤8）。全量回归 **218 passed(+3), 1 skipped**。
     - **全量测试耗时对比**：基线 118.46s → 池化后 92.86s（**-25.6s，约 -22%**；real 2m3.9s → 1m38.7s）。
     - 范围外建议（未改）：无。
+
+90. ✅ **性格维度编辑交互（维度编辑模式）**（need_improve.md 待改进；doc/dimension-editing-plan.md v4 定稿的完整落地）：状态化 mini-REPL，chat `/dimension` 与 CLI `mr-data dimension` 两入口跑同一模式循环。实现（改进 90，按 4 提交）：
+    1. **store 层**（postgres.py 增量）：`update_dimension_description` / `set_dimension_active`（复活同时清零计数——否则旧失败率立即再触发 0.6 阈值淘汰，复活形同虚设）/ `delete_dimension`（core 拒绝、仅 active=False 可删；`adjustment_logs` 的 FK 无级联动作会阻断删除，先显式删其行返回条数；`dialogue_dimension_refs` 由 CASCADE 自动清理）。引擎路径（update_dimension/deactivate_dimension）语义不动。
+    2. **模式核心**（新包 interactive/dimensions.py）：文案即契约（§2.5 逐条对照）；`/list` 20 行分页 + all/active/off 过滤 + 页脚翻页提示；`/edit` 无 id 列出非 core 维度重新编号选择（越界重输一次再错放弃）；`/deactivate`/`/reactivate` 幂等提示；`/delete` 双重确认（y/N + 重输 id），编排 adjustment 清理 + Chroma purge；空输入放弃、连续两次无效放弃、y/N 默认 N；rich Live 状态条仅真实终端开启。变更成功写审计日志（dimension.edit 等，INFO，details 含 id/旧值→新值/入口；list 与放弃/被拒不写）。
+    3. **purge 复用抽取**：`purge_dimension_vectors(pg, chroma, dimension_id)` 提为 attribution.py 模块级函数，引擎 `_purge_dimension_vectors` 改委托，人工删除与引擎淘汰两条路径清理逻辑一致。
+    4. **入口**：CLI dimension subgroup（无子命令/ edit 无参数直入模式；list、edit --description [--force] one-shot 供脚本用）；chat if 链 `/dimension` → run_dimension_mode(pg, chroma=graph.chroma)，/quit 回对话循环；chat help 与 CLI 命令清单同步加说明行。
+    - 生效时机：在线 graph.py:249 与离线 attribution.py 均为每轮 list_dimensions 直查，编辑即时生效，无缓存清理点。
+    - 文档回填：offline-attribution.md#3「无复活路径」改写为「人工复活与删除（D-90）」；decisions.md 登记 D-90（推翻原设计）；00-index.md 路由表追加「维护性格维度」一行；02-glossary.md 登记「维度编辑模式」并更新 active/停用与 purge 条目。
+    - 测试：test_dimension_store.py +9、test_dimension_mode.py +33（状态机全分支 + 删除清理链断言 Chroma 无悬挂 + 审计日志含放弃不写）、test_dimension_cli.py +8（CliRunner one-shot + chat 分派 + help 文本）。全量回归 **268 passed(+50), 1 skipped**（218 基线）。
+    - 范围外建议（未改）：无。

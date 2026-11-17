@@ -357,3 +357,11 @@ def test_no_audit_on_aborted_or_readonly(pg, caplog, monkeypatch):
             "/quit",
         ]))
     assert _audit_records(caplog, "dimension.edit") == []
+
+
+# --- 状态条 smoke（步骤 3） ---
+
+def test_status_bar_smoke_with_default_input(pg, monkeypatch):
+    """真实终端路径：默认 Prompt.ask + rich Live 状态条启停不抛异常。"""
+    monkeypatch.setattr(dimmode.Prompt, "ask", lambda *a, **k: "/quit")
+    run_dimension_mode(pg, status_bar=True)  # Live start/stop 无异常即通过

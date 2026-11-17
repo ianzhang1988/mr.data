@@ -23,8 +23,8 @@
 | 改向量库与 PG 的对账表 | [memory-and-retrieval.md](memory-and-retrieval.md#6) 与 PG 的协作 |
 | 改归因 prompt / transcript / 预算 | [offline-attribution.md](offline-attribution.md#2) 归因流程 |
 | 改维度淘汰/新建/去重规则 | [offline-attribution.md](offline-attribution.md#3) 维度调整规则 |
-| 改证据/事件回写 | [offline-attribution.md](offline-attribution.md#4) 证据回写 |
-| 改写入顺序/事务边界/重试死信 | [offline-attribution.md](offline-attribution.md#6) 一致性边界 + [online-pipeline.md](online-pipeline.md#7) 降级链 |
+| 维护性格维度（维度编辑模式：编辑/停用/复活/删除） | [../dimension-editing-plan.md](../dimension-editing-plan.md)（交互契约，D-90）+ [offline-attribution.md](offline-attribution.md#3) 复活/删除语义 |
+| 改证据/事件回写 | [offline-attribution.md](offline-attribution.md#4) 证据回写 || 改写入顺序/事务边界/重试死信 | [offline-attribution.md](offline-attribution.md#6) 一致性边界 + [online-pipeline.md](online-pipeline.md#7) 降级链 |
 | 为什么当初这样设计 | [decisions.md](decisions.md) 按 D 编号检索 |
 
 ## 全局约定速查

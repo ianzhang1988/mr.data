@@ -38,3 +38,11 @@
 - 结论：A——标注系统（`[记录]`/`[推断]`/证据区）整体退出 doc/design：删除 README 两条规则，九篇文档维持无标注形态，新文档/新编辑不再要求标注纪律。
 - 依据：用户答复 Q-4（选 A）；标注是审核期脚手架，审核已完成、目的耗尽；证据链由 finished_improvement.md 改进号、decisions.md D 号、git 历史保留，「为什么」由正文中的纯文字改进号引用承担（如「改进 87 由 0.33 上调」）
 - 影响：① README 删规则一.4 与规则三末行、验收清单去标注残留；② 台账层（finished_improvement/decisions）继续作为证据权威，职责不变
+
+## D-90 允许人工复活（重置计数）与删除已停用维度，取代「无复活路径」
+
+- 日期：2026-11-17
+- 问题：offline-attribution#3 原设计「停用维度不再参与归因，无复活信号源，reactivate 判为无意义路径」——引入人工维度编辑后是否维持？
+- 结论：推翻原设计。维度编辑模式（chat /dimension、CLI mr-data dimension）允许人工 reactivate——人就是复活信号源；复活必须同时清零 success/failure 计数，否则旧计数（如 7 败/10 样本，比率 > 0.6 阈值）会在下一轮归因立即再次触发淘汰，复活形同虚设。同时允许删除已停用维度：双重确认（y/N + 重输 id），清理 adjustment_logs 行（FK 无级联动作，阻断删除）、dialogue_dimension_refs（FK 级联自动）、Chroma 向量残留（与引擎 purge 同模式，复用同一函数）。core 维度在交互层与 store 层双重拒绝，永不淘汰语义延伸为全拒。
+- 依据：doc/dimension-editing-plan.md v4 定稿（用户裁决：状态化模式、全命令单斜杠、变更写审计日志）
+- 影响：① offline-attribution#3「无复活路径」条目改写为「人工复活与删除」；② 变更操作写审计日志（dimension.edit/deactivate/reactivate/delete，logs/ 应用日志，不建审计表）；③ 新建维度仍唯一归引擎自动发现，计数唯一合法变更路径是复活重置

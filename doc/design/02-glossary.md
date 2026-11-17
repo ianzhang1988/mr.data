@@ -17,11 +17,12 @@
 | 维度（dimension） | 性格的**结构层**：哪些性格侧面存在、本轮谁起作用；PG `personality_dimensions` 一行，在线 select_dimensions 从活跃维度中选取 | overview.md#2；offline-attribution.md#3 |
 | 素材 | 性格的**参考内容层**：示例台词、归因事件与证据，存人格向量库，按语义检索 top_k 进 prompt | 01-birdseye.md 核心机制；memory-and-retrieval.md#1 |
 | core 维度 | 初始化种子带 `core=TRUE` 的预置维度，永不淘汰；运行时新建维度永远非 core，无任何晋升机制 | offline-attribution.md#3 |
-| active / 停用（deactivate） | 维度开关：停用的维度不参与在线选择与归因；失败率超阈即停用，**无复活路径** | offline-attribution.md#3 |
+| active / 停用（deactivate） | 维度开关：停用的维度不参与在线选择与归因；失败率超阈即停用，复活唯一合法路径是人工（维度编辑模式，重置计数） | offline-attribution.md#3（D-90） |
+| 维度编辑模式（dimension mode） | 状态化交互模式（chat /dimension、CLI mr-data dimension）：模式内仅识别 / 命令，/list /edit /deactivate /reactivate /delete /help /quit；变更直接落库并写审计日志；core 全拒 | ../dimension-editing-plan.md |
 | delta（成败增量） | 一次归因产出的一条维度变化：维度 + delta_success/delta_failure + reason + evidence + event + target | offline-attribution.md#2 |
 | 证据（evidence） | 归因产出的**原文摘录**（对话/内心独白逐字引用），0-N 条；嵌入用 target 行前后窗口上下文；**登记 PG refs** | offline-attribution.md#4 |
 | 事件（event） | 归因产出的**一句话摘要**，0 或 1 条、可留空，记录维度被实际使用的过程；**不登记 PG refs**，仅靠 Chroma metadata 追溯 | offline-attribution.md#4 |
-| 淘汰（purge） | 停用维度的清理动作：按 PG refs 删其素材文档、清 refs、兜底扫 Chroma 残留；不可逆 | offline-attribution.md#3/#6 |
+| 淘汰（purge） | 停用维度的清理动作：按 PG refs 删其素材文档、清 refs、兜底扫 Chroma 残留；不可逆；人工删除已停用维度复用同一清理函数 | offline-attribution.md#3/#6 |
 
 **evidence vs event**：evidence 是「证明材料」——微观原文、可多可零、PG+Chroma 双链追溯；event 是「大事记」——宏观概括、最多一条、只有 Chroma 单链。
 

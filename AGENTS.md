@@ -10,6 +10,8 @@
 
 ## 测试
 
+注意原则 doc/testing-guidelines.md
+
 ```bash
 .venv/bin/python -m pytest tests/ -q
 ```

@@ -15,13 +15,10 @@ from mr_data.offline import AttributionEngine
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
 def _make_engine(pg: PostgresStore, chroma_store, fake_llm) -> AttributionEngine:
     return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
 
-
 def test_update_session_rating_roundtrip(pg_available, test_session_id):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -34,9 +31,7 @@ def test_update_session_rating_roundtrip(pg_available, test_session_id):
     assert session.rating == -1
     assert session.rating_comment == "回复太机械"
 
-
 def test_reactivate_session_resets_rating(pg_available, test_session_id):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -51,13 +46,11 @@ def test_reactivate_session_resets_rating(pg_available, test_session_id):
     assert session.rating is None
     assert session.rating_comment is None
 
-
 @pytest.mark.parametrize("with_rating", [True, False])
 def test_context_includes_session_rating_when_present(
     pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id, with_rating
 ):
     """离线归因 _build_context：有评分时注入用户评分与评论段落，无评分时段落省略。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -77,9 +70,7 @@ def test_context_includes_session_rating_when_present(
     else:
         assert "用户对本会话的评价" not in context
 
-
 def test_cli_rating_prompt_writes_valid_input(pg_available, test_session_id, monkeypatch):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -97,11 +88,9 @@ def test_cli_rating_prompt_writes_valid_input(pg_available, test_session_id, mon
     assert session.rating == 2
     assert session.rating_comment == "很棒"
 
-
 def test_cli_rating_prompt_skips_empty_and_invalid(
     pg_available, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

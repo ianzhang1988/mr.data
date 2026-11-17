@@ -182,7 +182,6 @@ def test_cli_offline_skips_when_locked(
         blocker.close()
 
     assert result.exit_code == 1
-    assert "跳过" in result.output
     assert created and not created[0].ran  # 持锁冲突：未执行归因
 
 
@@ -354,7 +353,3 @@ def test_newsession_async_run_respects_lock(
     assert result.exit_code == 0
     assert engine.run_calls == (0 if hold_lock else 1)
     assert "New session: sess-1" in result.output  # 新会话照常开始
-    if hold_lock:
-        assert "跳过" in result.output
-    else:
-        assert "离线归因在后台完成" in result.output

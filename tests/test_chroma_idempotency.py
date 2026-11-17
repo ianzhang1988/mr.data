@@ -14,7 +14,12 @@ from mr_data.db.chroma import (
     event_doc_id,
     line_doc_id,
 )
-from mr_data.models import DialogueLog, DialogueMemoryMetadata, PersonalityEvent
+from mr_data.models import (
+    DialogueLog,
+    DialogueMemoryMetadata,
+    PersonalityEvent,
+    WebMemoryMetadata,
+)
 from mr_data.offline import AttributionEngine
 from mr_data.offline.attribution import AttributionResult, DimensionDelta
 
@@ -127,3 +132,101 @@ def test_apply_replay_does_not_duplicate_chroma_docs(
     engine._flush_post_commit_chroma(test_session_id, logs, events, purge)
     assert chroma_store.personality.count() == personality_count
     assert chroma_store.memories.count() == memories_count
+
+
+# ---------------------------------------------------------------------------
+# ChromaStore 查询与清理行为（从 test_e2e 归位：不依赖 graph/离线归因）
+# ---------------------------------------------------------------------------
+
+
+def test_chroma_personality(chroma_store):
+    store = chroma_store
+    event = PersonalityEvent(content="测试事件", dimension_ids=[1, 2], source_type="event")
+    doc_id = store.add_personality_event(event)
+    assert doc_id
+
+    docs = store.query_personality("测试")
+    assert any("测试事件" in d.page_content for d in docs)
+    assert any(1 in d.metadata.dimension_ids for d in docs)
+
+
+def test_chroma_personality_context(chroma_store):
+    store = chroma_store
+    event = PersonalityEvent(
+        content=" assistant: 这是 mr.data 的台词",
+        context="user: 我们遇到了一个异常值\nassistant: 这是 mr.data 的台词",
+        speaker="mr.data",
+        dimension_ids=[1],
+        source_type="line",
+    )
+    store.add_personality_event(event)
+
+    # Query by context should return the utterance, not the full context.
+    docs = store.query_personality("异常值", top_k=5)
+    assert any("这是 mr.data 的台词" in d.page_content for d in docs)
+    assert all("user:" not in d.page_content for d in docs)
+    assert docs[0].metadata.context
+
+
+@pytest.mark.parametrize("memory_form", ["dialogue", "web"])
+def test_prune_stale_memories(chroma_store, memory_form):
+    from datetime import datetime, timedelta, timezone
+
+    session_id = f"prune-{memory_form}-session"
+    old_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    if memory_form == "dialogue":
+        query = "dialogue"
+        old_content = "user: old stale dialogue"
+        recent_content = "user: recent dialogue"
+        old_meta = DialogueMemoryMetadata(
+            session_id=session_id,
+            added_at=old_time,
+            last_recalled_at=old_time,
+        )
+        recent_meta = DialogueMemoryMetadata(session_id=session_id, added_at=now)
+    else:
+        query = "资料"
+        old_content = "[网络资料] 旧资料"
+        recent_content = "[网络资料] 新资料"
+        old_meta = WebMemoryMetadata(
+            url="http://example.com/old",
+            title="旧资料",
+            retrieved_at=old_time,
+        )
+        recent_meta = WebMemoryMetadata(
+            url="http://example.com/new",
+            title="新资料",
+            retrieved_at=now,
+        )
+    chroma_store.add_memory(
+        session_id, old_content, memory_id="web:old" if memory_form == "web" else None,
+        metadata=old_meta,
+    )
+    chroma_store.add_memory(session_id, recent_content, metadata=recent_meta)
+    if memory_form == "web":
+        # 老但被召回过的 web 记忆应保留（recall_count 达标）
+        chroma_store.add_memory(
+            session_id,
+            "[网络资料] 老但常用",
+            memory_id="web:recalled",
+            metadata=WebMemoryMetadata(
+                url="http://example.com/recalled",
+                title="老但常用",
+                retrieved_at=old_time,
+            ),
+        )
+        chroma_store.increment_memory_recall(["web:recalled"])
+
+    pruned = chroma_store.prune_stale_memories(
+        cutoff_days=90,
+        min_recall_count=1,
+    )
+    assert pruned == 1
+
+    remaining = chroma_store.query_memories(query, session_id=session_id, top_k=10)
+    if memory_form == "dialogue":
+        assert all("old stale" not in d.page_content for d in remaining)
+    else:
+        remaining_ids = {d.id for d in remaining}
+        assert "web:old" not in remaining_ids

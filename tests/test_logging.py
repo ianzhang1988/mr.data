@@ -14,7 +14,7 @@ from mr_data.logging import _FILE_HANDLERS, get_logger, reset_loggers
 def log_dir(tmp_path, monkeypatch):
     """Provide a temporary log directory and reset logger state around the test."""
     path = tmp_path / "logs"
-    path.mkdir()
+    path.mkdir(exist_ok=True)  # autouse _isolate_logs 可能已建同目录
     monkeypatch.setattr(settings, "log_dir", str(path))
     reset_loggers()
     yield path
@@ -38,7 +38,7 @@ def test_loggers_share_file_handler_by_path(log_dir):
     # Both loggers write through the single shared handler.
     log_a.info("hello from a", extra={"event": "test"})
     log_b.info("hello from b", extra={"event": "test"})
-    log_a.handlers[0].flush()
+    file_a[0].flush()
 
     log_path = Path(settings.log_dir) / "mr-data.log"
     lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -63,6 +63,6 @@ def test_reset_loggers_clears_and_rebuilds_file_handlers(log_dir):
 
     # The rebuilt handler still writes to the same file.
     rebuilt.info("after reset", extra={"event": "test"})
-    rebuilt.handlers[0].flush()
+    new_handler.flush()
     log_path = Path(settings.log_dir) / "mr-data.log"
     assert "after reset" in log_path.read_text(encoding="utf-8")

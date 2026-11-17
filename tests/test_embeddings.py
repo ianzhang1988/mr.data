@@ -1,4 +1,5 @@
 import hashlib
+import os
 
 import pytest
 
@@ -106,7 +107,10 @@ def test_embeddings_no_prefix_on_add_and_query(kind):
 
 
 @pytest.mark.slow
-@pytest.mark.skip(reason="Requires downloading the Jina model; run manually with --run-slow")
+@pytest.mark.skipif(
+    os.environ.get("MR_DATA_RUN_SLOW") != "1",
+    reason="Requires downloading the Jina model; set MR_DATA_RUN_SLOW=1",
+)
 def test_real_embedding_dimensions(tmp_path):
     store = ChromaStore(persist_dir=str(tmp_path / "chroma"))
     event = PersonalityEvent(content="测试", dimension_ids=[1], source_type="line")

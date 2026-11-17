@@ -217,7 +217,7 @@ def test_parse_mode_raises_on_error(monkeypatch):
         client, "chat_with_messages", lambda messages, temperature=0.7: '{"value": 1}'
     )
 
-    with pytest.raises(RuntimeError, match="parse not supported"):
+    with pytest.raises(RuntimeError):
         client.structured_chat([{"role": "user", "content": "x"}], _SimpleResult)
     # No fallback caching in parse mode.
     assert client._parse_supported is True

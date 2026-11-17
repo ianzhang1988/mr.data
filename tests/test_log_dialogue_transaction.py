@@ -84,7 +84,7 @@ def test_vector_refs_failure_rolls_back_dialogue_writes(
     monkeypatch.setattr(pg, "insert_dialogue_vector_refs",
                         _failing_insert_vector_refs)
 
-    with pytest.raises(RuntimeError, match="模拟 _log_dialogue 中途崩溃"):
+    with pytest.raises(RuntimeError):
         graph._log_dialogue(state)
 
     # 事务回滚：本回合 dialogue_logs 无残留（user/assistant 行都不在）。

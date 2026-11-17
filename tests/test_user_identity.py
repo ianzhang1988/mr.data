@@ -122,7 +122,7 @@ def test_user_identity_in_system_prompt(
         enable_web_search=False,
     )
     reply = graph.chat(test_session_id, "你好")
-    assert reply
+    assert reply.text
 
     system = recording_fake_llm.last_system
     assert "Picard" in system

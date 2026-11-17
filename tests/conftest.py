@@ -2,16 +2,22 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
 from pathlib import Path
 
-# Disable web search by default in tests to avoid external network calls.
-os.environ.setdefault("MR_DATA_ENABLE_WEB_SEARCH", "false")
+# Disable web search in tests to avoid external network calls. 强制赋值而非
+# setdefault：外部传入的同名变量不应穿透进测试（审计 §2-a）。
+os.environ["MR_DATA_ENABLE_WEB_SEARCH"] = "false"
 
 # Skip live web page extraction in tests: fake search results already include page_content.
-os.environ.setdefault("MR_DATA_WEB_EXTRACT_MAX_PAGES", "0")
+os.environ["MR_DATA_WEB_EXTRACT_MAX_PAGES"] = "0"
+
+# Block .env file penetration (audit §2-c): mr_data.config instantiates settings
+# at import time, and conftest runs before any mr_data import.
+os.environ["MR_DATA_DISABLE_ENV_FILE"] = "1"
 
 import pytest
 
@@ -102,6 +108,28 @@ class FakeLLMClient(LLMClient):
         return {"deltas": []}
 
 
+class DedupFakeLLM(FakeLLMClient):
+    """可控返回归因结果与去重判断的 FakeLLM。"""
+
+    def __init__(self, deltas, dedup_response=None, dedup_raises=False):
+        super().__init__()
+        self._deltas = deltas
+        self._dedup_response = dedup_response if dedup_response is not None else {"matches": []}
+        self._dedup_raises = dedup_raises
+        self.dedup_calls = 0
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        name = response_format.__name__
+        if name == "AttributionResult":
+            return {"deltas": self._deltas}
+        if name == "DimensionDedupResult":
+            self.dedup_calls += 1
+            if self._dedup_raises:
+                raise RuntimeError("dedup llm failed")
+            return self._dedup_response
+        return super().structured_chat(messages, response_format, temperature)
+
+
 class FakeEmbedding:
     """Deterministic embedding function that avoids downloading heavy models."""
 
@@ -167,8 +195,18 @@ def pgembed_server():
     fingerprint changed. reset_pg_state wipes business tables before each
     test, so reusing the cluster carries no data-isolation risk.
     """
-    if os.environ.get("MR_DATA_POSTGRES_DSN"):
-        # User provided an external DSN; no need to start embedded PG.
+    external_dsn = os.environ.get("MR_DATA_POSTGRES_DSN")
+    if external_dsn:
+        # 外部 DSN 防护（审计 §4-1）：reset_pg_state 会对业务表做
+        # TRUNCATE ... CASCADE，未显式允许时必须 fail，禁止静默操作真实库。
+        if os.environ.get("MR_DATA_ALLOW_EXTERNAL_PG") != "1":
+            pytest.fail(
+                "MR_DATA_POSTGRES_DSN is set, but the test suite TRUNCATEs "
+                "business tables. Set MR_DATA_ALLOW_EXTERNAL_PG=1 to confirm "
+                "the external database is disposable, or unset the DSN to use "
+                "the embedded test cluster."
+            )
+        # Explicitly allowed external DSN; no need to start embedded PG.
         yield None
         return
 
@@ -200,11 +238,18 @@ def pgembed_server():
     os.environ["MR_DATA_POSTGRES_DSN"] = dsn
     yield manager
     manager.stop()  # keep the cluster on disk for the next run
+    # 还原 session 级环境变量（审计 §2-e），避免泄漏给同进程的其他逻辑。
+    os.environ.pop("MR_DATA_POSTGRES_DSN", None)
 
 
 @pytest.fixture(scope="session")
 def pg_available(pgembed_server):
-    """Returns True if PostgreSQL is reachable."""
+    """Returns True if PostgreSQL is reachable.
+
+    统一的 pgembed 可用性守卫（审计 §4-9）：pgembed 未安装时在此 skip，
+    测试体内不再需要逐处 `pytest.importorskip("pgembed")` 样板。
+    """
+    pytest.importorskip("pgembed", reason="pgembed not installed")
     dsn = os.environ.get("MR_DATA_POSTGRES_DSN")
     if not dsn and pgembed_server is not None:
         dsn = pgembed_server.get_dsn()
@@ -236,13 +281,22 @@ _PG_BUSINESS_TABLES = (
     "user_identities",
 )
 
+# 双写守护（审计 §2-g）：TRUNCATE 清单必须与 SCHEMA_SQL 建表集合精确一致，
+# 否则 reset_pg_state 会漏清（数据泄漏）或多清。tests/test_pg_schema_guard.py
+# 有对应单测；此处 import 时再拦一道，让漂移在收集期即暴露。
+from mr_data.db.postgres import SCHEMA_SQL as _SCHEMA_SQL  # noqa: E402
+
+_SCHEMA_TABLES = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", _SCHEMA_SQL))
+assert set(_PG_BUSINESS_TABLES) == _SCHEMA_TABLES, (
+    f"_PG_BUSINESS_TABLES 与 SCHEMA_SQL 漂移: {_PG_BUSINESS_TABLES} vs {_SCHEMA_TABLES}"
+)
+
 
 @pytest.fixture(scope="session")
 def _pg_schema_ready(pg_available):
     """Session 级一次性建表。SCHEMA_SQL 全部 IF NOT EXISTS，幂等；
-    每测试重放 DDL 是纯浪费（~90ms × 百余测试）。PG 不可用时 skip，
-    与 reset_pg_state 原守卫等价。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
+    每测试重放 DDL 是纯浪费（~90ms × 百余测试）。PG 不可用（含 pgembed
+    未安装，见 pg_available）时 skip。"""
     if not pg_available:
         pytest.skip("PostgreSQL not available")
     PostgresStore().init_schema()
@@ -270,21 +324,24 @@ def pg(reset_pg_state):
     return PostgresStore()
 
 
+TEST_PERSONALITY_FILE = Path(__file__).parent / "fixtures" / "test_personality.json"
+
+
 @pytest.fixture(scope="session", autouse=True)
-def _cache_personality_pack_for_seed():
-    """seed() 每个测试都经 load_personality_pack 重读人格文件（~40ms）。
-    按解析路径缓存（wrapper 只作用于 postgres 模块内的引用；
-    personality_loader 的直接调用方与 cli 的引用不受影响，
-    且测试均不改变 settings.personality_file）。"""
+def _test_personality_pack_for_seed():
+    """seed() 的默认人格文件重定向到测试固定 fixture（审计 §2-d）：
+    测试不再依赖仓库可变的 data/personalities/data.json，维度数/id/core
+    分布锚定在 tests/fixtures/test_personality.json 上。按解析路径缓存
+    省每测试 ~40ms；显式传 path 的调用仍加载各自文件。"""
     from mr_data.db import postgres as _postgres
 
     original = _postgres.load_personality_pack
     cache: dict = {}
 
     def cached(path=None):
-        key = path or settings.personality_file
+        key = str(path or TEST_PERSONALITY_FILE)
         if key not in cache:
-            cache[key] = original(path)
+            cache[key] = original(key)
         return cache[key]
 
     _postgres.load_personality_pack = cached
@@ -296,10 +353,27 @@ def _cache_personality_pack_for_seed():
 def temp_log_dir(tmp_path, monkeypatch):
     """Provide a temporary log directory and reset logger cache."""
     log_dir = tmp_path / "logs"
-    log_dir.mkdir()
+    log_dir.mkdir(exist_ok=True)  # autouse _isolate_logs 可能已建同目录
     monkeypatch.setattr(settings, "log_dir", str(log_dir))
     reset_loggers()
     yield str(log_dir)
+    reset_loggers()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logs(tmp_path, monkeypatch):
+    """把所有测试的日志重定向到 per-test tmp 目录（审计 §2-f 补强）。
+
+    get_logger 是惰性配置：不经 temp_log_dir 的测试路径（含 reset_pg_state
+    的 seed 日志、调度器/CLI 用例）原本会直写真实的 logs/mr-data.log。
+    autouse 保证这些路径同样进 tmp，真实日志文件零写入。temp_log_dir
+    在其后叠加，行为不变。autouse 先于普通 fixture 实例化，故 seed 日志
+    也被覆盖。"""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(settings, "log_dir", str(log_dir))
+    reset_loggers()
+    yield
     reset_loggers()
 
 

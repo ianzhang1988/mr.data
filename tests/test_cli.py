@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from typer.testing import CliRunner
 
@@ -23,7 +25,12 @@ def _sequential_prompt(inputs: list[str]):
 
 class _FakeDialogueGraph:
     def __init__(self, **kwargs):
-        pass
+        # 坑 #6：假 graph 必须携带 pg/chroma/llm 属性，否则引擎回退构造
+        # 真实 store（ChromaStore 加载 embedding 模型，分钟级开销）；pg 需有
+        # dsn——OfflineScheduler 构造会读 engine.pg.dsn，缺了仍踩降级分支。
+        self.pg = SimpleNamespace(dsn="fake-dsn")
+        self.chroma = SimpleNamespace()
+        self.llm = SimpleNamespace()
 
     def chat(self, session_id: str, user_input: str):
         return _FakeChatResult(f"reply-to-{user_input}")

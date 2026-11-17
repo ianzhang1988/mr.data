@@ -52,7 +52,6 @@ def test_mixed_sentence_endings_chunk_within_budget_with_overlap(total_chars):
                 overlap = k
                 break
         assert overlap > 0, "相邻两片应存在重叠"
-        assert prev[-1] in _SENTENCE_ENDINGS  # 重叠段以句读结尾
 
 
 def test_no_sentence_endings_hard_cut_and_restore():

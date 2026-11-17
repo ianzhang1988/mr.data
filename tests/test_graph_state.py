@@ -34,14 +34,12 @@ from conftest import FakeLLMClient, capture_events, open_log_propagation
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
 class FakeWebSearch:
     def __init__(self, docs: list[WebDoc]):
         self._docs = docs
 
     def search(self, query: str) -> list[WebDoc]:
         return self._docs
-
 
 def _force_web_search(system_prompt, user_prompt, response_format, temperature=0.2):
     return {
@@ -51,7 +49,6 @@ def _force_web_search(system_prompt, user_prompt, response_format, temperature=0
         "needs_web_search": True,
         "search_query": user_prompt,
     }
-
 
 def _capture_fit_sections(graph, monkeypatch):
     """Patch graph.prompt_assembler.fit_sections to capture the raw sections."""
@@ -65,11 +62,9 @@ def _capture_fit_sections(graph, monkeypatch):
     monkeypatch.setattr(graph.prompt_assembler, "fit_sections", spy)
     return captured
 
-
 def test_web_doc_filtering_not_undone_by_state_merge(
     fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -117,7 +112,7 @@ def test_web_doc_filtering_not_undone_by_state_merge(
     )
 
     reply = graph.chat(test_session_id, "太阳系有几颗行星")
-    assert reply
+    assert reply.text
 
     # The irrelevant doc must stay filtered out of the logged web vector refs.
     with pg._cursor() as cur:
@@ -137,7 +132,6 @@ def test_web_doc_filtering_not_undone_by_state_merge(
         f"{web_chunk_base_id('http://example.com/planets', '太阳系有八大行星')}:c0"
     )
     assert web_ref_ids == {expected_chunk_id}
-
 
 def test_extract_web_pages_fills_original_content(
     fake_llm, chroma_store, temp_log_dir, monkeypatch
@@ -180,7 +174,6 @@ def test_extract_web_pages_fills_original_content(
     assert extracted_doc.original_content == "纯正文内容"  # 不含 title
     assert passthrough_doc.original_content is None  # 未抽取路径退化
 
-
 def _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch):
     monkeypatch.setattr(settings, "enable_memory_relevance_filter", True)
     return DialogueGraph(
@@ -191,7 +184,6 @@ def _make_graph_for_memory_filter(fake_llm, chroma_store, monkeypatch):
         enable_web_search=False,
     )
 
-
 def _memory_filter_overhead(user_input: str) -> int:
     from mr_data.online import graph as graph_mod
 
@@ -199,7 +191,6 @@ def _memory_filter_overhead(user_input: str) -> int:
     return graph_mod._token_counter.count(
         system + f"用户输入：{user_input}\n\n记忆列表：\n\n\n请返回每条记忆的相关性判断。"
     )
-
 
 @pytest.mark.parametrize("over_budget", [True, False])
 def test_memory_filter_proportional_compression(
@@ -280,7 +271,6 @@ def test_memory_filter_proportional_compression(
         assert "[记忆过长" not in prompt
         assert capture_events(caplog, "retrieve.memory_filter_prompt_truncated") == []
 
-
 class _RecordingReplyLLM(FakeLLMClient):
     """记录 AssistantReply 调用时传入的 llm_messages。"""
 
@@ -292,7 +282,6 @@ class _RecordingReplyLLM(FakeLLMClient):
         if response_format.__name__ == "AssistantReply":
             self.reply_messages = messages
         return super().structured_chat(messages, response_format, temperature)
-
 
 def _seed_turn(
     pg,
@@ -315,7 +304,6 @@ def _seed_turn(
         )
     )
 
-
 def _setup_seeded_graph(pg, chroma_store, llm):
     return DialogueGraph(
         pg_store=pg,
@@ -324,11 +312,9 @@ def _setup_seeded_graph(pg, chroma_store, llm):
         enable_web_search=False,
     )
 
-
 def test_history_messages_not_duplicated(
     test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -341,7 +327,7 @@ def test_history_messages_not_duplicated(
     graph = _setup_seeded_graph(pg, chroma_store, llm)
 
     reply = graph.chat(test_session_id, "新问题")
-    assert reply
+    assert reply.text
 
     llm_messages = llm.reply_messages
     assert llm_messages, "AssistantReply 应该收到 llm_messages"
@@ -354,14 +340,12 @@ def test_history_messages_not_duplicated(
     # 当前输入永远是最后一条消息。
     assert llm_messages[-1] == {"role": "user", "content": "用户说：新问题"}
 
-
 @pytest.mark.parametrize("selected_empty", [False, True])
 def test_log_dialogue_records_only_selected_dimensions(
     fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, selected_empty
 ):
     """selected_dimension_ids 只登记选中维度；空选择（改进 70 三态）时
     dimension_refs 如实写空。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -405,7 +389,6 @@ def test_log_dialogue_records_only_selected_dimensions(
     assert ref_ids == set(selected)
     assert not (ref_ids & unselected)
 
-
 @pytest.mark.parametrize("selected_empty", [False, True])
 def test_assemble_uses_only_selected_dimensions(
     fake_llm, test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch,
@@ -413,7 +396,6 @@ def test_assemble_uses_only_selected_dimensions(
 ):
     """selected_dimension_ids 只拼选中维度进 identity 段；空选择（改进 70 三态）时
     prompt 不含任何维度行，以占位文案代替。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -462,7 +444,6 @@ def test_assemble_uses_only_selected_dimensions(
         for dim in unselected_dims:
             assert dim.description not in identity_section.text
 
-
 class _HallucinatingSelectionLLM(FakeLLMClient):
     """DimensionSelection 返回混有幻觉 id 的选择结果。"""
 
@@ -471,12 +452,10 @@ class _HallucinatingSelectionLLM(FakeLLMClient):
             return {"dimension_ids": [1, 999]}
         return super().structured_chat(messages, response_format, temperature)
 
-
 def test_select_dimensions_drops_hallucinated_ids(
     test_session_id, pg_available, chroma_store, temp_log_dir
 ):
     """改进 55：_select_dimensions 白名单过滤幻觉 id 的行为锁定。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -499,7 +478,6 @@ def test_select_dimensions_drops_hallucinated_ids(
 
     assert result["selected_dimension_ids"] == [1]
 
-
 class _EmptySelectionLLM(FakeLLMClient):
     """DimensionSelection 明确返回空列表（本轮无维度起作用）。"""
 
@@ -507,7 +485,6 @@ class _EmptySelectionLLM(FakeLLMClient):
         if response_format.__name__ == "DimensionSelection":
             return {"dimension_ids": []}
         return super().structured_chat(messages, response_format, temperature)
-
 
 class _FailingSelectionLLM(FakeLLMClient):
     """DimensionSelection 调用抛异常（选择失败）。"""
@@ -517,14 +494,12 @@ class _FailingSelectionLLM(FakeLLMClient):
             raise RuntimeError("dimension selection unavailable")
         return super().structured_chat(messages, response_format, temperature)
 
-
 @pytest.mark.parametrize("llm_cls", [_EmptySelectionLLM, _FailingSelectionLLM])
 def test_select_dimensions_empty_or_failure_yields_empty(
     test_session_id, pg_available, chroma_store, temp_log_dir, llm_cls
 ):
     """改进 70：LLM 返回空列表或抛异常时 selected_dimension_ids 为 []
     （失败=无维度起作用），不回退全量维度。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -547,17 +522,12 @@ def test_select_dimensions_empty_or_failure_yields_empty(
     result = graph._select_dimensions(state)
 
     assert result["selected_dimension_ids"] == []
-    assert set(result["selected_dimension_ids"]) != {
-        d.id for d in dimensions if d.id is not None
-    }
-
 
 def test_history_turns_become_alternating_messages(
     test_session_id, pg_available, chroma_store, temp_log_dir
 ):
     """改进 74：多轮历史还原为真实 user/assistant 消息序列，按时间序交替，
     当前输入永远是最后一条消息。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -570,7 +540,7 @@ def test_history_turns_become_alternating_messages(
     _seed_turn(pg, test_session_id, "问题二", "回答二")
 
     reply = graph.chat(test_session_id, "当前问题")
-    assert reply
+    assert reply.text
 
     llm_messages = llm.reply_messages
     assert llm_messages
@@ -598,13 +568,11 @@ def test_history_turns_become_alternating_messages(
     # 当前输入是最后一条消息。
     assert llm_messages[-1] == {"role": "user", "content": "用户说：当前问题"}
 
-
 def test_history_trimmed_to_token_budget_keeps_recent_turns(
     test_session_id, pg_available, chroma_store, temp_log_dir, monkeypatch
 ):
     """改进 74：历史超出 token 预算时最老整轮被裁、最近轮保留，并记录
     chat.history_trimmed 日志。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -626,7 +594,7 @@ def test_history_trimmed_to_token_budget_keeps_recent_turns(
     monkeypatch.setattr(settings, "llm_context_token_limit", 2500)
 
     reply = graph.chat(test_session_id, "当前问题")
-    assert reply
+    assert reply.text
 
     llm_messages = llm.reply_messages
     assert llm_messages
@@ -651,13 +619,11 @@ def test_history_trimmed_to_token_budget_keeps_recent_turns(
     assert details["kept"] + details["dropped"] == 12
     assert details["dropped"] > 0
 
-
 def test_history_assistant_turn_keeps_inner_monologue_and_references(
     test_session_id, pg_available, chroma_store, temp_log_dir
 ):
     """改进 74：assistant 历史轮的内心独白与参考来源标注仍出现在对应的
     assistant 消息 content 中。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -685,7 +651,7 @@ def test_history_assistant_turn_keeps_inner_monologue_and_references(
     )
 
     reply = graph.chat(test_session_id, "那冥王星呢")
-    assert reply
+    assert reply.text
 
     llm_messages = llm.reply_messages
     assistant_turns = [

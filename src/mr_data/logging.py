@@ -43,7 +43,15 @@ _FILE_HANDLERS: dict[Path, logging.handlers.RotatingFileHandler] = {}
 
 
 def reset_loggers() -> None:
-    """Clear the configured-logger cache and close shared file handlers. Intended for tests."""
+    """Tear down configured loggers and close shared file handlers. Intended for tests.
+
+    除清缓存外，还须摘除已配置 logger 上的 handler 并恢复 propagate=True：
+    否则 logger 持有旧 handler（指向真实 logs/mr-data.log），测试日志仍穿透到仓库。
+    """
+    for name in _CONFIGURED:
+        logger = logging.getLogger(name)
+        logger.handlers.clear()
+        logger.propagate = True
     _CONFIGURED.clear()
     for handler in _FILE_HANDLERS.values():
         handler.close()

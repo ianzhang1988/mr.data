@@ -13,7 +13,6 @@ from mr_data.offline.attribution import AttributionResult, DimensionDelta
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
 def _setup(pg: PostgresStore, session_id: str):
     pg.create_session(session_id)
     pg.insert_dialogue(DialogueLog(session_id=session_id, role="user", content="测试输入"))
@@ -23,18 +22,15 @@ def _setup(pg: PostgresStore, session_id: str):
     pg.close_session(session_id)
     return pg.get_recent_dialogues(session_id=session_id)
 
-
 def _fetch_event_summaries(pg: PostgresStore) -> list:
     with pg._cursor() as cur:
         cur.execute("SELECT event_summary FROM adjustment_logs")
         return [row["event_summary"] for row in cur.fetchall()]
 
-
 @pytest.mark.parametrize("event_summary", ["值得记录的事件", None], ids=["with-summary", "without-summary"])
 def test_apply_persists_event_summary_to_adjustment_logs(
     event_summary, pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

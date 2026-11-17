@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic import model_validator
@@ -22,7 +23,13 @@ _PROJECT_ROOT = _find_project_root()
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MR_DATA_",
-        env_file=_PROJECT_ROOT / ".env",
+        # 测试经 conftest 置 MR_DATA_DISABLE_ENV_FILE=1 阻断 .env 穿透
+        # （settings 在 import 时实例化，conftest 的设置在 mr_data 导入前生效）。
+        env_file=(
+            None
+            if os.environ.get("MR_DATA_DISABLE_ENV_FILE")
+            else _PROJECT_ROOT / ".env"
+        ),
         env_file_encoding="utf-8",
         extra="ignore",
     )

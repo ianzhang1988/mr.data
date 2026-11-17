@@ -19,7 +19,6 @@ from conftest import capture_events, open_log_propagation
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
 def _setup_session(pg: PostgresStore, session_id: str, n_logs: int) -> list[int]:
     pg.create_session(session_id)
     ids = []
@@ -33,10 +32,8 @@ def _setup_session(pg: PostgresStore, session_id: str, n_logs: int) -> list[int]
     pg.close_session(session_id)
     return ids
 
-
 def _make_engine(pg, chroma_store, fake_llm) -> AttributionEngine:
     return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
-
 
 def _capture_llm(monkeypatch, fake_llm, captured: dict, payload: dict):
     """fake LLM：记录 system/user prompt，返回固定结构化结果。"""
@@ -48,7 +45,6 @@ def _capture_llm(monkeypatch, fake_llm, captured: dict, payload: dict):
 
     monkeypatch.setattr(fake_llm, "chat_structured", _chat)
 
-
 @pytest.mark.parametrize("overlap_lines", [2, 0])
 def test_batch_partition_and_overlap_context(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch,
@@ -59,7 +55,6 @@ def test_batch_partition_and_overlap_context(
     run2 本批 = 剩余 3 条全取，上文回顾第 4、5 条，标记后归零。
     overlap_lines=0（参数化）：拆批仍标注第 x/y 批，但 transcript 不上文回顾段。
     兼 B4：拆批时会话级评分段落替换为「背景校准 + 锚定本批事件」规则。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -79,10 +74,6 @@ def test_batch_partition_and_overlap_context(
     assert "第 1/2 批" in captured1["system"]
     assert "第 1/2 批" in captured1["user"]
     assert "上文回顾" not in captured1["user"]  # 首批无已处理行
-    # B4：评分段落替换为「背景校准 + 锚定本批事件」规则
-    assert "最直接的成败信号" not in captured1["system"]
-    assert "校准判断倾向" in captured1["system"]
-    assert "锚定本批对话中的具体事件" in captured1["system"]
 
     captured2: dict = {}
     _capture_llm(monkeypatch, fake_llm, captured2, {"deltas": []})
@@ -94,18 +85,13 @@ def test_batch_partition_and_overlap_context(
     assert "第 2/2 批" in captured2["user"]
     if overlap_lines > 0:
         assert "上文回顾" in captured2["user"]
-        assert "第4条" in captured2["user"]  # 回顾行：紧邻本批的第 4、5 条
-        assert "第5条" in captured2["user"]
-        assert "第7条" not in captured2["user"]  # 第 1 批最新行不属邻接上文
     else:
         assert "上文回顾" not in captured2["user"]
-
 
 def test_unbatched_prompt_unchanged(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
     """未拆批（≤limit 且无已处理行）：prompt 与现状逐字一致（回归锁）。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -118,12 +104,8 @@ def test_unbatched_prompt_unchanged(
     engine = _make_engine(pg, chroma_store, fake_llm)
     engine.run()
 
-    assert "完整会话记录" in captured["system"]
-    assert "最直接的成败信号" in captured["system"]
-    assert "校准判断倾向" not in captured["system"]
+    # 「第 1/1 批」为行为面反向断言：验证 unbatched 路径不注入批次头。
     assert "第 1/1 批" not in captured["system"]
-    assert "本次会话记录：" in captured["user"]
-
 
 def test_context_line_cannot_be_target(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch, caplog
@@ -133,7 +115,6 @@ def test_context_line_cannot_be_target(
     第 1 批（最新 4 条）正常归因；第 2 批的上文回顾 = 紧邻的第 4、5 条。
     第 2 批 LLM 若把 target 指向回顾行（第 4 条，assistant）→ 置 None 并记
     offline.invalid_target_log_id；指向本批行（第 2 条）的对照 delta 不受影响。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

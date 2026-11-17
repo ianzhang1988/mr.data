@@ -146,7 +146,10 @@ def test_exhausted_budget_yields_omission_placeholder(caplog, monkeypatch):
 
     fitted = asm.fit_sections(sections, limit)
     assert _text("personality", fitted) == personality_text
-    assert "因上下文限制已省略" in _text("web", fitted)
+    # 行为面：web 段被省略占位替换——占位短且不含被省略内容（文案不锁）。
+    web_fitted = _text("web", fitted)
+    assert 0 < len(web_fitted) < len(web_text)
+    assert "网页" not in web_fitted
     omitted = _records(caplog, "prompt.section_omitted")
     assert [r.details["section"] for r in omitted] == ["web"]
     assert omitted[0].details["target_tokens"] == 0
@@ -176,7 +179,10 @@ def test_must_keep_overage_omits_adjustable_with_log(caplog, monkeypatch):
 
     fitted = asm.fit_sections(sections, limit)
 
-    assert _text("low", fitted) == "（low 因上下文限制已省略）"
+    # 行为面：low 段被省略占位替换——占位短且不含被省略内容（文案不锁）。
+    low_fitted = _text("low", fitted)
+    assert 0 < len(low_fitted) < len(low_text)
+    assert "低优" not in low_fitted
     omitted = _records(caplog, "prompt.section_omitted")
     assert [r.details["section"] for r in omitted] == ["low"]
     assert omitted[0].details["target_tokens"] == 0

@@ -219,3 +219,28 @@
     - 文档回填：offline-attribution.md#3「无复活路径」改写为「人工复活与删除（D-90）」；decisions.md 登记 D-90（推翻原设计）；00-index.md 路由表追加「维护性格维度」一行；02-glossary.md 登记「维度编辑模式」并更新 active/停用与 purge 条目。
     - 测试：test_dimension_store.py +9、test_dimension_mode.py +33（状态机全分支 + 删除清理链断言 Chroma 无悬挂 + 审计日志含放弃不写）、test_dimension_cli.py +8（CliRunner one-shot + chat 分派 + help 文本）。全量回归 **268 passed(+50), 1 skipped**（218 基线）。
     - 范围外建议（未改）：无。
+
+91. ✅ **测试套件对照审计全量修复**（need_improve.md 待改进；review/testing-guidelines-audit.md P0+P1+P2 全做；全量 **262 passed(+3), 1 skipped / 144s**，基线 260 passed / 156.63s）：
+
+    **P0 安全/正确性**
+    - 外部 DSN 防护：conftest `pgembed_server` 检测到 `MR_DATA_POSTGRES_DSN` 未配 `MR_DATA_ALLOW_EXTERNAL_PG=1` 时 pytest.fail 明确拒绝，禁止静默 TRUNCATE 真实库。
+    - 日志穿透双修复：`reset_loggers()` 摘除已配置 logger 的 handler 并恢复 propagate（src/mr_data/logging.py）；新增 autouse `_isolate_logs` fixture 把所有测试日志重定向 per-test tmp 目录（覆盖 seed/调度器/CLI 等不经 temp_log_dir 的路径）——实测全量跑真实 `logs/mr-data.log` 零写入。
+    - 11 处 `assert reply` 恒真 → `assert reply.text`（test_e2e ×5、test_graph_state ×5、test_user_identity ×1）。
+
+    **P1 回归网有效性**
+    - seed fixture 化：新建 `tests/fixtures/test_personality.json`（Data/5 维/core=1,2,3,5），conftest autouse 把 seed 的默认人格加载重定向到该 fixture，与人格数据文件解耦，7+ 处硬编码自动锚定。
+    - 补 `chat.reply_fallback` 中间层降级用例（test_graph_fallback +`_StructuredReplyFailsLLM`，断言降级事件 1 条且无 fallback_failed）；补齐过程中**暴露并修复 src 真实 bug**：`cli.py:238` 调 `scheduler.next_fire()` 但 `OfflineScheduler` 无此方法（真实 chat 在调度器启动后必崩）——scheduler.py 补 `next_fire()` 方法，拆除 test_cli 临时 shim；test_cli/test_dimension_cli 假件补 `pg.dsn` 消除静默降级。
+    - test_embeddings 死测试（slow+无条件 skip）改 `MR_DATA_RUN_SLOW=1` 环境变量门控。
+    - test_chroma_backup 共享持久化目录 fixture（session 级 `/tmp/mr-data-chroma-backup-test-<uid>`，每用例清集合+清 backups），同 path 二次建 store 1.4s→0.07s。
+
+    **P2 维护成本收敛**
+    - web_filter system/user 模板提为模块常量 `_FILTER_SYSTEM`/`_FILTER_USER_PROMPT`，测试 import 常量算预算，消除模板复制；省略标记断言改用 `_FILTER_TRUNCATION_MARKER`。
+    - test_attribution_batching 18 处文案断言收敛为 2 处锚点（批号标注+上文回顾段）；test_prompt_assembly/test_page_extract 改行为面断言；「已放弃该命令」5→1；泛化子串断言（"跳过"×2）删除；CLI help 每界面留一。
+    - `pytest.raises(match=...)` 10 处放宽为类型断言；53 处 `pytest.importorskip("pgembed")` 样板收敛进 `pg_available` fixture；`_PG_BUSINESS_TABLES` 与 SCHEMA_SQL 双写守护（conftest import 期 assert + test_pg_schema_guard.py 单测）。
+    - 死代码清理：test_e2e 死分支删除、名不副实用例改名 `test_chat_turn_preserves_core_flag`、graph_state 重言断言删除、web_chunking 重复断言删除、expected_skipped 未用参数删除；test_logging `handlers[0]` 下标假设改用已算出变量；test_dimension_cli 模块 pytestmark 下移（3 个纯 mock 用例不再付 TRUNCATE+seed）。
+    - test_e2e 归位：2 个纯 PG 用例 → test_postgres_pool.py，3 个纯 Chroma 用例 → test_chroma_idempotency.py（不再付无谓 PG reset）。
+    - DedupFakeLLM 移入 conftest，消除跨测试模块 import。
+    - 环境防护：`os.environ.setdefault`→强制赋值；session 级 DSN teardown 还原；`MR_DATA_DISABLE_ENV_FILE=1` 阻断 .env 穿透（config.py）。
+
+    - 测试基建：`_isolate_logs` 与 `temp_log_dir`/test_logging 本地 `log_dir` fixture 的 mkdir 冲突以 `exist_ok=True` 解决。
+    - 范围外建议（未改）：evals 层缺口（审计建议记录而非修复，审计报告即记录）；pgembed 冷启动 flake 根治；CLI 8 个未覆盖命令从真实 bug 出发再补；xdist 并行需先解决 pgembed 共享集群 worker 隔离。

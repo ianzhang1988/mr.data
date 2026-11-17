@@ -8,6 +8,9 @@
 """
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import chromadb
@@ -19,6 +22,8 @@ from mr_data.db.chroma import event_doc_id
 from mr_data.models import DialogueMemoryMetadata, PersonalityEvent
 
 from conftest import FakeEmbedding
+
+_BACKUP_ROOT = Path(tempfile.gettempdir()) / f"mr-data-chroma-backup-test-{os.getuid()}"
 
 
 def _make_store(persist_dir: Path, dim: int) -> ChromaStore:
@@ -45,14 +50,44 @@ def _seed_personality(store: ChromaStore, n: int = 3) -> list[str]:
     return ids
 
 
-def _recreate_with_new_dim(tmp_path, monkeypatch, dim: int = 16) -> ChromaStore:
+def _recreate_with_new_dim(monkeypatch, dim: int = 16) -> ChromaStore:
     monkeypatch.setattr(settings, "embedding_dim", dim)
     monkeypatch.setattr(settings, "chroma_recreate_on_mismatch", True)
-    return _make_store(tmp_path / "chroma", dim)
+    return _make_store(_BACKUP_ROOT / "chroma", dim)
 
 
-def _backup_files(tmp_path: Path) -> list[Path]:
-    return sorted((tmp_path / "chroma-backups").glob("*.json"))
+def _backup_files() -> list[Path]:
+    return sorted((_BACKUP_ROOT / "chroma-backups").glob("*.json"))
+
+
+@pytest.fixture(scope="session")
+def _backup_store_base() -> ChromaStore:
+    """进程级共享的持久化 ChromaStore（仿 conftest pgembed 共享集群）。
+
+    持久化目录固定在 /tmp，跨运行复用，只付一次 PersistentClient 启动成本。
+    注意：chromadb 客户端按 path 进程级缓存，绝不能 rmtree 数据目录本身。
+    """
+    return _make_store(_BACKUP_ROOT / "chroma", dim=8)
+
+
+@pytest.fixture
+def backup_store(_backup_store_base):
+    """共享持久化目录的清空视图：每用例重置两集合并清空备份目录。
+
+    上一用例可能以 dim=16 重建过集合，故删除后按当前 settings 重建；
+    备份文件名含秒级时间戳，不清理会跨用例碰撞。
+    """
+    for name in ("personality", "memories"):
+        try:
+            _backup_store_base._client.delete_collection(name)
+        except Exception:
+            pass
+    _ = _backup_store_base.personality
+    _ = _backup_store_base.memories
+    backup_dir = _BACKUP_ROOT / "chroma-backups"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    return _backup_store_base
 
 
 # ---------------------------------------------------------------------------
@@ -60,18 +95,18 @@ def _backup_files(tmp_path: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 
-def test_mismatch_exports_backup_before_recreate(tmp_path, monkeypatch):
-    store = _make_store(tmp_path / "chroma", dim=8)
+def test_mismatch_exports_backup_before_recreate(backup_store, monkeypatch):
+    store = backup_store
     ids = _seed_personality(store)
     store.add_memory("s1", "记忆内容", memory_id="mem:1", metadata=DialogueMemoryMetadata(recall_count=2))
     assert store.personality.count() == 3
 
     # 新 dim 触发 mismatch → 自动备份并重建
-    store2 = _recreate_with_new_dim(tmp_path, monkeypatch, dim=16)
+    store2 = _recreate_with_new_dim(monkeypatch, dim=16)
     assert store2.personality.count() == 0
     assert store2.memories.count() == 0
 
-    backups = _backup_files(tmp_path)
+    backups = _backup_files()
     assert len(backups) == 2  # personality + memories 各一份
     by_name = {json.loads(p.read_text(encoding="utf-8"))["collection"]: p for p in backups}
     assert set(by_name) == {"personality", "memories"}
@@ -90,8 +125,8 @@ def test_mismatch_exports_backup_before_recreate(tmp_path, monkeypatch):
     assert mem_payload["documents"][0]["metadata"]["recall_count"] == 2
 
 
-def test_export_failure_blocks_deletion(tmp_path, monkeypatch):
-    store = _make_store(tmp_path / "chroma", dim=8)
+def test_export_failure_blocks_deletion(backup_store, monkeypatch):
+    store = backup_store
     _seed_personality(store)
 
     # 在契约接缝注入失败：export 抛错 → 调用方不得删除旧集合。
@@ -104,11 +139,11 @@ def test_export_failure_blocks_deletion(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(ChromaStore, "_export_collection_backup", _failing_export)
-    with pytest.raises(RuntimeError, match="refusing to delete"):
-        _recreate_with_new_dim(tmp_path, monkeypatch, dim=16)
+    with pytest.raises(RuntimeError):
+        _recreate_with_new_dim(monkeypatch, dim=16)
 
     # 集合未被删除，旧数据完好
-    client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
+    client = chromadb.PersistentClient(path=str(_BACKUP_ROOT / "chroma"))
     coll = client.get_collection("personality")
     assert coll.count() == 3
 
@@ -118,13 +153,13 @@ def test_export_failure_blocks_deletion(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_restore_backup_recomputes_embeddings_and_is_idempotent(tmp_path, monkeypatch):
-    store = _make_store(tmp_path / "chroma", dim=8)
+def test_restore_backup_recomputes_embeddings_and_is_idempotent(backup_store, monkeypatch):
+    store = backup_store
     ids = _seed_personality(store)
     old = store.personality.get(ids=ids, include=["documents", "metadatas"])
 
-    store2 = _recreate_with_new_dim(tmp_path, monkeypatch, dim=16)
-    backup = next(p for p in _backup_files(tmp_path) if p.name.startswith("personality-"))
+    store2 = _recreate_with_new_dim(monkeypatch, dim=16)
+    backup = next(p for p in _backup_files() if p.name.startswith("personality-"))
 
     report = store2.restore_collection_backup(backup)
     assert report == {"collection": "personality", "restored": 3, "skipped": 0}

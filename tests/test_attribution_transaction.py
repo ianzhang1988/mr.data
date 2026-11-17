@@ -17,7 +17,6 @@ from mr_data.offline import AttributionEngine
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
 def _setup_closed_session(pg: PostgresStore, session_id: str) -> int:
     pg.create_session(session_id)
     pg.insert_dialogue(DialogueLog(session_id=session_id, role="user", content="测试输入"))
@@ -27,17 +26,14 @@ def _setup_closed_session(pg: PostgresStore, session_id: str) -> int:
     pg.close_session(session_id)
     return assistant_id
 
-
 def _adjustment_count(pg: PostgresStore) -> int:
     with pg._cursor() as cur:
         cur.execute("SELECT COUNT(*) AS c FROM adjustment_logs")
         return cur.fetchone()["c"]
 
-
 def test_apply_crash_rolls_back_and_retry_applies_once(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -79,11 +75,9 @@ def test_apply_crash_rolls_back_and_retry_applies_once(
     unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
     assert len(unprocessed) == 0
 
-
 def test_crash_on_vector_refs_rolls_back_pg_writes(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -114,12 +108,10 @@ def test_crash_on_vector_refs_rolls_back_pg_writes(
     unprocessed = pg.get_recent_dialogues(session_id=test_session_id, unprocessed_only=True)
     assert len(unprocessed) == 2
 
-
 def test_failed_session_does_not_abort_batch(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
     """改进 55：单会话 apply 崩溃回滚留待重跑，不中断批处理后续会话。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -154,9 +146,7 @@ def test_failed_session_does_not_abort_batch(
     assert _adjustment_count(pg) == 2
     assert pg.get_recent_dialogues(session_id=session_a, unprocessed_only=True) == []
 
-
 def test_non_transactional_writes_still_autocommit(pg_available):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -169,23 +159,19 @@ def test_non_transactional_writes_still_autocommit(pg_available):
     assert dim_after.success_count == dim.success_count + 2
     assert dim_after.failure_count == dim.failure_count + 1
 
-
 def test_nested_transaction_rejected(pg_available):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
     pg = PostgresStore()
     with pg.transaction():
-        with pytest.raises(RuntimeError, match="nested transactions"):
+        with pytest.raises(RuntimeError):
             with pg.transaction():
                 pass
-
 
 def test_rollback_does_not_touch_chroma(
     fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -248,13 +234,11 @@ def test_rollback_does_not_touch_chroma(
     assert len(pg.get_dialogue_vector_refs_by_dimension(1)) == 0
     assert doc_id not in chroma_store.get_personality_event_ids_by_dimension(1)
 
-
 @pytest.mark.parametrize("failing_chroma_op", ["purge", "add"])
 def test_purge_failure_does_not_fail_committed_session(
     failing_chroma_op, fake_llm, pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
     """post-commit Chroma 写入失败（purge 清理 / add 新证据）不回滚已提交的 PG 会话（改进 55）。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

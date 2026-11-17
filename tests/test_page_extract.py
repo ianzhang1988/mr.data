@@ -105,7 +105,9 @@ def test_page_extractor_truncation_logs_event(local_html_server, caplog, monkeyp
     page = extractor.extract(local_html_server)
 
     assert page is not None
-    assert page.text.endswith("[内容过长，已省略后续部分]")
+    # 行为面：头部保留、尾部截掉（省略标记文案不锁，截断事实由下方事件断言兜底）。
+    assert "Important Article" in page.text
+    assert "Second paragraph" not in page.text
     truncated = capture_events(caplog, "web.extract_truncated")
     assert len(truncated) == 1
     details = truncated[0].details

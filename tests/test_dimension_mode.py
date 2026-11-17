@@ -130,12 +130,11 @@ def test_edit_empty_input_gives_up(pg, capsys):
     assert pg.get_dimension(dim_id).description == "保持我"
 
 
-def test_edit_decline_confirm(pg, capsys):
+def test_edit_decline_confirm(pg):
     dim_id = _noncore(pg, "保持我")
     run_dimension_mode(pg, input_fn=_scripted([
         f"/edit {dim_id}", "新描述", "n", "/quit",
     ]))
-    assert "已放弃该命令" in capsys.readouterr().out
     assert pg.get_dimension(dim_id).description == "保持我"
 
 
@@ -150,9 +149,11 @@ def test_edit_without_id_numbered_selection(pg, capsys):
 
 
 def test_edit_selection_invalid_twice_gives_up(pg, capsys):
-    _noncore(pg)
+    dim_id = _noncore(pg)
     run_dimension_mode(pg, input_fn=_scripted(["/edit", "99", "x", "/quit"]))
-    assert "已放弃该命令" in capsys.readouterr().out
+    # 无效选择两次后放弃：维度未被改动（「已放弃该命令」文案断言见
+    # test_edit_empty_input_gives_up，此处按 §2.1 只锁状态）
+    assert pg.get_dimension(dim_id).description == "探索人类情感"
 
 
 # --- core 保护与错误路径 ---
@@ -275,21 +276,19 @@ def test_delete_full_flow_cleans_all(pg, chroma_store, capsys):
         chroma_store.get_personality_events([doc_id])
 
 
-def test_delete_second_confirm_mismatch_gives_up(pg, chroma_store, capsys):
+def test_delete_second_confirm_mismatch_gives_up(pg, chroma_store):
     dim_id, _ = _seed_deletable(pg, chroma_store)
     run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([
         f"/delete {dim_id}", "y", "9999", "/quit",
     ]))
-    assert "已放弃该命令" in capsys.readouterr().out
     assert pg.get_dimension(dim_id) is not None
 
 
-def test_delete_decline_first_confirm(pg, chroma_store, capsys):
+def test_delete_decline_first_confirm(pg, chroma_store):
     dim_id, _ = _seed_deletable(pg, chroma_store)
     run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([
         f"/delete {dim_id}", "n", "/quit",
     ]))
-    assert "已放弃该命令" in capsys.readouterr().out
     assert pg.get_dimension(dim_id) is not None
 
 

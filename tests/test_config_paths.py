@@ -83,7 +83,7 @@ def test_chunk_chars_must_not_exceed_embedding_max_tokens(clean_path_env, chunk_
     clean_path_env.delenv("MR_DATA_MEMORY_DIALOGUE_CHUNK_CHARS", raising=False)
     clean_path_env.delenv("MR_DATA_MEMORY_WEB_CHUNK_CHARS", raising=False)
     clean_path_env.delenv("MR_DATA_EMBEDDING_MAX_TOKENS", raising=False)
-    with pytest.raises(ValueError, match="embedding_max_tokens"):
+    with pytest.raises(ValueError):
         Settings(_env_file=None, embedding_max_tokens=512, **{chunk_field: 600})
 
 

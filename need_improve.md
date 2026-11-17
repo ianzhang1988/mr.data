@@ -12,12 +12,12 @@
 
 # 待改进
 
-（暂无）
+（当前无待改进项）
 
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
 
-88. ✅ vector_refs 补全 memory_docs 登记：`_log_dialogue` 把过滤后进入 prompt 的 memory_docs（dialogue 段按段、web 旧片按片）登记进 `dialogue_vector_refs`，`DialogueVectorRefSourceType` 扩 `dialogue` 值域，同轮按 vector_doc_id 去重。详见 finished_improvement.md #88。
+91. ✅ 测试套件对照 review/testing-guidelines-audit.md 全量修复（P0+P1+P2）：外部 DSN 防护、日志穿透双修复（reset_loggers 摘 handler + autouse 日志隔离，真实日志零写入）、11 处恒真断言改 `reply.text`、seed fixture 化、补 reply_fallback 中间层用例（并暴露修复 OfflineScheduler.next_fire 真实 bug）、死测试门控、chroma_backup 共享目录、文案/模板断言收敛（web_filter 常量提取等）、importorskip 53 处收敛、_PG_BUSINESS_TABLES 守护、e2e 归位。全量 262 passed(+3), 1 skipped / 144s。详见 finished_improvement.md #91。
 
 89. ✅ PostgresStore 连接池：`_cursor`/`transaction` 改走 psycopg_pool（按 dsn 进程级共享池 min_size=1/max_size=8），消除每轮十余次 connect/close；全量测试 118.46s → 92.86s（-22%）。详见 finished_improvement.md #89。
 

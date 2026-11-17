@@ -161,6 +161,10 @@ class OfflineScheduler:
     def cron_expr(self) -> str:
         return self._cron_expr
 
+    def next_fire(self, after: Optional[datetime] = None) -> datetime:
+        """下一次触发时间（UTC）。cli 启动回显用；校验失败抛 ValueError。"""
+        return next_fire(self._cron_expr, after)
+
     def validate(self) -> None:
         """校验 cron 串合法性，非法抛 ValueError。"""
         next_fire(self._cron_expr, datetime.now(timezone.utc))

@@ -15,10 +15,9 @@ from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
 from mr_data.offline import AttributionEngine
 
-from test_attribution_dedup import DedupFakeLLM
+from conftest import DedupFakeLLM
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
-
 
 def _setup_session(pg: PostgresStore, session_id: str):
     pg.create_session(session_id)
@@ -31,7 +30,6 @@ def _setup_session(pg: PostgresStore, session_id: str):
     logs = pg.get_recent_dialogues(session_id=session_id)
     return logs, user_id, assistant_id
 
-
 def _attribute_and_apply(pg, chroma_store, llm, session_id, logs):
     engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=llm)
     result = engine._attribute_session(session_id, logs)
@@ -39,12 +37,10 @@ def _attribute_and_apply(pg, chroma_store, llm, session_id, logs):
     engine._apply(result, session_id, logs)
     return result
 
-
 def _fetch_adjustments(pg: PostgresStore) -> list:
     with pg._cursor() as cur:
         cur.execute("SELECT dimension_id, dialogue_log_id FROM adjustment_logs")
         return cur.fetchall()
-
 
 def _delta(**overrides):
     delta = {
@@ -58,11 +54,9 @@ def _delta(**overrides):
     delta.update(overrides)
     return delta
 
-
 def test_transcript_lines_carry_log_ids(
     pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -75,7 +69,6 @@ def test_transcript_lines_carry_log_ids(
     assert f"user[#{user_id}]: 测试输入" in transcript
     assert f"assistant[#{assistant_id}]: 测试回复" in transcript
 
-
 @pytest.mark.parametrize(
     "invalid_target_kind",
     ["nonexistent", "other_session", "user_row"],
@@ -84,7 +77,6 @@ def test_transcript_lines_carry_log_ids(
 def test_hallucinated_target_id_nulled_and_evidence_skipped(
     invalid_target_kind, pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -108,11 +100,9 @@ def test_hallucinated_target_id_nulled_and_evidence_skipped(
     # evidence 与 event 均跳过，不产生 "None" 污染文档
     assert chroma_store.get_personality_event_ids_by_dimension(1) == []
 
-
 def test_hallucinated_dimension_id_discarded_without_fk_violation(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -127,11 +117,9 @@ def test_hallucinated_dimension_id_discarded_without_fk_violation(
     assert result.deltas[0].dimension_id is None
     assert _fetch_adjustments(pg) == []  # delta 被丢弃，无 FK 违规炸事务
 
-
 def test_valid_target_persists_evidence_and_refs(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

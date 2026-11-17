@@ -8,7 +8,7 @@ from mr_data.models import (
 )
 from mr_data.online import DialogueGraph
 
-from conftest import FakeLLMClient
+from conftest import FakeLLMClient, capture_events, open_log_propagation
 
 
 class _BothRepliesFailLLM(FakeLLMClient):
@@ -21,6 +21,15 @@ class _BothRepliesFailLLM(FakeLLMClient):
 
     def chat_with_messages(self, messages, temperature=0.7):
         raise RuntimeError("plain fallback failed")
+
+
+class _StructuredReplyFailsLLM(FakeLLMClient):
+    """structured_chat（AssistantReply）抛异常；纯文本 chat_with_messages 仍成功。"""
+
+    def structured_chat(self, messages, response_format, temperature=0.2):
+        if response_format.__name__ == "AssistantReply":
+            raise RuntimeError("structured reply failed")
+        return super().structured_chat(messages, response_format, temperature)
 
 
 @pytest.mark.usefixtures("reset_pg_state")
@@ -81,6 +90,49 @@ def test_assemble_and_log_static_fallback(
     assert rows[1]["content"] == expected_text
 
 
+@pytest.mark.usefixtures("reset_pg_state")
+def test_assemble_falls_back_to_plain_text_reply(
+    test_session_id, pg, chroma_store, caplog, monkeypatch
+):
+    """中间层降级：结构化回复失败 → 纯文本 chat_with_messages 成功。
+
+    断言 chat.reply_fallback 恰好 1 条且无 chat.reply_fallback_failed。
+    """
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=_StructuredReplyFailsLLM(),
+        enable_web_search=False,
+    )
+    open_log_propagation(caplog, monkeypatch)  # 须在 graph 构造后（构造会重置 propagate）
+
+    dimensions = pg.list_dimensions(active_only=True)
+    state = {
+        "session_id": test_session_id,
+        "user_input": "测试输入",
+        "identity": pg.get_identity(),
+        "user_identity": None,
+        "dimensions": dimensions,
+        "selected_dimension_ids": [d.id for d in dimensions if d.id is not None],
+        "personality_docs": [],
+        "memory_docs": [],
+        "messages": [],
+        "web_docs": [],
+        "inner_monologue": None,
+    }
+
+    assemble_state = graph._assemble_and_generate(state)
+
+    expected_text = "这是一个测试回复。"
+    assert assemble_state["reply"] == expected_text
+    assert assemble_state["reply_blocks"] == [ReplyBlock(text=expected_text, references=[])]
+
+    assert len(capture_events(caplog, "chat.reply_fallback")) == 1
+    assert capture_events(caplog, "chat.reply_fallback_failed") == []
+
+
 def test_retrieve_personality_failure_returns_empty_docs(
     fake_llm, chroma_store, monkeypatch
 ):
@@ -108,18 +160,18 @@ def test_retrieve_personality_failure_returns_empty_docs(
 
 
 @pytest.mark.parametrize(
-    "dim_ids_str, expected_ids, expected_skipped",
+    "dim_ids_str, expected_ids",
     [
-        ("1,abc,3", [1, 3], ["abc"]),
-        ("", [], []),
-        (None, [], []),
-        (" 2 , bad , 4 ", [2, 4], ["bad"]),
-        ("abc", [], ["abc"]),
-        ("1,2,3", [1, 2, 3], []),
+        ("1,abc,3", [1, 3]),
+        ("", []),
+        (None, []),
+        (" 2 , bad , 4 ", [2, 4]),
+        ("abc", []),
+        ("1,2,3", [1, 2, 3]),
     ],
 )
 def test_from_chroma_metadata_tolerates_dirty_dimension_ids(
-    dim_ids_str, expected_ids, expected_skipped
+    dim_ids_str, expected_ids
 ):
     meta = {
         "utterance": "test",

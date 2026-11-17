@@ -18,34 +18,11 @@ from mr_data.db import PostgresStore
 from mr_data.models import DialogueLog
 from mr_data.offline import AttributionEngine
 
-from conftest import FakeLLMClient, capture_events, open_log_propagation
+from conftest import DedupFakeLLM, capture_events, open_log_propagation
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 SEEDED_DIMENSIONS = 5  # conftest reset_pg_state 的 seed 维度数
-
-
-class DedupFakeLLM(FakeLLMClient):
-    """可控返回归因结果与去重判断的 FakeLLM。"""
-
-    def __init__(self, deltas, dedup_response=None, dedup_raises=False):
-        super().__init__()
-        self._deltas = deltas
-        self._dedup_response = dedup_response if dedup_response is not None else {"matches": []}
-        self._dedup_raises = dedup_raises
-        self.dedup_calls = 0
-
-    def structured_chat(self, messages, response_format, temperature=0.2):
-        name = response_format.__name__
-        if name == "AttributionResult":
-            return {"deltas": self._deltas}
-        if name == "DimensionDedupResult":
-            self.dedup_calls += 1
-            if self._dedup_raises:
-                raise RuntimeError("dedup llm failed")
-            return self._dedup_response
-        return super().structured_chat(messages, response_format, temperature)
-
 
 def _new_dimension_delta(**overrides):
     delta = {
@@ -60,13 +37,11 @@ def _new_dimension_delta(**overrides):
     delta.update(overrides)
     return delta
 
-
 def _setup_session(pg: PostgresStore, session_id: str):
     pg.create_session(session_id)
     pg.insert_dialogue(DialogueLog(session_id=session_id, role="user", content="测试输入"))
     pg.insert_dialogue(DialogueLog(session_id=session_id, role="assistant", content="测试回复"))
     return pg.get_recent_dialogues(session_id=session_id)
-
 
 def _attribute_and_apply(pg, chroma_store, llm, session_id, logs):
     engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=llm)
@@ -75,11 +50,9 @@ def _attribute_and_apply(pg, chroma_store, llm, session_id, logs):
     engine._apply(result, session_id, logs)
     return result
 
-
 def test_new_dimension_created_when_no_duplicate(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -94,11 +67,9 @@ def test_new_dimension_created_when_no_duplicate(
     assert len(dimensions) == SEEDED_DIMENSIONS + 1
     assert dimensions[-1].description == "我在压力下倾向于反复确认细节"
 
-
 def test_duplicate_merges_into_existing_dimension(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -118,11 +89,9 @@ def test_duplicate_merges_into_existing_dimension(
     after = pg.get_dimension(2)
     assert after.success_count == before.success_count + 1
 
-
 def test_dedup_failure_falls_back_to_creating(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -135,11 +104,9 @@ def test_dedup_failure_falls_back_to_creating(
     assert llm.dedup_calls == 1
     assert len(pg.list_dimensions()) == SEEDED_DIMENSIONS + 1
 
-
 def test_dedup_hallucinated_id_ignored(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -154,11 +121,9 @@ def test_dedup_hallucinated_id_ignored(
 
     assert len(pg.list_dimensions()) == SEEDED_DIMENSIONS + 1
 
-
 def test_dedup_skipped_when_disabled(
     pg_available, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -172,12 +137,10 @@ def test_dedup_skipped_when_disabled(
     assert llm.dedup_calls == 0
     assert len(pg.list_dimensions()) == SEEDED_DIMENSIONS + 1
 
-
 def test_deltas_truncation_logs_event(
     pg_available, chroma_store, temp_log_dir, test_session_id, caplog, monkeypatch
 ):
     """deltas 超限时仅前 N 条落库（先去重后截断），截断丢弃记录 offline.deltas_truncated（截断调查改进项 A1）。"""
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

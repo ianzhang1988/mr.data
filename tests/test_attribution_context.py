@@ -15,10 +15,8 @@ from mr_data.offline import AttributionEngine
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
 def _make_engine(pg: PostgresStore, chroma_store, fake_llm) -> AttributionEngine:
     return AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=fake_llm)
-
 
 def _insert_turn(pg: PostgresStore, session_id: str, monologue: str | None = None) -> int:
     pg.create_session(session_id)
@@ -32,12 +30,10 @@ def _insert_turn(pg: PostgresStore, session_id: str, monologue: str | None = Non
         )
     )
 
-
 @pytest.mark.parametrize("has_dimension_refs", [True, False])
 def test_context_splits_dimensions_by_session_activation(
     has_dimension_refs, pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -64,11 +60,9 @@ def test_context_splits_dimensions_by_session_activation(
     assert "人格素材" not in context
     assert "思考过程" not in context
 
-
 def test_transcript_inlines_inner_monologue(
     pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 
@@ -82,11 +76,9 @@ def test_transcript_inlines_inner_monologue(
     assert f"assistant[#{assistant_id}]（内心独白：用户似乎在测试我）: 测试回复" in transcript
     assert "user[#" in transcript and ": 测试输入" in transcript
 
-
 def test_list_session_dimension_ids_isolated_across_sessions(
     pg_available, chroma_store, fake_llm, temp_log_dir, test_session_id
 ):
-    pytest.importorskip("pgembed", reason="pgembed not installed")
     if not pg_available:
         pytest.skip("PostgreSQL not available")
 

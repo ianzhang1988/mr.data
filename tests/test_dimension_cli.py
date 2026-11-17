@@ -10,9 +10,8 @@ from mr_data.cli import app
 
 runner = CliRunner()
 
-pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
-
+@pytest.mark.usefixtures("reset_pg_state")
 def test_dimension_list_oneshot(pg):
     result = runner.invoke(app, ["dimension", "list"])
     assert result.exit_code == 0
@@ -20,6 +19,7 @@ def test_dimension_list_oneshot(pg):
     assert dim.description[:10] in result.output  # 具体维度行出现（按终端宽截断，取前缀）
 
 
+@pytest.mark.usefixtures("reset_pg_state")
 def test_dimension_edit_oneshot_force(pg):
     dim_id = pg.insert_dimension("待编辑描述")
     result = runner.invoke(
@@ -30,6 +30,7 @@ def test_dimension_edit_oneshot_force(pg):
     assert pg.get_dimension(dim_id).description == "改后描述"
 
 
+@pytest.mark.usefixtures("reset_pg_state")
 def test_dimension_edit_oneshot_rejects_core(pg):
     core = next(d for d in pg.list_dimensions() if d.core)
     result = runner.invoke(
@@ -40,6 +41,7 @@ def test_dimension_edit_oneshot_rejects_core(pg):
     assert pg.get_dimension(core.id).description != "篡改"
 
 
+@pytest.mark.usefixtures("reset_pg_state")
 def test_dimension_edit_oneshot_requires_description(pg):
     dim_id = pg.insert_dimension("保持我")
     result = runner.invoke(app, ["dimension", "edit", str(dim_id)])
@@ -70,8 +72,9 @@ class _FakeChatResult:
 class _FakeGraph:
     def __init__(self, **kwargs):
         # 坑 #6：假 graph 必须携带 pg/chroma/llm 属性，否则引擎回退构造
-        # 真实 store（ChromaStore 加载 embedding 模型，分钟级开销）
-        self.pg = SimpleNamespace()
+        # 真实 store（ChromaStore 加载 embedding 模型，分钟级开销）；pg 需有
+        # dsn——OfflineScheduler 构造会读 engine.pg.dsn，缺了仍踩降级分支。
+        self.pg = SimpleNamespace(dsn="fake-dsn")
         self.chroma = SimpleNamespace()
         self.llm = SimpleNamespace()
 

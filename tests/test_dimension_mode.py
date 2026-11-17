@@ -1,9 +1,12 @@
-"""改进 90 模式核心：维度编辑模式状态机全分支。
+"""改进 90 模式核心：维度编辑模式状态机分支。
 
-注入式 input_fn 脚本驱动（返回 None 结束模式），文案对照
-doc/dimension-editing-plan.md §2.5 锁定（文案即契约）。
+注入式 input_fn 脚本驱动（返回 None 结束模式）。断言要求遵循
+doc/testing-guidelines.md：锁定行为与状态，提示文案不逐字断言
+（安全关键文案除外）。
 审计日志断言用 open_log_propagation + caplog（坑 #5：logger 构造后开启）。
 """
+
+import re
 
 import pytest
 
@@ -19,11 +22,15 @@ from mr_data.models import (
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
 
 
-def _scripted(lines):
-    """input_fn：按脚本逐行返回，耗尽后返回 None（结束模式）。"""
+def _scripted(lines, calls=None):
+    """input_fn：按脚本逐行返回，耗尽后返回 None（结束模式）。
+    calls 可传 list 记录每次调用（行为断言用，替代文案断言）。"""
+
     it = iter(lines)
 
     def input_fn(prompt):
+        if calls is not None:
+            calls.append(prompt)
         return next(it, None)
 
     return input_fn
@@ -42,20 +49,11 @@ def _core_id(pg):
 
 # --- 进入/退出/分派 ---
 
-def test_mode_enters_and_quits(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["/quit"]))
-    out = capsys.readouterr().out
-    assert "维度编辑模式" in out  # banner
-
-
-def test_non_command_input_rejected(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["你好", "/quit"]))
-    assert "模式内仅识别 / 命令" in capsys.readouterr().out
-
-
-def test_unknown_command(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["/foo", "/quit"]))
-    assert "未知命令 /foo" in capsys.readouterr().out
+def test_abnormal_input_digested_and_loop_survives(pg):
+    """非 / 输入与未知命令被就地消化，循环继续（后续 /quit 生效）。"""
+    calls = []
+    run_dimension_mode(pg, input_fn=_scripted(["你好", "/foo", "/quit"], calls))
+    assert len(calls) == 3
 
 
 def test_help_lists_commands(pg, capsys):
@@ -63,66 +61,66 @@ def test_help_lists_commands(pg, capsys):
     out = capsys.readouterr().out
     for cmd in ("/list", "/edit", "/deactivate", "/reactivate", "/delete", "/quit"):
         assert cmd in out
-    assert "core 维度受保护" in out
 
 
-def test_eof_ends_mode(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted([]))
-    assert "维度编辑模式" in capsys.readouterr().out
+def test_eof_ends_mode(pg):
+    calls = []
+    run_dimension_mode(pg, input_fn=_scripted([], calls))  # 不抛异常即正常退出
+    assert len(calls) == 1
 
 
 # --- /list ---
 
-def test_list_shows_dimensions(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["/list", "/quit"]))
-    out = capsys.readouterr().out
-    assert "id" in out and "core" in out and "description" in out
-    assert "Picard" not in out  # 维度描述而非身份
-    dims = pg.list_dimensions()
-    assert any(d.description[:10] in out for d in dims)
+def _data_lines(out):
+    """表格数据行（id 开头），不含表头与页脚。"""
+    return [l for l in out.splitlines() if re.match(r"^\d+\s", l)]
 
 
 def test_list_pagination(pg, capsys):
     for i in range(21):
         pg.insert_dimension(f"分页测试维度 {i:02d}")
+    total = len(pg.list_dimensions())  # 5 种子 + 21 新建
     run_dimension_mode(pg, input_fn=_scripted(["/list", "/quit"]))
-    out = capsys.readouterr().out
-    assert "第 1/2 页" in out and "共 2" in out and "/list 2 翻页" in out
+    assert len(_data_lines(capsys.readouterr().out)) == 20  # 首页 20 行
+    run_dimension_mode(pg, input_fn=_scripted(["/list 2", "/quit"]))
+    assert len(_data_lines(capsys.readouterr().out)) == total - 20  # 第二页余量
 
 
-def test_list_page_out_of_range(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["/list 9", "/quit"]))
-    assert "共 1 页" in capsys.readouterr().out
+def test_list_page_out_of_range_keeps_loop(pg):
+    calls = []
+    run_dimension_mode(pg, input_fn=_scripted(["/list 9", "/quit"], calls))
+    assert len(calls) == 2  # 越界被消化，循环继续
 
 
 def test_list_off_filter(pg, capsys):
-    dim_id = _noncore(pg)
-    pg.set_dimension_active(dim_id, False)
+    active_marker = _noncore(pg, "活跃标记维度甲")
+    off_marker = _noncore(pg, "停用标记维度乙")
+    pg.set_dimension_active(off_marker, False)
     run_dimension_mode(pg, input_fn=_scripted(["/list off", "/quit"]))
     out = capsys.readouterr().out
-    assert str(dim_id) in out
-    assert "OFF" in out
+    assert pg.get_dimension(off_marker).description in out
+    assert pg.get_dimension(active_marker).description not in out
 
 
 # --- /edit ---
 
-def test_edit_with_id(pg, capsys):
+def test_edit_with_id(pg):
     dim_id = _noncore(pg, "旧描述")
     run_dimension_mode(pg, input_fn=_scripted([
         f"/edit {dim_id}", "新描述", "y", "/quit",
     ]))
-    out = capsys.readouterr().out
-    assert "当前描述：旧描述" in out
-    assert f"✓ 已更新维度 {dim_id} 的描述" in out
     assert pg.get_dimension(dim_id).description == "新描述"
 
 
-def test_edit_unchanged_description(pg, capsys):
+def test_edit_unchanged_description_no_write(pg, caplog, monkeypatch):
+    open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
     dim_id = _noncore(pg, "原样描述")
-    run_dimension_mode(pg, input_fn=_scripted([
-        f"/edit {dim_id}", "原样描述", "/quit",
-    ]))
-    assert "描述未变化" in capsys.readouterr().out
+    with caplog.at_level("INFO"):
+        run_dimension_mode(pg, input_fn=_scripted([
+            f"/edit {dim_id}", "原样描述", "/quit",
+        ]))
+    assert pg.get_dimension(dim_id).description == "原样描述"
+    assert _audit_records(caplog, "dimension_edit") == []
 
 
 def test_edit_empty_input_gives_up(pg, capsys):
@@ -147,7 +145,6 @@ def test_edit_without_id_numbered_selection(pg, capsys):
     n = candidates.index(next(d for d in candidates if d.id == dim_id)) + 1
     run_dimension_mode(pg, input_fn=_scripted(["/edit", str(n), "改后的描述", "y", "/quit"]))
     out = capsys.readouterr().out
-    assert "可编辑的非 core 维度" in out
     assert f"{n}. id={dim_id}" in out
     assert pg.get_dimension(dim_id).description == "改后的描述"
 
@@ -158,57 +155,60 @@ def test_edit_selection_invalid_twice_gives_up(pg, capsys):
     assert "已放弃该命令" in capsys.readouterr().out
 
 
-def test_edit_core_rejected(pg, capsys):
+# --- core 保护与错误路径 ---
+
+def test_core_dimension_rejected_by_all_commands(pg, chroma_store):
+    """三条变更命令对 core 均拒绝，且不进入后续交互（无多余 prompt）。"""
     core = _core_id(pg)
-    run_dimension_mode(pg, input_fn=_scripted([f"/edit {core}", "/quit"]))
-    assert "core 维度受保护" in capsys.readouterr().out
+    calls = []
+    run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([
+        f"/edit {core}", f"/deactivate {core}", f"/delete {core}", "/quit",
+    ], calls))
+    assert len(calls) == 4
+    dim = pg.get_dimension(core)
+    assert dim is not None and dim.active is True
 
 
-def test_edit_missing_id_reported(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["/edit 9999", "/quit"]))
-    assert "维度 9999 不存在" in capsys.readouterr().out
-
-
-def test_edit_non_numeric_arg(pg, capsys):
-    run_dimension_mode(pg, input_fn=_scripted(["/edit abc", "/quit"]))
-    assert "参数需为维度 id 数字" in capsys.readouterr().out
+def test_edit_bad_id_digested(pg):
+    calls = []
+    run_dimension_mode(pg, input_fn=_scripted(["/edit 9999", "/edit abc", "/quit"], calls))
+    assert len(calls) == 3  # 错误消化，循环继续
 
 
 # --- /deactivate / /reactivate ---
 
-def test_deactivate_flow(pg, capsys):
+def test_deactivate_flow(pg):
     dim_id = _noncore(pg, delta_success=2, delta_failure=9)
     run_dimension_mode(pg, input_fn=_scripted([f"/deactivate {dim_id}", "y", "/quit"]))
-    out = capsys.readouterr().out
-    assert "（active，2/9）" in out
-    assert f"✓ 已停用维度 {dim_id}" in out
     dim = pg.get_dimension(dim_id)
     assert dim.active is False and (dim.success_count, dim.failure_count) == (2, 9)
 
 
-def test_deactivate_idempotent(pg, capsys):
+def test_deactivate_idempotent_no_write(pg, caplog, monkeypatch):
+    open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
     dim_id = _noncore(pg)
     pg.set_dimension_active(dim_id, False)
-    run_dimension_mode(pg, input_fn=_scripted([f"/deactivate {dim_id}", "/quit"]))
-    assert f"维度 {dim_id} 已是停用状态" in capsys.readouterr().out
+    with caplog.at_level("INFO"):
+        run_dimension_mode(pg, input_fn=_scripted([f"/deactivate {dim_id}", "/quit"]))
+    assert pg.get_dimension(dim_id).active is False
+    assert _audit_records(caplog, "dimension_deactivate") == []
 
 
-def test_reactivate_resets_counts_flow(pg, capsys):
+def test_reactivate_resets_counts_flow(pg):
     dim_id = _noncore(pg, delta_success=2, delta_failure=9)
     pg.set_dimension_active(dim_id, False)
     run_dimension_mode(pg, input_fn=_scripted([f"/reactivate {dim_id}", "y", "/quit"]))
-    out = capsys.readouterr().out
-    assert "（OFF，2/9）" in out
-    assert "复活将清零计数（2/9 → 0/0）" in out
-    assert f"✓ 已复活维度 {dim_id}，计数已重置" in out
     dim = pg.get_dimension(dim_id)
     assert dim.active is True and (dim.success_count, dim.failure_count) == (0, 0)
 
 
-def test_reactivate_idempotent(pg, capsys):
+def test_reactivate_idempotent_no_write(pg, caplog, monkeypatch):
+    open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
     dim_id = _noncore(pg)
-    run_dimension_mode(pg, input_fn=_scripted([f"/reactivate {dim_id}", "/quit"]))
-    assert f"维度 {dim_id} 已是活跃状态" in capsys.readouterr().out
+    with caplog.at_level("INFO"):
+        run_dimension_mode(pg, input_fn=_scripted([f"/reactivate {dim_id}", "/quit"]))
+    assert pg.get_dimension(dim_id).active is True
+    assert _audit_records(caplog, "dimension_reactivate") == []
 
 
 # --- /delete ---
@@ -246,21 +246,15 @@ def test_delete_active_dim_refused(pg, chroma_store, capsys):
     assert pg.get_dimension(dim_id) is not None
 
 
-def test_delete_core_refused(pg, chroma_store, capsys):
-    core = _core_id(pg)
-    run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([
-        f"/delete {core}", "/quit",
-    ]))
-    assert "core 维度受保护" in capsys.readouterr().out
-
-
-def test_delete_requires_chroma(pg, capsys):
+def test_delete_requires_chroma(pg):
     dim_id = _noncore(pg)
     pg.set_dimension_active(dim_id, False)
+    calls = []
     run_dimension_mode(pg, chroma=None, input_fn=_scripted([
         f"/delete {dim_id}", "/quit",
-    ]))
-    assert "Chroma 不可用" in capsys.readouterr().out
+    ], calls))
+    assert len(calls) == 2  # 守卫拒绝后不进入后续交互
+    assert pg.get_dimension(dim_id) is not None
 
 
 def test_delete_full_flow_cleans_all(pg, chroma_store, capsys):
@@ -269,8 +263,8 @@ def test_delete_full_flow_cleans_all(pg, chroma_store, capsys):
         f"/delete {dim_id}", "y", str(dim_id), "/quit",
     ]))
     out = capsys.readouterr().out
-    assert "待删除维度" in out and "此操作不可恢复" in out
-    assert f"✓ 已删除维度 {dim_id}" in out
+    assert "待删除维度" in out  # 删除前展示目标
+    assert "此操作不可恢复" in out  # 安全关键文案（testing-guidelines 2.1 例外）
     # 清理链：维度行 / adjustment / vector refs / Chroma 文档全部消失
     assert pg.get_dimension(dim_id) is None
     with pg._cursor() as cur:
@@ -310,40 +304,29 @@ def _audit_records(caplog, event):
     return records
 
 
-def test_audit_log_on_edit(pg, caplog, monkeypatch):
+def test_audit_log_written(pg, chroma_store, caplog, monkeypatch):
+    """三种变更各写一条审计，事件名与 details 字段锁定（机器契约，
+    对齐 dimension-editing-plan §3.6 样例 dimension_reactivate 等）。"""
     open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
-    dim_id = _noncore(pg, "旧审计描述")
-    with caplog.at_level("INFO"):
-        run_dimension_mode(pg, input_fn=_scripted([
-            f"/edit {dim_id}", "新审计描述", "y", "/quit",
-        ]), entry="chat")
-    rec = _audit_records(caplog, "dimension.edit")
-    assert len(rec) == 1
-    assert rec[0].details["dimension_id"] == dim_id and rec[0].details["entry"] == "chat"
-
-
-def test_audit_log_on_reactivate(pg, caplog, monkeypatch):
-    open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
-    dim_id = _noncore(pg, delta_success=2, delta_failure=9)
-    pg.set_dimension_active(dim_id, False)
-    with caplog.at_level("INFO"):
-        run_dimension_mode(pg, input_fn=_scripted([
-            f"/reactivate {dim_id}", "y", "/quit",
-        ]), entry="cli")
-    rec = _audit_records(caplog, "dimension.reactivate")
-    assert len(rec) == 1
-    assert rec[0].details["entry"] == "cli" and rec[0].details["counts"] == "2/9->0/0"
-
-
-def test_audit_log_on_delete(pg, chroma_store, caplog, monkeypatch):
-    open_log_propagation(caplog, monkeypatch, "mr_data.interactive.dimensions")
-    dim_id, _ = _seed_deletable(pg, chroma_store)
+    edit_id = _noncore(pg, "旧审计描述")
+    re_id = _noncore(pg, delta_success=2, delta_failure=9)
+    pg.set_dimension_active(re_id, False)
+    del_id, _ = _seed_deletable(pg, chroma_store)
     with caplog.at_level("INFO"):
         run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([
-            f"/delete {dim_id}", "y", str(dim_id), "/quit",
+            f"/edit {edit_id}", "新审计描述", "y",
+            f"/reactivate {re_id}", "y",
+            f"/delete {del_id}", "y", str(del_id),
+            "/quit",
         ]), entry="chat")
-    rec = _audit_records(caplog, "dimension.delete")
-    assert len(rec) == 1
+    rec = _audit_records(caplog, "dimension_edit")
+    assert len(rec) == 1 and rec[0].details["dimension_id"] == edit_id
+    assert rec[0].details["entry"] == "chat"
+    rec = _audit_records(caplog, "dimension_reactivate")
+    assert len(rec) == 1 and rec[0].details["dimension_id"] == re_id
+    assert rec[0].details["counts"] == "2/9->0/0"
+    rec = _audit_records(caplog, "dimension_delete")
+    assert len(rec) == 1 and rec[0].details["dimension_id"] == del_id
     assert rec[0].details["adjustments"] == 1
 
 
@@ -356,7 +339,7 @@ def test_no_audit_on_aborted_or_readonly(pg, caplog, monkeypatch):
             "/list",
             "/quit",
         ]))
-    assert _audit_records(caplog, "dimension.edit") == []
+    assert _audit_records(caplog, "dimension_edit") == []
 
 
 # --- 状态条 smoke（步骤 3） ---

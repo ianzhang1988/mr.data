@@ -77,9 +77,9 @@ def dimension_edit(
         rprint(f"[red]{exc}[/red]")
         raise typer.Exit(1)
     logger.info(
-        "dimension.edit",
+        "dimension_edit",
         extra={
-            "event": "dimension.edit",
+            "event": "dimension_edit",
             "details": {"dimension_id": dimension_id, "entry": "cli", "new": description.strip()},
         },
     )

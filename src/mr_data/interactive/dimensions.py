@@ -206,7 +206,7 @@ def cmd_edit(store, args: list[str], input_fn, entry: str) -> None:
         rprint(MSG_GIVE_UP)
         return
     store.update_dimension_description(dim_id, new_desc)
-    _audit("dimension.edit", dimension_id=dim_id, entry=entry,
+    _audit("dimension_edit", dimension_id=dim_id, entry=entry,
            old=dim.description, new=new_desc)
     rprint(f"✓ 已更新维度 {dim_id} 的描述")
 
@@ -230,7 +230,7 @@ def cmd_deactivate(store, args: list[str], input_fn, entry: str) -> None:
         rprint(MSG_GIVE_UP)
         return
     store.set_dimension_active(dim_id, False)
-    _audit("dimension.deactivate", dimension_id=dim_id, entry=entry,
+    _audit("dimension_deactivate", dimension_id=dim_id, entry=entry,
            counts=_counts(dim))
     rprint(f"✓ 已停用维度 {dim_id}")
 
@@ -254,7 +254,7 @@ def cmd_reactivate(store, args: list[str], input_fn, entry: str) -> None:
         rprint(MSG_GIVE_UP)
         return
     store.set_dimension_active(dim_id, True)
-    _audit("dimension.reactivate", dimension_id=dim_id, entry=entry,
+    _audit("dimension_reactivate", dimension_id=dim_id, entry=entry,
            counts=f"{_counts(dim)}->0/0")
     rprint(f"✓ 已复活维度 {dim_id}，计数已重置")
 
@@ -300,7 +300,7 @@ def cmd_delete(store, chroma, args: list[str], input_fn, entry: str) -> None:
         return
     adjustments = store.delete_dimension(dim_id)
     purge_dimension_vectors(store, chroma, dim_id)
-    _audit("dimension.delete", dimension_id=dim_id, entry=entry,
+    _audit("dimension_delete", dimension_id=dim_id, entry=entry,
            description=dim.description, counts=_counts(dim),
            adjustments=adjustments)
     rprint(f"✓ 已删除维度 {dim_id}")

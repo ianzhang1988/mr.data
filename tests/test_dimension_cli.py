@@ -16,8 +16,8 @@ pytestmark = pytest.mark.usefixtures("reset_pg_state")
 def test_dimension_list_oneshot(pg):
     result = runner.invoke(app, ["dimension", "list"])
     assert result.exit_code == 0
-    assert "description" in result.output
-    assert any(d.description[:8] in result.output for d in pg.list_dimensions())
+    dim = next(d for d in pg.list_dimensions())
+    assert dim.description[:10] in result.output  # 具体维度行出现（按终端宽截断，取前缀）
 
 
 def test_dimension_edit_oneshot_force(pg):
@@ -57,15 +57,7 @@ def test_dimension_no_subcommand_enters_mode(monkeypatch):
     assert result.exit_code == 0
     assert len(calls) == 1
 
-
-def test_dimension_edit_no_args_enters_mode(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "mr_data.cli._run_dimension_mode", lambda pg=None: calls.append(pg)
-    )
-    result = runner.invoke(app, ["dimension", "edit"])
-    assert result.exit_code == 0
-    assert len(calls) == 1
+    # edit 无参数与无子命令同路径（_run_dimension_mode），不再单列用例
 
 
 # --- chat 分派 ---

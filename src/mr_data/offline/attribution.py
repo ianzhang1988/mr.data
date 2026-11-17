@@ -46,6 +46,24 @@ class AttributionResult(BaseModel):
     deltas: list[DimensionDelta] = Field(default_factory=list)
 
 
+def purge_dimension_vectors(pg: PostgresStore, chroma: ChromaStore, dimension_id: int) -> None:
+    """清除某维度在 Chroma personality 集合的全部向量子文档（两阶段：
+    先按 PG refs 追踪删除，再兜底扫描 metadata dimension_ids 残留）。
+    模块级函数，引擎淘汰与维度编辑模式删除共用（改进 90 抽取）。"""
+    # Remove docs tracked via Postgres refs first.
+    refs = pg.get_dialogue_vector_refs_by_dimension(dimension_id)
+    doc_ids = list({ref.vector_doc_id for ref in refs})
+    if doc_ids:
+        chroma.delete_personality_events(doc_ids)
+    pg.delete_dialogue_vector_refs_by_dimension(dimension_id)
+
+    # Fallback: remove any remaining personality docs referencing this dimension
+    # (e.g. evidence added without a Postgres ref or manually seeded lines).
+    remaining = chroma.get_personality_event_ids_by_dimension(dimension_id)
+    if remaining:
+        chroma.delete_personality_events(remaining)
+
+
 class AttributionEngine:
     def __init__(
         self,
@@ -870,15 +888,4 @@ class AttributionEngine:
         return "\n".join(lines)
 
     def _purge_dimension_vectors(self, dimension_id: int) -> None:
-        # Remove docs tracked via Postgres refs first.
-        refs = self.pg.get_dialogue_vector_refs_by_dimension(dimension_id)
-        doc_ids = list({ref.vector_doc_id for ref in refs})
-        if doc_ids:
-            self.chroma.delete_personality_events(doc_ids)
-        self.pg.delete_dialogue_vector_refs_by_dimension(dimension_id)
-
-        # Fallback: remove any remaining personality docs referencing this dimension
-        # (e.g. evidence added without a Postgres ref or manually seeded lines).
-        remaining = self.chroma.get_personality_event_ids_by_dimension(dimension_id)
-        if remaining:
-            self.chroma.delete_personality_events(remaining)
+        purge_dimension_vectors(self.pg, self.chroma, dimension_id)

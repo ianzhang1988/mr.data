@@ -13,6 +13,7 @@ from mr_data.config import settings
 from mr_data.db import PostgresStore, ChromaStore, PgEmbedManager
 from mr_data.db.chroma import line_doc_id
 from mr_data.db.personality_loader import load_personality_pack
+from mr_data.interactive.dimensions import cmd_list
 from mr_data.llm import LLMClient
 from mr_data.logging import get_logger
 from mr_data.models import DialogueLog, PersonalityEvent, UserIdentity
@@ -30,6 +31,70 @@ logger = get_logger("mr_data.cli")
 app = typer.Typer(help="mr.data personality subsystem CLI")
 identity_app = typer.Typer(help="Manage user identities")
 app.add_typer(identity_app, name="identity")
+dimension_app = typer.Typer(help="Manage personality dimensions")
+app.add_typer(dimension_app, name="dimension")
+
+
+@dimension_app.callback(invoke_without_command=True)
+def dimension_mode(ctx: typer.Context) -> None:
+    """无子命令时直接进入维度编辑模式（改进 90）。"""
+    if ctx.invoked_subcommand is not None:
+        return
+    _run_dimension_mode()
+
+
+@dimension_app.command("list")
+def dimension_list() -> None:
+    """List all personality dimensions (one-shot)."""
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    cmd_list(pg, [])
+
+
+@dimension_app.command("edit")
+def dimension_edit(
+    dimension_id: Optional[int] = typer.Argument(None, help="Dimension id (omit to enter edit mode)"),
+    description: Optional[str] = typer.Option(None, "--description", help="New description (one-shot)"),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation (one-shot)"),
+) -> None:
+    """Edit a dimension description; without arguments enters edit mode."""
+    pg = PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    if dimension_id is None:
+        _run_dimension_mode(pg)
+        return
+    if description is None:
+        rprint("[red]one-shot 编辑需指定 --description；或省略参数进入维度编辑模式。[/red]")
+        raise typer.Exit(1)
+    if not force and not typer.confirm(f"确认修改维度 {dimension_id} 的描述？"):
+        rprint("[dim]已取消。[/dim]")
+        return
+    try:
+        pg.update_dimension_description(dimension_id, description.strip())
+    except ValueError as exc:
+        rprint(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    logger.info(
+        "dimension.edit",
+        extra={
+            "event": "dimension.edit",
+            "details": {"dimension_id": dimension_id, "entry": "cli", "new": description.strip()},
+        },
+    )
+    rprint(f"[green]✓ 已更新维度 {dimension_id} 的描述[/green]")
+
+
+def _run_dimension_mode(pg: Optional[PostgresStore] = None) -> None:
+    """CLI 侧进入维度编辑模式（改进 90）；chat 侧由 /dimension 分派各自调用。"""
+    from mr_data.db import ChromaStore
+    from mr_data.interactive.dimensions import run_dimension_mode
+
+    pg = pg or PostgresStore()
+    pg.init_schema()
+    pg.seed()
+    run_dimension_mode(pg, chroma=ChromaStore(), entry="cli")
 
 
 def _newsession_offline_run(engine, dsn: str) -> None:
@@ -82,6 +147,8 @@ def _print_chat_help(pg: PostgresStore) -> None:
     rprint("""
 [bold]mr.data chat 交互命令[/bold]
   /help, /?      显示本帮助信息
+  /dimension     进入维度编辑模式（/list /edit /deactivate /reactivate
+                 /delete 维护性格维度，/quit 退出模式）
   /newsession    结束当前会话并开始新会话（随后在后台异步执行一次离线
                  归因；与定时调度/手动 offline 互斥，占用时自动跳过）
   /exit, /quit, /bye  退出对话
@@ -108,6 +175,8 @@ def _print_chat_help(pg: PostgresStore) -> None:
   identity select  切换默认用户身份
   identity edit    编辑用户身份
   identity delete  删除用户身份
+  dimension        维度编辑模式（同 chat 内 /dimension）
+  dimension list   列出性格维度（one-shot）
   chroma-restore   从备份恢复 Chroma 集合并重算向量
   teardown         清空本地数据目录，回到全新状态
 
@@ -189,6 +258,12 @@ def chat(
 
             if user_input.lower() in ("/help", "/?"):
                 _print_chat_help(pg)
+                continue
+
+            if user_input.lower() == "/dimension":
+                from mr_data.interactive.dimensions import run_dimension_mode
+
+                run_dimension_mode(pg, chroma=graph.chroma, entry="chat")
                 continue
 
             if user_input.lower() == "/newsession":

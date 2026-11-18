@@ -17,11 +17,11 @@
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
 
-92. ✅ Chat HTTP 交互 API（agent 测试 agent）：`mr_data.server` REST 驱动完整对话生命周期（建会话/逐轮消息/关会话评分/同步 /offline/health），每轮响应携带结构化 events；新增 runtime.py 通用装配层（cli.chat 薄壳重构，TUI 行为不变）；graph.chat 增 on_event 事件回调；`mr-data serve` 默认 127.0.0.1:8080。详见 finished_improvement.md #92。
+97. ✅ /newsession 三步（问评分→关旧会话→建新会话）逐项 try/except 保护：评分失败照记日志继续 close→create，close/create 失败提示后保持状态自洽，对话不再因单步数据库抖动整体退出。详见 finished_improvement.md #97。
 
-91. ✅ 测试套件对照 review/testing-guidelines-audit.md 全量修复（P0+P1+P2）：外部 DSN 防护、日志穿透双修复（reset_loggers 摘 handler + autouse 日志隔离，真实日志零写入）、11 处恒真断言改 `reply.text`、seed fixture 化、补 reply_fallback 中间层用例（并暴露修复 OfflineScheduler.next_fire 真实 bug）、死测试门控、chroma_backup 共享目录、文案/模板断言收敛（web_filter 常量提取等）、importorskip 53 处收敛、_PG_BUSINESS_TABLES 守护、e2e 归位。全量 262 passed(+3), 1 skipped / 144s。详见 finished_improvement.md #91。
+96. ✅ build_runtime 拆兜：引擎构造失败独立记 offline.engine_init_failed（不再误报成 cron 串非法），cron 校验单独兜 ValueError；TUI 可见行为逐字不变。详见 finished_improvement.md #96。
 
-90. ✅ 性格维度编辑交互（维度编辑模式）：chat `/dimension` 与 CLI `mr-data dimension` 进状态化模式，`/list`（分页20行）`/edit`（编号选择）`/deactivate` `/reactivate`（复活清零计数）`/delete`（双重确认+清理链），变更写审计日志；core 双保险拒绝。详见 finished_improvement.md #90。
+95. ✅ message 端点错误契约完整履约：body 可选（缺体/null → 400 invalid_message），新增全局 RequestValidationError 处理器（解析层校验失败 → 422 统一形状新 code invalid_request）；契约文档 §3.1/§3.5 同步。详见 finished_improvement.md #95。
 
 # 未来可选增强（计划中）
 

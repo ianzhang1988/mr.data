@@ -25,6 +25,7 @@ from mr_data.offline import (
     next_fire,
 )
 from mr_data.offline.scheduler import _RUN_LOCK
+from mr_data.runtime import build_runtime
 
 from conftest import capture_events, open_log_propagation
 
@@ -287,6 +288,34 @@ def test_chat_invalid_cron_degrades_gracefully(monkeypatch, caplog, temp_log_dir
     assert result.exit_code == 0  # 不阻断 chat
     assert "定时调度未启用" in result.output
     assert len(capture_events(caplog, "offline.schedule_invalid_cron")) == 1
+
+
+def test_chat_engine_init_failure_disables_scheduler(monkeypatch, caplog, temp_log_dir):
+    """改进 96：引擎构造抛 ValueError 不再被误报成 cron 非法——独立记
+    offline.engine_init_failed，scheduler=None，startup_warnings 为空。"""
+    constructed = []
+
+    class FakeScheduler:
+        def __init__(self, engine):
+            constructed.append(engine)
+
+    def _raise_engine(**kwargs):
+        raise ValueError("pg connect refused")
+
+    monkeypatch.setattr("mr_data.runtime.AttributionEngine", _raise_engine)
+    monkeypatch.setattr("mr_data.runtime.OfflineScheduler", FakeScheduler)
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeDialogueGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", _FakePostgresStore)
+    open_log_propagation(caplog, monkeypatch, "mr_data.runtime")
+
+    runtime = build_runtime()
+
+    assert runtime.offline_engine is None
+    assert runtime.scheduler is None
+    assert runtime.startup_warnings == []
+    assert constructed == []  # 引擎失败时根本不应构造调度器
+    assert len(capture_events(caplog, "offline.engine_init_failed")) == 1
+    assert capture_events(caplog, "offline.schedule_invalid_cron") == []
 
 
 # ---------- CLI：/newsession 异步触发离线归因（改进 86） ----------

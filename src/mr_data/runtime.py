@@ -61,33 +61,45 @@ def build_runtime(enable_web_search: Optional[bool] = None) -> Runtime:
         offline_engine = AttributionEngine(
             pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm
         )
-        scheduler = OfflineScheduler(offline_engine)
-        scheduler.validate()
-    except ValueError as exc:
-        logger.warning(
-            "Invalid offline schedule cron, scheduler disabled",
-            extra={
-                "event": "offline.schedule_invalid_cron",
-                "details": {"error": str(exc)},
-            },
-        )
-        startup_warnings.append(
-            f"[yellow]离线归因定时调度的 cron 串非法（{settings.offline_schedule_cron!r}），"
-            "定时调度未启用。[/yellow]"
-        )
-        scheduler = None
     except Exception as exc:
-        # 注：此类故障今日 TUI 只记日志、不 rprint；为守 §8.1「TUI 可见行为
-        # 逐字不变」，此处维持原样——server 侧可经 offline.schedule_init_failed
-        # 结构化日志事件拿到同一信息，不进 startup_warnings。
         logger.warning(
-            "Failed to initialize offline scheduler, scheduler disabled",
+            "Failed to construct offline attribution engine",
             extra={
-                "event": "offline.schedule_init_failed",
+                "event": "offline.engine_init_failed",
                 "details": {"error": repr(exc)},
             },
         )
+        offline_engine = None
         scheduler = None
+    if offline_engine is not None:
+        try:
+            scheduler = OfflineScheduler(offline_engine)
+            scheduler.validate()
+        except ValueError as exc:
+            logger.warning(
+                "Invalid offline schedule cron, scheduler disabled",
+                extra={
+                    "event": "offline.schedule_invalid_cron",
+                    "details": {"error": str(exc)},
+                },
+            )
+            startup_warnings.append(
+                f"[yellow]离线归因定时调度的 cron 串非法（{settings.offline_schedule_cron!r}），"
+                "定时调度未启用。[/yellow]"
+            )
+            scheduler = None
+        except Exception as exc:
+            # 注：此类故障今日 TUI 只记日志、不 rprint；为守 §8.1「TUI 可见行为
+            # 逐字不变」，此处维持原样——server 侧可经 offline.schedule_init_failed
+            # 结构化日志事件拿到同一信息，不进 startup_warnings。
+            logger.warning(
+                "Failed to initialize offline scheduler, scheduler disabled",
+                extra={
+                    "event": "offline.schedule_init_failed",
+                    "details": {"error": repr(exc)},
+                },
+            )
+            scheduler = None
     return Runtime(
         graph=graph,
         pg=pg,

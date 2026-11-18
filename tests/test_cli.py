@@ -6,6 +6,8 @@ from typer.testing import CliRunner
 from mr_data.cli import app
 from mr_data.config import settings
 
+from conftest import capture_events, open_log_propagation
+
 runner = CliRunner()
 
 
@@ -111,6 +113,45 @@ def test_chat_rating_failure_still_closes_session(monkeypatch):
 
     assert result.exit_code == 0
     assert closed == ["sess-1"]
+
+
+def test_chat_newsession_rating_failure_still_creates_session(
+    monkeypatch, caplog, temp_log_dir
+):
+    """改进 97：/newsession 评分询问抛异常不穿出主循环——对话继续，
+    旧会话已 close，新会话已创建；finally 再问评分同样兜住，事件
+    cli.session_rating_failed 共记 2 次（/newsession 一次、finally 一次）。"""
+    closed = []
+    created = []
+
+    class FakePG(_FakePostgresStore):
+        def close_session(self, session_id: str) -> None:
+            closed.append(session_id)
+
+        def create_session(self, session_id: str | None = None) -> str:
+            sid = session_id or f"sess-{len(created) + 1}"
+            created.append(sid)
+            return sid
+
+    def _raise_rating(pg, session_id):
+        raise RuntimeError("rating prompt broken")
+
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeDialogueGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", FakePG)
+    monkeypatch.setattr("mr_data.cli._ask_session_rating", _raise_rating)
+    monkeypatch.setattr(
+        "mr_data.cli.Prompt.ask",
+        _sequential_prompt(["/newsession", "hello-after", "/exit", ""]),
+    )
+    open_log_propagation(caplog, monkeypatch, "mr_data.cli")
+
+    result = runner.invoke(app, ["chat"])
+
+    assert result.exit_code == 0
+    assert closed == ["sess-1", "sess-2"]  # 旧会话照常关闭（finally 再关新会话）
+    assert "New session: sess-2" in result.output  # 新会话照常创建
+    assert "reply-to-hello-after" in result.output  # 对话继续处理后续输入
+    assert len(capture_events(caplog, "cli.session_rating_failed")) == 2
 
 
 def test_serve_command_defaults_and_overrides(monkeypatch):

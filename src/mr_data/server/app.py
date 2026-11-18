@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -91,19 +92,23 @@ def create_app(
         if start_scheduler is None:
             start_scheduler = False
 
-    offline_engine: Optional[AttributionEngine] = None
-    try:
-        offline_engine = AttributionEngine(
-            pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm
-        )
-    except Exception as exc:  # 引擎不可用：/offline 返回 offline_failed
-        logger.warning(
-            "Offline engine unavailable, /offline will report failure",
-            extra={
-                "event": "offline.engine_init_failed",
-                "details": {"error": repr(exc)},
-            },
-        )
+    if runtime is not None:
+        # 默认装配路径：直接复用 runtime 已有的引擎，避免双份资源（改进 94）
+        offline_engine = runtime.offline_engine
+    else:
+        offline_engine = None
+        try:
+            offline_engine = AttributionEngine(
+                pg_store=graph.pg, chroma_store=graph.chroma, llm=graph.llm
+            )
+        except Exception as exc:  # 引擎不可用：/offline 返回 offline_failed
+            logger.warning(
+                "Offline engine unavailable, /offline will report failure",
+                extra={
+                    "event": "offline.engine_init_failed",
+                    "details": {"error": repr(exc)},
+                },
+            )
 
     if start_scheduler and runtime is not None and runtime.scheduler is not None:
         runtime.start()
@@ -121,6 +126,13 @@ def create_app(
             runtime.stop()
 
     app = FastAPI(title="mr.data chat API", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # 解析层校验失败也纳入统一错误形状（§3.1；改进 95）
+        return _error("invalid_request", str(exc), 422)
 
     @app.get("/health")
     def health() -> dict:
@@ -154,10 +166,10 @@ def create_app(
     @app.post("/sessions/{session_id}/message")
     def post_message(
         session_id: str,
-        body: MessageRequest,
+        body: Optional[MessageRequest] = None,
         include_events: bool = False,
     ) -> JSONResponse:
-        content = body.content
+        content = body.content if body else None
         if content is None or not content.strip():
             return _error(
                 "invalid_message", "content is required and must be non-empty", 400

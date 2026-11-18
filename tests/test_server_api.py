@@ -5,13 +5,17 @@ TestClient + create_app(graph=..., pg=...) 注入 FakeLLM/真实 pgembed：
 契约样例与 doc/chat-http-api.md §3 对齐（机器消费格式 = 稳定契约，精确锁定）。
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 
+import mr_data.server.app as server_app
 from mr_data.config import settings
 from mr_data.db import PostgresStore
 from mr_data.logging import reset_loggers
 from mr_data.online import DialogueGraph
+from mr_data.runtime import Runtime
 from mr_data.server import create_app
 
 pytestmark = pytest.mark.usefixtures("reset_pg_state")
@@ -166,6 +170,70 @@ def test_message_rejects_invalid_empty_and_missing_content(api):
         r = client.post(f"/sessions/{sid}/message", json=payload)
         assert r.status_code == 400
         assert _error_code(r) == "invalid_message"
+
+
+def test_message_rejects_missing_body(api):
+    client, _, _ = api
+    sid = client.post("/sessions", json={}).json()["session_id"]
+
+    r = client.post(f"/sessions/{sid}/message")
+    assert r.status_code == 400
+    assert _error_code(r) == "invalid_message"
+
+
+def test_message_rejects_null_body(api):
+    client, _, _ = api
+    sid = client.post("/sessions", json={}).json()["session_id"]
+
+    r = client.post(
+        f"/sessions/{sid}/message",
+        content=b"null",
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert _error_code(r) == "invalid_message"
+
+
+def test_message_field_type_error_returns_unified_422(api):
+    client, _, _ = api
+    sid = client.post("/sessions", json={}).json()["session_id"]
+
+    r = client.post(f"/sessions/{sid}/message", json={"content": 123})
+    assert r.status_code == 422
+    assert _error_code(r) == "invalid_request"
+
+
+def test_offline_reuses_runtime_engine_without_rebuilding(monkeypatch):
+    # 改进 94：默认装配路径直接复用 runtime.offline_engine，不重复构造引擎。
+    sentinel_engine = MagicMock(name="offline_engine")
+    fake_graph = MagicMock(name="graph")
+    fake_graph.pg.dsn = "postgresql://fake"
+    runtime = Runtime(
+        graph=fake_graph,
+        pg=MagicMock(name="pg"),
+        offline_engine=sentinel_engine,
+        scheduler=None,
+        startup_warnings=[],
+    )
+    monkeypatch.setattr(server_app, "build_runtime", lambda: runtime)
+    engine_ctor = MagicMock(name="AttributionEngine")
+    monkeypatch.setattr(server_app, "AttributionEngine", engine_ctor)
+
+    captured = {}
+
+    def fake_guarded_offline_run(engine, dsn, source):
+        captured.update(engine=engine, dsn=dsn, source=source)
+        return "completed"
+
+    monkeypatch.setattr(server_app, "guarded_offline_run", fake_guarded_offline_run)
+
+    with TestClient(server_app.create_app()) as client:
+        r = client.post("/offline", json={})
+    assert r.status_code == 200
+    assert r.json() == {"status": "completed"}
+    assert captured["engine"] is sentinel_engine
+    assert captured["source"] == "http"
+    assert engine_ctor.call_count == 0
 
 
 def test_message_to_missing_or_closed_session(api):

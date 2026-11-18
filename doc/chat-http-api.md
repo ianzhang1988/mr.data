@@ -67,6 +67,7 @@ flowchart LR
 | `session_closed` | 409 | 向已关闭会话发消息 |
 | `session_already_closed` | 409 | 重复关闭已关闭的会话 |
 | `invalid_message` | 400 | 消息请求体缺 `content` 或 trim 后为空 |
+| `invalid_request` | 422 | 请求体 JSON 语法错误 / 字段类型不符（解析层校验失败） |
 | `invalid_rating` | 400 | 评分缺失/`score` 不在 {-2,-1,0,1,2} |
 | `rating_failed` | 500 | 评分写入 PG 失败 |
 | `chat_turn_failed` | 500 | `graph.chat()` 整轮异常 |
@@ -142,7 +143,7 @@ flowchart LR
 |---|---|---|---|
 | `include_events` | bool | false | 测试观测开关：true 时 200 响应才含 `events` 与 `log_level` 两字段；不传则响应不含这两键 |
 
-错误：400 `invalid_message`；404 `session_not_found`；409 `session_closed`（向已关闭会话发消息会破坏离线归因的输入边界，显式拒绝）；500 `chat_turn_failed`（仅整轮异常，见 §5）。
+错误：400 `invalid_message`（请求体缺失、为 null、缺 `content` 或 trim 后为空）；422 `invalid_request`（`content` 字段类型不符等解析层校验失败）；404 `session_not_found`；409 `session_closed`（向已关闭会话发消息会破坏离线归因的输入边界，显式拒绝）；500 `chat_turn_failed`（仅整轮异常，见 §5）。
 
 **200 响应**（不带 `include_events`，默认形态）：
 
@@ -279,5 +280,5 @@ flowchart LR
 - **runtime.py 归属**：五个组件的构造与接线（`DialogueGraph`→`PostgresStore`+`init_schema()`+`seed()`→`AttributionEngine`→`OfflineScheduler`+`validate()`+`start()`/`stop()`）；调度器降级语义（cron 非法或初始化失败 → `scheduler=None`）。
 - **cli.chat 归属**：输入循环、slash 命令分派、评分询问、`run_threads`（/newsession 后台归因线程的创建与 `join(timeout=5)`）、`current_session_id` 游标、`finally` 中「评分 → close_session」序。
 - **启动告警接驳**：cron 非法的告警文案逐字存放在 `Runtime.startup_warnings: list[str]`（`build_runtime()` 填充）——TUI 侧 cli.chat 逐条 `rprint` 原样输出；server 侧同一列表以结构化日志事件记录（`server.startup_warning`），不打控制台。
-- **一处刻意不对称**：调度器初始化失败（非 cron 非法）不进 `startup_warnings`——原 cli 对此只记日志、不 rprint，为守 §8.1「TUI 可见行为」不变而维持原样；server 侧可经 `offline.schedule_init_failed` 结构化日志事件获取同一信息。
+- **一处刻意不对称**：调度器初始化失败（非 cron 非法）不进 `startup_warnings`——原 cli 对此只记日志、不 rprint，为守 §8.1「TUI 可见行为」不变而维持原样；server 侧可经 `offline.schedule_init_failed` 结构化日志事件获取同一信息。引擎构造失败与之同级拆分：独立记 `offline.engine_init_failed` 结构化日志事件（`offline_engine=None`，调度器同样不启用，不误报为 cron 非法）。
 

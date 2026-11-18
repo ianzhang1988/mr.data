@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import uuid
 from contextlib import contextmanager
 from typing import Optional
@@ -187,15 +188,16 @@ class PostgresStore:
             raise RuntimeError(
                 "No PostgreSQL DSN configured. Set MR_DATA_POSTGRES_DSN or MR_DATA_USE_PGEMBED=true."
             )
-        self._tx_conn = None
+        # 事务槽按线程隔离：server 线程池下多线程共享同一实例（改进 93）
+        self._tx = threading.local()
 
     @contextmanager
     def transaction(self):
         """会话级事务：事务态下 _cursor 复用同一连接并抑制逐方法 commit。"""
-        if self._tx_conn is not None:
+        if getattr(self._tx, "conn", None) is not None:
             raise RuntimeError("PostgresStore: nested transactions are not supported")
         with _get_pool(self.dsn).connection() as conn:
-            self._tx_conn = conn
+            self._tx.conn = conn
             try:
                 yield conn
                 conn.commit()
@@ -203,12 +205,13 @@ class PostgresStore:
                 conn.rollback()
                 raise
             finally:
-                self._tx_conn = None
+                self._tx.conn = None
 
     @contextmanager
     def _cursor(self, *, commit: bool = False):
-        if self._tx_conn is not None:
-            with self._tx_conn.cursor() as cur:
+        tx_conn = getattr(self._tx, "conn", None)
+        if tx_conn is not None:
+            with tx_conn.cursor() as cur:
                 yield cur
             return
         with _get_pool(self.dsn).connection() as conn:

@@ -235,9 +235,42 @@ def chat(
                 continue
 
             if user_input.lower() == "/newsession":
-                _ask_session_rating(pg, current_session_id)
-                pg.close_session(current_session_id)
-                current_session_id = pg.create_session()
+                try:
+                    _ask_session_rating(pg, current_session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to ask session rating",
+                        extra={
+                            "event": "cli.session_rating_failed",
+                            "session_id": current_session_id,
+                            "details": {"error": str(exc)},
+                        },
+                    )
+                try:
+                    pg.close_session(current_session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to close session",
+                        extra={
+                            "event": "cli.close_session_failed",
+                            "session_id": current_session_id,
+                            "details": {"error": str(exc)},
+                        },
+                    )
+                    rprint("[yellow]关闭旧会话失败，本次未创建新会话。[/yellow]")
+                    continue
+                try:
+                    current_session_id = pg.create_session()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to create session",
+                        extra={
+                            "event": "cli.create_session_failed",
+                            "details": {"error": str(exc)},
+                        },
+                    )
+                    rprint("[red]新建会话失败，请稍后重试 /newsession。[/red]")
+                    continue
                 rprint(f"[dim]New session: {current_session_id}[/dim]\n")
                 # 关闭的会话即可供离线归因：后台异步触发一轮，护栏内与
                 # 定时调度/手动 offline 互斥；护栏函数永不抛出，不阻塞对话。

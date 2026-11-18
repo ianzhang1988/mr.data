@@ -2,11 +2,14 @@
 
 语义要点（详见计划文档，此处不重复论证）：
 - 节点级降级 ≠ HTTP 失败：降级路径返回 200，由 events 字段承载断言依据（§5）。
+- events/log_level 是 opt-in 观测字段（§3.5）：仅 include_events=true 时返回，
+  语义为「本会话带 event 标记的日志行的镜像，按 logger 级别过滤」。
 - 整轮失败 = 500 chat_turn_failed；会话管理失败区分 4xx/5xx。
 - HTTP 无状态：会话归属由路径参数显式给出，server 侧不保留隐式会话游标。
 - 全链路同步，FastAPI 同步端点自动落线程池（§6）。
 """
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -149,7 +152,11 @@ def create_app(
         return JSONResponse(content=_session_payload(session))
 
     @app.post("/sessions/{session_id}/message")
-    def post_message(session_id: str, body: MessageRequest) -> JSONResponse:
+    def post_message(
+        session_id: str,
+        body: MessageRequest,
+        include_events: bool = False,
+    ) -> JSONResponse:
         content = body.content
         if content is None or not content.strip():
             return _error(
@@ -164,7 +171,11 @@ def create_app(
             )
         events: list[dict] = []
         try:
-            result = graph.chat(session_id, content.strip(), on_event=events.append)
+            result = graph.chat(
+                session_id,
+                content.strip(),
+                on_event=events.append if include_events else None,
+            )
         except Exception as exc:
             logger.warning(
                 "Chat turn failed",
@@ -175,16 +186,19 @@ def create_app(
                 },
             )
             return _error("chat_turn_failed", str(exc), 500)
-        return JSONResponse(
-            content={
-                "session_id": session_id,
-                "reply": result.text,
-                "references": [
-                    ref.model_dump() for ref in result.references
-                ],
-                "events": events,
-            }
-        )
+        payload: dict = {
+            "session_id": session_id,
+            "reply": result.text,
+            "references": [
+                ref.model_dump() for ref in result.references
+            ],
+        }
+        if include_events:
+            payload["events"] = events
+            payload["log_level"] = logging.getLevelName(
+                graph.logger.getEffectiveLevel()
+            ).lower()
+        return JSONResponse(content=payload)
 
     @app.post("/sessions/{session_id}/close")
     def close_session(session_id: str, body: Optional[CloseSessionRequest] = None) -> JSONResponse:

@@ -8,7 +8,9 @@ TestClient + create_app(graph=..., pg=...) 注入 FakeLLM/真实 pgembed：
 import pytest
 from fastapi.testclient import TestClient
 
+from mr_data.config import settings
 from mr_data.db import PostgresStore
+from mr_data.logging import reset_loggers
 from mr_data.online import DialogueGraph
 from mr_data.server import create_app
 
@@ -83,12 +85,17 @@ def test_message_round_trip_with_events_and_persistence(api):
     client, _, pg = api
     sid = client.post("/sessions", json={}).json()["session_id"]
 
-    r = client.post(f"/sessions/{sid}/message", json={"content": "你好"})
+    r = client.post(
+        f"/sessions/{sid}/message",
+        json={"content": "你好"},
+        params={"include_events": "true"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["session_id"] == sid
     assert body["reply"]
     assert isinstance(body["references"], list)
+    assert body["log_level"] == "info"
     names = [e["event"] for e in body["events"]]
     assert names[0] == "chat.start"
     assert names[-1] == "chat.turn"
@@ -97,7 +104,11 @@ def test_message_round_trip_with_events_and_persistence(api):
     assert sorted(log.role for log in logs) == ["assistant", "user"]
 
     # 第二轮：服务端自动衔接历史（用户输入之后是 assistant 回复）
-    r2 = client.post(f"/sessions/{sid}/message", json={"content": "接着问"})
+    r2 = client.post(
+        f"/sessions/{sid}/message",
+        json={"content": "接着问"},
+        params={"include_events": "true"},
+    )
     assert r2.status_code == 200
     logs = pg.get_recent_dialogues(session_id=sid)
     assert len(logs) == 4
@@ -107,6 +118,44 @@ def test_message_round_trip_with_events_and_persistence(api):
     )
     assert by_time[-2].role == "user" and by_time[-2].content == "接着问"
     assert by_time[-1].role == "assistant"
+
+
+def test_message_without_include_events_omits_log_fields(api):
+    client, _, _ = api
+    sid = client.post("/sessions", json={}).json()["session_id"]
+
+    r = client.post(f"/sessions/{sid}/message", json={"content": "你好"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["reply"]
+    assert "events" not in body
+    assert "log_level" not in body
+
+
+def test_include_events_reflects_logger_level(fake_llm, pg, chroma_store, monkeypatch):
+    # 定案语义（chat-http-api §3.5/§4）：events 是带 event 标记的日志行的镜像，
+    # 按 logger 级别过滤；log_level 回显当前生效级别，驱动方据此判断可见范围。
+    monkeypatch.setattr(settings, "log_level", "warning")
+    reset_loggers()  # 清 _CONFIGURED，让新 graph 的 get_logger 按新级别重建
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=fake_llm,
+        enable_web_search=False,
+    )
+    client = TestClient(create_app(graph=graph, pg=pg))
+    sid = client.post("/sessions", json={}).json()["session_id"]
+
+    r = client.post(
+        f"/sessions/{sid}/message",
+        json={"content": "你好"},
+        params={"include_events": "true"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["log_level"] == "warning"
+    # 正常轮次的管道事件全是 INFO 级，warning 级别下镜像为空——这是预期行为。
+    assert body["events"] == []
 
 
 def test_message_rejects_invalid_empty_and_missing_content(api):

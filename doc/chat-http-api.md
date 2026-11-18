@@ -136,9 +136,25 @@ flowchart LR
 |---|---|---|---|
 | `content` | string | 是 | 本轮用户输入；trim 后必须非空 |
 
+查询参数：
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `include_events` | bool | false | 测试观测开关：true 时 200 响应才含 `events` 与 `log_level` 两字段；不传则响应不含这两键 |
+
 错误：400 `invalid_message`；404 `session_not_found`；409 `session_closed`（向已关闭会话发消息会破坏离线归因的输入边界，显式拒绝）；500 `chat_turn_failed`（仅整轮异常，见 §5）。
 
-**200 响应**：
+**200 响应**（不带 `include_events`，默认形态）：
+
+```json
+{
+  "session_id": "f47ac10b-…",
+  "reply": "助手回复文本",
+  "references": [{"id": "doc-id-or-record-id", "source_type": "line", "summary": "素材一句话总结"}]
+}
+```
+
+带 `include_events=true` 时，响应额外含两键（示例仅为示意，非规范形状）：
 
 ```json
 {
@@ -148,9 +164,10 @@ flowchart LR
   "events": [
     {"event": "personality.loaded", "session_id": "f47ac10b-…", "details": {"dimensions_active": 3}},
     {"event": "think.decision_generated", "session_id": "f47ac10b-…", "details": {"inner_monologue": "…"}},
-    {"event": "chat.reply_fallback", "session_id": "f47ac10b-…", "details": {"reason": "…"}},
-    {"event": "chat.turn", "session_id": "f47ac10b-…", "details": {"assistant_log_id": 42, "docs_used": 5}}
-  ]
+    {"event": "chat.reply_fallback", "session_id": "f47ac10b-…", "details": {"error": "…"}},
+    {"event": "chat.turn", "session_id": "f47ac10b-…", "details": {"assistant_log_id": 42, "inner_monologue": "…", "personality_doc_count": 3, "memory_doc_count": 2, "web_doc_count": 0, "block_count": 1, "reference_count": 2}}
+  ],
+  "log_level": "info"
 }
 ```
 
@@ -158,7 +175,8 @@ flowchart LR
 |---|---|---|
 | `reply` | string | 取自 `ChatResult.text` |
 | `references` | array | 取自 `ChatResult.references`（全部块引用按 id 去重并集）；元素形状 = `ReplyReference`：`id`（素材唯一标识）/ `source_type`（line/event/evidence/web/dialogue）/ `summary`。HTTP 恒返回该字段，不受 CLI `--show-references` 开关影响 |
-| `events` | array | 本轮管道内全部结构化事件的**按序**列表；元素形状 = `{event, session_id?, details}`，与日志结构化 extra 同构（§4）。驱动方断言降级路径/检索命中/落库结果用此字段，不用解析日志文件 |
+| `events` | array | **仅 `include_events=true` 时存在**。本轮会话带 `event` 标记的结构化日志行的按序镜像——事件源是各节点经 logger 打的记录，**按 logger 级别过滤**（常规事件 INFO 级、降级事件 WARNING 级，见 §4）。级别高于 INFO 时正常事件缺失是预期行为，不是故障。元素为 JSON 对象（`event`/`session_id`/`details`），**非规范形状，键可能随版本增删**——消费方（测试驱动方）按原始 JSON 读取即可，不要按固定 schema 编程 |
+| `log_level` | string | **仅 `include_events=true` 时存在**。当前生效的 logger 级别（小写）；驱动方据此判断 events 可见范围——如为 `warning`，则 events 只含 WARNING 及以上事件 |
 
 ### 3.6 POST /sessions/{id}/close — 关会话
 
@@ -208,6 +226,8 @@ flowchart LR
 - 方案 b（否决）：驱动方 tail JSONL 日志文件自己解析。零改代码，但按 session_id 关联、按轮次切分都脆，且把「测试断言」耦合到日志格式——testing-guidelines.md 认定日志格式是易变面，不适合作测试契约。
 
 事件项的形状直接复用 logging 的结构化 extra：`{event, session_id?, details}`（与 AGENTS.md 约定一致），server 原样透传、不做再加工。事件源是各节点已在打的结构化日志（`personality.loaded`、`think.decision_generated`、`retrieve.*`、降级类 `*.reply_fallback`、收尾 `chat.turn` 等），实现上是把这些事件在 invoke 期间旁路一份给回调，日志落盘路径不变。
+
+事件可见性随 logger 级别（常规事件 INFO 级、降级事件 WARNING 级；级别由部署方配置，欲拿完整事件流的驱动方自行将级别配为 INFO）。HTTP 侧经 `include_events` 开关返回这两键（§3.5），普通调用零感知。
 
 该契约（chat() 的可选回调参数与事件形状）已回填 [design/online-pipeline.md](design/online-pipeline.md#8)。
 

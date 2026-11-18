@@ -276,6 +276,27 @@ def test_delete_full_flow_cleans_all(pg, chroma_store, capsys):
         chroma_store.get_personality_events([doc_id])
 
 
+def test_delete_purge_failure_keeps_mode_alive(pg, chroma_store, capsys, monkeypatch):
+    # F-15：Chroma 清理失败不穿透模式主循环；删除事实照审照提示。
+    dim_id, doc_id = _seed_deletable(pg, chroma_store)
+
+    def _boom(*a, **k):
+        raise RuntimeError("chroma down")
+
+    monkeypatch.setattr(
+        "mr_data.interactive.dimensions.purge_dimension_vectors", _boom
+    )
+    run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([
+        f"/delete {dim_id}", "y", str(dim_id), "/quit",
+    ]))
+    out = capsys.readouterr().out
+    assert "向量清理失败" in out
+    assert "已删除维度" in out
+    # PG 侧删除已提交；Chroma 残留仍在（无二次清理路径，符合最小修复范围）
+    assert pg.get_dimension(dim_id) is None
+    assert chroma_store.get_personality_event_ids_by_dimension(dim_id) == [doc_id]
+
+
 def test_delete_second_confirm_mismatch_gives_up(pg, chroma_store):
     dim_id, _ = _seed_deletable(pg, chroma_store)
     run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted([

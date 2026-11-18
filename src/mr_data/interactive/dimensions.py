@@ -299,7 +299,22 @@ def cmd_delete(store, chroma, args: list[str], input_fn, entry: str) -> None:
         rprint(MSG_GIVE_UP)
         return
     adjustments = store.delete_dimension(dim_id)
-    purge_dimension_vectors(store, chroma, dim_id)
+    # 清理链故障包容：PG 删除已提交不回滚，Chroma 清理失败只告警——
+    # 异常绝不穿透模式主循环（fix F-15）；残留留待后续独立的扫库清理。
+    try:
+        purge_dimension_vectors(store, chroma, dim_id)
+    except Exception as exc:
+        logger.warning(
+            "Dimension deleted but vector purge failed",
+            extra={
+                "event": "dimension.purge_failed",
+                "details": {"dimension_id": dim_id, "error": repr(exc)},
+            },
+        )
+        rprint(
+            f"[yellow]维度 {dim_id} 已删除，但向量清理失败（{exc}）；"
+            f"Chroma 可能残留该维度素材。[/yellow]"
+        )
     _audit("dimension_delete", dimension_id=dim_id, entry=entry,
            description=dim.description, counts=_counts(dim),
            adjustments=adjustments)

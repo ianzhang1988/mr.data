@@ -179,7 +179,8 @@ class DialogueLog(BaseModel):
     session_id: str
     role: str  # 'user' | 'assistant'
     content: str
-    processed_for_attribution: bool = False
+    # 归因三态（改进 99）：unprocessed 在队列 / processed 真归因完 / failed 死信
+    attribution_status: str = "unprocessed"
     metadata: Optional[DialogueLogMetadata] = None
     created_at: Optional[datetime] = None
 

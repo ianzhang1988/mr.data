@@ -134,7 +134,7 @@ CREATE INDEX idx_sessions_status ON sessions(status);
 | `session_id` | TEXT FK → `sessions(id)` | 会话 ID |
 | `role` | TEXT | 角色：`user` 或 `assistant` |
 | `content` | TEXT | 消息内容 |
-| `processed_for_attribution` | BOOLEAN | 是否已被离线归因处理，默认 FALSE |
+| `attribution_status` | TEXT | 归因三态（改进 99）：`unprocessed` 在队列 / `processed` 真归因完 / `failed` 死信不再重试，默认 `unprocessed`。合法值由代码层约束；API 序列化字段同名 |
 | `metadata` | JSONB | 助手回复的结构化元数据（仅 assistant 行），schema 见下文「落库 metadata schema」 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 
@@ -142,7 +142,7 @@ CREATE INDEX idx_sessions_status ON sessions(status);
 
 ```sql
 CREATE INDEX idx_dialogue_session ON dialogue_logs(session_id);
-CREATE INDEX idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
+CREATE INDEX idx_dialogue_attribution_status ON dialogue_logs(attribution_status);
 ```
 
 ---
@@ -345,7 +345,7 @@ erDiagram
         text session_id FK
         text role
         text content
-        boolean processed_for_attribution
+        text attribution_status
         jsonb metadata
         timestamptz created_at
     }

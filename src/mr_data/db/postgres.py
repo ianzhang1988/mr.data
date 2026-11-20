@@ -89,10 +89,22 @@ CREATE TABLE IF NOT EXISTS dialogue_logs (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
-    processed_for_attribution BOOLEAN DEFAULT FALSE,
+    attribution_status TEXT NOT NULL DEFAULT 'unprocessed',
     metadata JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 改进 99：归因状态三态化迁移——旧 boolean 列回填后删除（历史死信行
+-- 无法回溯区分，一律按 processed 迁移，等于旧标记的诚实上限）
+ALTER TABLE dialogue_logs ADD COLUMN IF NOT EXISTS attribution_status TEXT NOT NULL DEFAULT 'unprocessed';
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'dialogue_logs' AND column_name = 'processed_for_attribution') THEN
+        UPDATE dialogue_logs SET attribution_status = 'processed' WHERE processed_for_attribution;
+        ALTER TABLE dialogue_logs DROP COLUMN processed_for_attribution;
+    END IF;
+END $$;
 
 ALTER TABLE dialogue_logs ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT NULL;
 
@@ -100,7 +112,8 @@ ALTER TABLE dialogue_logs DROP COLUMN IF EXISTS evaluation_score;
 ALTER TABLE dialogue_logs DROP COLUMN IF EXISTS evaluation_feedback;
 
 CREATE INDEX IF NOT EXISTS idx_dialogue_session ON dialogue_logs(session_id);
-CREATE INDEX IF NOT EXISTS idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
+DROP INDEX IF EXISTS idx_dialogue_processed;
+CREATE INDEX IF NOT EXISTS idx_dialogue_attribution_status ON dialogue_logs(attribution_status);
 
 CREATE TABLE IF NOT EXISTS dialogue_dimension_refs (
     id SERIAL PRIMARY KEY,
@@ -560,7 +573,7 @@ class PostgresStore:
                 FROM sessions s
                 JOIN dialogue_logs d ON d.session_id = s.id
                 WHERE s.status = 'closed'
-                  AND d.processed_for_attribution = FALSE
+                  AND d.attribution_status = 'unprocessed'
                 ORDER BY s.closed_at DESC
                 LIMIT %s
                 """,
@@ -575,12 +588,12 @@ class PostgresStore:
             cur.execute(
                 """
                 INSERT INTO dialogue_logs
-                (session_id, role, content, processed_for_attribution, metadata)
+                (session_id, role, content, attribution_status, metadata)
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (log.session_id, log.role, log.content,
-                 log.processed_for_attribution,
+                 log.attribution_status,
                  json.dumps(log.metadata.model_dump(mode="json")) if log.metadata is not None else None),
             )
             return cur.fetchone()["id"]
@@ -598,7 +611,7 @@ class PostgresStore:
                 conditions.append("session_id = %s")
                 params.append(session_id)
             if unprocessed_only:
-                conditions.append("processed_for_attribution = FALSE")
+                conditions.append("attribution_status = 'unprocessed'")
 
             sql = "SELECT * FROM dialogue_logs"
             if conditions:
@@ -627,7 +640,7 @@ class PostgresStore:
                 """
                 SELECT * FROM dialogue_logs
                 WHERE session_id = %s
-                  AND processed_for_attribution = TRUE
+                  AND attribution_status = 'processed'
                   AND (created_at, id) > (%s, %s)
                 ORDER BY created_at ASC, id ASC
                 LIMIT %s
@@ -637,19 +650,25 @@ class PostgresStore:
             return [DialogueLog.model_validate(r) for r in cur.fetchall()]
 
     def count_dialogues(self, session_id: str, unprocessed_only: bool = False) -> int:
-        """统计会话日志条数（拆批批号 x/y 计算用）。"""
+        """统计会话日志条数（拆批批号 x/y 计算用）。
+
+        unprocessed_only=True 计 attribution_status = 'unprocessed'；否则计
+        <> 'unprocessed'（含 failed 死信行——死信同样了结于窗口，批号推进
+        不回退，保持改进 82 的拆批语义）。
+        """
         with self._cursor() as cur:
+            op = "=" if unprocessed_only else "<>"
             sql = (
                 "SELECT COUNT(*) AS n FROM dialogue_logs "
-                "WHERE session_id = %s AND processed_for_attribution = %s"
+                f"WHERE session_id = %s AND attribution_status {op} 'unprocessed'"
             )
-            cur.execute(sql, (session_id, not unprocessed_only))
+            cur.execute(sql, (session_id,))
             return cur.fetchone()["n"]
 
     def mark_dialogue_processed(self, dialogue_id: int) -> None:
         with self._cursor(commit=True) as cur:
             cur.execute(
-                "UPDATE dialogue_logs SET processed_for_attribution = TRUE WHERE id = %s",
+                "UPDATE dialogue_logs SET attribution_status = 'processed' WHERE id = %s",
                 (dialogue_id,),
             )
 
@@ -667,15 +686,17 @@ class PostgresStore:
             row = cur.fetchone()
             return row["attribution_attempts"] if row else 0
 
-    def mark_dialogues_processed(self, dialogue_ids: list[int]) -> int:
-        """把指定日志置为已处理（死信分片级落葬），返回标记条数。"""
+    def mark_dialogues_failed(self, dialogue_ids: list[int]) -> int:
+        """把指定日志置为 failed 死信（分片级落葬，改进 99），返回标记条数。
+
+        只覆盖 unprocessed 行，已 processed 行不动。"""
         if not dialogue_ids:
             return 0
         with self._cursor(commit=True) as cur:
             cur.execute(
                 """
-                UPDATE dialogue_logs SET processed_for_attribution = TRUE
-                WHERE id = ANY(%s) AND processed_for_attribution = FALSE
+                UPDATE dialogue_logs SET attribution_status = 'failed'
+                WHERE id = ANY(%s) AND attribution_status = 'unprocessed'
                 """,
                 (dialogue_ids,),
             )

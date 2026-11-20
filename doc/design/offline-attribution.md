@@ -22,10 +22,11 @@
 - **批处理**：每次取 `offline_batch_size`（50）个「已关闭且存在未处理日志」的会话；单会话取最新 `offline_max_session_logs`（100）条未处理日志（DESC 最新优先，多批跨 run 逐批推进），**批次方向保持最新优先**（改进 82 拍板）。
 - **拆批语义（改进 82，调查文档改进项 B）**：单会话未处理日志超 100 条时跨 run 拆批，四个配套机制：
   1. **上文回顾（B1）**：每批另取已处理行中按时间紧邻本批上方的 `offline_attribution_batch_overlap_lines`（2）条（单独查询，避免大窗口被已处理行占满导致深部未处理行取不到），transcript 末尾以「上文回顾」段呈现——仅供理解上下文，不重复归因、不可作 target（id 校验白名单只用本批行）；
-  2. **分片死信（B2）**：归因失败达阈值后只落葬本批实际进过 transcript 的日志（`mark_dialogues_processed`），不再 session 级连坐从未取过的日志；`offline.session_dead_lettered` 的 never_in_transcript 字段保留但恒为 0；attempts 仍会话级（达阈值后后续分片失败一次即即时落葬）；
+  2. **分片死信（B2）**：归因失败达阈值后只落葬本批实际进过 transcript 的日志，置 `failed` 死信态（`mark_dialogues_failed`），不再 session 级连坐从未取过的日志；`offline.session_dead_lettered` 的 never_in_transcript 字段保留但恒为 0；attempts 仍会话级（达阈值后后续分片失败一次即即时落葬）；
+  2a. **行级三态（改进 99）**：`dialogue_logs.attribution_status` 三态——`unprocessed`（在队列）/ `processed`（真进 transcript 且归因事务提交）/ `failed`（死信，不再重试）。死信行计入批号 x/y 的已处理计数（窗口推进不回退）；历史存量（改进 99 前）无法区分真处理与死信，迁移一律置 `processed`（等于旧标记的诚实上限）；死信重跑工具未做，留待后续立项；
   3. **分片标注（B3）**：拆批时 system/prompt 标注「本批为第 x/y 批，非完整会话」（x = p//limit+1，y = ceil((p+u)/limit)，p/u 为会话级已处理/未处理计数；死信落葬使 y 为近似值）；未拆批时 prompt 一字不改；
   4. **会话级信号规则（B4）**：拆批时 prompt 中评分/评论段落由「最直接的成败信号，应更严格归因」替换为「背景校准 + 锚定本批事件」——评分仅用于校准判断倾向，成败计数必须有本批对话中的具体事件作证据，防止同一评分在多批被重复折算（措辞定稿见 review/truncation-survey.md「B4 prompt 定稿」）。
-- **单会话容错**：LLM 归因失败或 apply 事务失败 → 计数 +1，下次 run 重试；达 `offline_max_attribution_attempts`（3）次 → 死信（**本批**未处理日志置为已处理，warning），不再无限重试。单会话失败不打断整批。
+- **单会话容错**：LLM 归因失败或 apply 事务失败 → 计数 +1，下次 run 重试；达 `offline_max_attribution_attempts`（3）次 → 死信（**本批**未处理日志置为 `failed`，warning），不再无限重试。单会话失败不打断整批。
 - **修剪总是执行**：`run()` 末尾统一调 `prune_stale_memories`，无待处理会话也执行。
 
 ## 2. 归因流程

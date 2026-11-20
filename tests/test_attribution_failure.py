@@ -105,7 +105,7 @@ def test_attribution_failure_counts_attempts(
 def test_attribution_dead_letter_after_threshold(
     fake_llm, pg, chroma_store, temp_log_dir, test_session_id, monkeypatch
 ):
-    """连续失败达到阈值后：会话未处理日志置为已处理（死信），不再重试。"""
+    """连续失败达到阈值后：本批进过 transcript 的日志置为 failed 死信，不再重试。"""
     _setup_closed_session(pg, test_session_id)
     monkeypatch.setattr(settings, "offline_max_attribution_attempts", 2)
 

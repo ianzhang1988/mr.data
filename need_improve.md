@@ -12,10 +12,12 @@
 
 # 待改进
 
-（暂无）
+（空——remaining_items.md 中 F-25 / F-7 / F-9 / F-17 待后续拍板立项，不在本文件驱动）
 
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
+
+99. ✅ F-10 行级归因状态三态化：`dialogue_logs` 新列 `attribution_status`（unprocessed/processed/failed）替换 boolean，死信落葬置 failed 不再伪装已处理；schema 幂等迁移（旧列回填后 DROP）、批号 x/y 计数含 failed 不回退；契约 offline-attribution.md #1 B2/2a 与 database-design.md 同步；死信重跑工具未做留待立项。详见 finished_improvement.md #99。
 
 98. ✅ 低风险批：review/low_risk_triage.md「范围小」16 条（F-2/11/12/13/16/18/19/20/22/23/24/27/28/29/30/31）全部核验属实并修复，triage 文件已逐条标记完成。详见 finished_improvement.md #98。
 

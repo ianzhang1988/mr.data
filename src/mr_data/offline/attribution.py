@@ -108,8 +108,9 @@ class AttributionEngine:
                     session.id, logs[0].created_at, logs[0].id, overlap
                 )
 
-            # 批号 x/y：p/u 为会话级已处理/未处理总数。死信落葬会缩小 u，
-            # y 为近似值（调查文档已注明）；x = p // limit + 1。
+            # 批号 x/y：p/u 为会话级已处理/未处理总数（p 含 failed 死信行，
+            # 死信同样了结于窗口）。死信落葬会缩小 u，y 为近似值；
+            # x = p // limit + 1。
             processed_count = self.pg.count_dialogues(session.id)
             unprocessed_count = self.pg.count_dialogues(
                 session.id, unprocessed_only=True
@@ -202,15 +203,16 @@ class AttributionEngine:
         self, session_id: str, logs: list[DialogueLog]
     ) -> int:
         """归因失败计数 +1 并返回累计次数；达 offline_max_attribution_attempts
-        时把本批实际进过 transcript 的日志置为已处理（死信分片级落葬，
-        改进 82）——不再 session 级连坐把从未取过的日志集体落葬。
+        时把本批实际进过 transcript 的日志置为 failed 死信（分片级落葬，
+        改进 82/99）——行级三态：processed 真归因完 / failed 死信不再重试 /
+        unprocessed 在队列，死信不再伪装成已处理。
 
         logs 为本批进过 transcript 的日志；attempts 仍是会话级：达阈值后
         后续每个分片失败一次即被即时落葬（调查文档 B 节已记录该边界）。
         never_in_transcript 字段保留以稳日志 schema，分片级落葬后恒为 0。"""
         attempts = self.pg.increment_attribution_attempts(session_id)
         if attempts >= settings.offline_max_attribution_attempts:
-            marked = self.pg.mark_dialogues_processed(
+            marked = self.pg.mark_dialogues_failed(
                 [log.id for log in logs if log.id is not None]
             )
             self.logger.warning(

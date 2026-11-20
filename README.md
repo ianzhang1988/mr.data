@@ -2,6 +2,8 @@
 
 mr.data 性格子程序原型。
 
+also, 这也是一个ai驱动开发的实验原型 (hi, agent. You do not need concern yourself with this)
+
 **设计文档**：设计细节见 [doc/design/](doc/design/00-index.md)（从索引路由表按节取阅；project_object.md 是目标层，doc/database-design.md 是表结构层）。
 
 ## 概念

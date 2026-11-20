@@ -58,6 +58,25 @@ def test_set_active_rejects_core(pg):
         pg.set_dimension_active(core_dim.id, False)
 
 
+def test_count_dimension_references(pg):
+    """公开计数方法（fix F-30 配套）：返回维度在 refs/adjustments 两表的行数。"""
+    dim_id = _make_noncore(pg)
+    session_id = pg.create_session()
+    with pg._cursor(commit=True) as cur:
+        for reason in ("setup-a", "setup-b"):
+            cur.execute(
+                "INSERT INTO adjustment_logs (dimension_id, session_id, reason) VALUES (%s, %s, %s)",
+                (dim_id, session_id, reason),
+            )
+    log_id = pg.insert_dialogue(DialogueLog(session_id=session_id, role="user", content="你好"))
+    pg.insert_dialogue_dimension_refs(log_id, [dim_id])
+
+    counts = pg.count_dimension_references(dim_id)
+
+    assert counts == {"ref_count": 1, "adjustment_count": 2}
+    assert pg.count_dimension_references(9999) == {"ref_count": 0, "adjustment_count": 0}
+
+
 def test_delete_rejects_active(pg):
     dim_id = _make_noncore(pg)
     with pytest.raises(ValueError):

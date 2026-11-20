@@ -153,23 +153,26 @@ CREATE INDEX IF NOT EXISTS idx_user_identities_default ON user_identities(is_def
 """
 
 _POOLS: dict[str, ConnectionPool] = {}
+_POOLS_LOCK = threading.Lock()
 
 
 def _get_pool(dsn: str) -> ConnectionPool:
     """按 dsn 进程级共享连接池（测试中大量临时 PostgresStore 实例从不 close，
-    共享池避免每实例一条 min_size 连接累积撑爆 pgembed）。"""
-    pool = _POOLS.get(dsn)
-    if pool is None:
-        pool = ConnectionPool(
-            conninfo=dsn,
-            min_size=1,
-            max_size=8,
-            kwargs={"row_factory": dict_row},
-            open=False,
-        )
-        pool.open()
-        _POOLS[dsn] = pool
-    return pool
+    共享池避免每实例一条 min_size 连接累积撑爆 pgembed）。
+    查-建-放整体持锁：多线程首次并发建池时只建一个。"""
+    with _POOLS_LOCK:
+        pool = _POOLS.get(dsn)
+        if pool is None:
+            pool = ConnectionPool(
+                conninfo=dsn,
+                min_size=1,
+                max_size=8,
+                kwargs={"row_factory": dict_row},
+                open=False,
+            )
+            pool.open()
+            _POOLS[dsn] = pool
+        return pool
 
 
 class PostgresStore:
@@ -496,6 +499,22 @@ class PostgresStore:
             adjustments = cur.rowcount
             cur.execute("DELETE FROM personality_dimensions WHERE id = %s", (dimension_id,))
         return adjustments
+
+    def count_dimension_references(self, dimension_id: int) -> dict:
+        """统计维度被引用情况（维度删除前展示用）：
+        dialogue_dimension_refs 与 adjustment_logs 各一条 count 查询。"""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT count(*) AS n FROM dialogue_dimension_refs WHERE dimension_id = %s",
+                (dimension_id,),
+            )
+            ref_count = cur.fetchone()["n"]
+            cur.execute(
+                "SELECT count(*) AS n FROM adjustment_logs WHERE dimension_id = %s",
+                (dimension_id,),
+            )
+            adjustment_count = cur.fetchone()["n"]
+        return {"ref_count": ref_count, "adjustment_count": adjustment_count}
 
     # --- Session management ---
 

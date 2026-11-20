@@ -5,6 +5,8 @@ import pytest
 from mr_data.models import (
     PersonalityDocMetadata,
     ReplyBlock,
+    WebDoc,
+    WebDocMetadata,
 )
 from mr_data.online import DialogueGraph
 
@@ -182,3 +184,48 @@ def test_from_chroma_metadata_tolerates_dirty_dimension_ids(
     assert parsed.dimension_ids == expected_ids
     assert parsed.utterance == "test"
     assert parsed.source_id == "src-1"
+
+
+@pytest.mark.usefixtures("reset_pg_state")
+def test_log_dialogue_web_memory_query_falls_back_to_user_input(
+    test_session_id, pg, chroma_store
+):
+    """F-22：think 产空 retrieval_query 时，落库的 web 记忆 metadata.query
+    回退为用户输入（与检索节点的 or 回退语义一致，不回退为空串）。"""
+    pg.create_session(test_session_id)
+
+    graph = DialogueGraph(
+        pg_store=pg,
+        chroma_store=chroma_store,
+        llm=FakeLLMClient(),
+        enable_web_search=False,
+    )
+
+    dimensions = pg.list_dimensions(active_only=True)
+    state = {
+        "session_id": test_session_id,
+        "user_input": "用户原始输入",
+        "retrieval_query": "",
+        "identity": pg.get_identity(),
+        "user_identity": None,
+        "dimensions": dimensions,
+        "selected_dimension_ids": [d.id for d in dimensions if d.id is not None],
+        "personality_docs": [],
+        "memory_docs": [],
+        "messages": [],
+        "web_docs": [
+            WebDoc(
+                page_content="网络资料正文",
+                metadata=WebDocMetadata(url="https://example.com", title="标题"),
+            )
+        ],
+        "inner_monologue": None,
+        "reply": "这是一个测试回复。",
+        "reply_blocks": [ReplyBlock(text="这是一个测试回复。", references=[])],
+    }
+
+    graph._log_dialogue(state)
+
+    stored = chroma_store.memories.get(include=["metadatas"])
+    assert len(stored["metadatas"]) >= 1
+    assert all(meta["query"] == "用户原始输入" for meta in stored["metadatas"])

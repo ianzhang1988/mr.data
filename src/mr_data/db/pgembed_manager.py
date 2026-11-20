@@ -27,6 +27,9 @@ class PgEmbedManager:
             instance._server = None
             instance._dsn = None
             cls._instances[key] = instance
+            # 每实例只注册一次（stop 幂等）；放实例创建处而非 start()，
+            # 避免 stop→start 反复时重复注册 atexit。
+            atexit.register(instance.stop)
         return cls._instances[key]
 
     @property
@@ -42,7 +45,6 @@ class PgEmbedManager:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._server = pgembed.get_server(str(self.data_dir))
         self._dsn = self._server.get_uri()
-        atexit.register(self.stop)
         return self._dsn
 
     def stop(self) -> None:

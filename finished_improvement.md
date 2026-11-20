@@ -265,3 +265,23 @@
 97. ✅ **/newsession 三步操作加保护**（need_improve.md 待改进 5）：cli.chat 的 `/newsession` 分支（问评分 → 关旧会话 → 建新会话）由裸调改为与 finally 对齐的逐项 try/except：评分失败记 `cli.session_rating_failed` 后继续 close→create；close 失败记 `cli.close_session_failed` + 黄字提示并跳过 create（旧会话仍 active，状态自洽）；create 失败记 `cli.create_session_failed` + 红字提示、保持旧会话 id。修复「评分写入瞬间故障 → 异常穿出主循环进 finally → 调度器被停、评分重问、对话整个退出且新会话未建成」。后台归因线程位置不变（仅 close 成功才到达）。测试：tests/test_cli.py `test_chat_newsession_rating_failure_still_creates_session`（评分注入抛错：对话继续、旧会话已 close、新会话已创建、事件记 2 次——/newsession 与 finally 各一）。
 
 本批（#93-#97）全量测试基线：**294 passed, 1 skipped / 154s**（上一基线 283 + 本批新增 11 用例）。
+
+98. ✅ **低风险批：low_risk_triage「范围小」16 条一次修完**（need_improve.md 待改进 1；F-2/11/12/13/16/18/19/20/22/23/24/27/28/29/30/31）。全部经逐条读码核验属实、范围确认小后实施，4 路并行子 agent 按文件分组执行（db / cli+doc / online / offline+interactive+llm），一个汇总 commit。各条摘要：
+    - **F-2** `_get_pool` 单例加锁：模块级 `threading.Lock` 包住「查→建→放」，并发首连不再建双池泄漏（postgres.py）。
+    - **F-11** chat 退出清理序补防护：finally 中 `runtime.stop()`/`run_threads join` 由裸调改逐项 try/except（新事件 `cli.scheduler_stop_failed`/`cli.thread_join_failed`），兑现 §8.1 第 5 条「各步失败互不阻断」承诺；TUI 文案零变化（cli.py）。
+    - **F-12** one-shot `dimension edit` 审计补 `old`：edit 前 `get_dimension` 取旧描述，审计 details 变 old→new，对齐交互模式与 dimension-editing §3.6（cli.py）。
+    - **F-13** 删 online-pipeline #5 过期括注「memory_docs 登记待补」（实现早已登记，memory-and-retrieval #6 已列契约）。
+    - **F-16** `prune_stale_memories` 删除阶段补 try/except：失败记 `chroma.prune_failed` + 返回 0，兑现 memory-and-retrieval #5「修剪失败不打断离线批处理」（chroma.py）。
+    - **F-18** 三个检索事件 `details.query` 改记实际生效词（search_query/personality_query/memory_query 及回退链），不再误记 retrieval_query（graph.py）。
+    - **F-19** DuckDuckGo 无结果返回 None 时 `results or []`，「正常无结果」不再被谎报成 search_failed（search_providers.py）。
+    - **F-20** 内存补丁条件修复：`increment_memory_recall` 改返回 `found_ids`，graph 侧以实际命中集合做补丁判断，不再对已被删文档重复 +1（chroma.py + graph.py）；memory-and-retrieval #4 补一句澄清。
+    - **F-22** 落记忆取值统一 `or` 回退：`retrieval_query` 空串时回退用户输入，不再入库 query="" 的记忆（graph.py）。
+    - **F-23** Chroma 备份文件名加毫秒（%f），同秒双重建不再互覆（chroma.py）。
+    - **F-24** pgembed atexit 注册挪到实例创建（每实例恰好一次），反复 stop→start 不再累积注册（pgembed_manager.py）。
+    - **F-27** 同轮证据去重：按 (target_log_id, dim_id, snippet) 去重，极端边界不再登记重复行/重复 Chroma 文档（attribution.py）。
+    - **F-28** `_parse_id` 缺参提示按当前命令生成（/delete 不再提示 /edit 用法）；4 个调用点传各自命令名（dimensions.py）。
+    - **F-29** `/list 0` 页码穿透修复：`page < 1` 就地提示，不再打印只有表头的空页（dimensions.py）。
+    - **F-30** 维度模式裸 SQL 收编 store 公开方法：新增 `PostgresStore.count_dimension_references(dim_id) -> {ref_count, adjustment_count}`，dimensions.py 改调公开接口（postgres.py + dimensions.py）。
+    - **F-31** parse 模式 JSON 回退统一 `_extract_json`（剥 ``` 围栏），与 prompt 路径同强度，带围栏输出不再整轮失败（llm/client.py）。
+    - 测试：新增 17 用例（test_pg_pool_lock / test_pgembed_atexit 两个新文件 + 15 条散入既有文件），全量 **311 passed, 1 skipped / 46s**（上一基线 294）。triage 文件 16 条目标记 ✅。
+    - 范围外留待决策：F-10/26/32（大范围单独立项）、F-7/9/21/25（需拍板）、F-17（需确认意图）——已回禀用户。

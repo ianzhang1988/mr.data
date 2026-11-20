@@ -108,6 +108,9 @@ def cmd_list(store, args: list[str]) -> None:
     total = len(dims)
     page_count = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = int(pages[0]) if pages else 1
+    if page < 1:
+        rprint("页码需 ≥ 1")
+        return
     if page > page_count:
         rprint(f"共 {page_count} 页")
         return
@@ -125,9 +128,9 @@ def _get_dim_or_report(store, dim_id: int) -> PersonalityDimension | None:
     return dim
 
 
-def _parse_id(args: list[str]) -> int | None:
+def _parse_id(args: list[str], command: str) -> int | None:
     if not args:
-        rprint("缺少维度 id，用法：/edit <id>（或 /edit 进入编号选择）")
+        rprint(f"缺少维度 id，用法：/{command} <id>（或 /{command} 进入编号选择）")
         return None
     try:
         return int(args[0])
@@ -153,7 +156,7 @@ def _audit(event: str, *, dimension_id: int, entry: str, **details) -> None:
 
 def cmd_edit(store, args: list[str], input_fn, entry: str) -> None:
     if args:
-        dim_id = _parse_id(args)
+        dim_id = _parse_id(args, "edit")
         if dim_id is None:
             return
     else:
@@ -212,7 +215,7 @@ def cmd_edit(store, args: list[str], input_fn, entry: str) -> None:
 
 
 def cmd_deactivate(store, args: list[str], input_fn, entry: str) -> None:
-    dim_id = _parse_id(args)
+    dim_id = _parse_id(args, "deactivate")
     if dim_id is None:
         return
     dim = _get_dim_or_report(store, dim_id)
@@ -236,7 +239,7 @@ def cmd_deactivate(store, args: list[str], input_fn, entry: str) -> None:
 
 
 def cmd_reactivate(store, args: list[str], input_fn, entry: str) -> None:
-    dim_id = _parse_id(args)
+    dim_id = _parse_id(args, "reactivate")
     if dim_id is None:
         return
     dim = _get_dim_or_report(store, dim_id)
@@ -263,7 +266,7 @@ def cmd_delete(store, chroma, args: list[str], input_fn, entry: str) -> None:
     if chroma is None:
         rprint("Chroma 不可用，无法执行删除（删除需清理向量残留）")
         return
-    dim_id = _parse_id(args)
+    dim_id = _parse_id(args, "delete")
     if dim_id is None:
         return
     dim = _get_dim_or_report(store, dim_id)
@@ -275,16 +278,9 @@ def cmd_delete(store, chroma, args: list[str], input_fn, entry: str) -> None:
     if dim.active:
         rprint(f"请先 /deactivate {dim_id} 再删除")
         return
-    with store._cursor() as cur:
-        cur.execute(
-            "SELECT count(*) AS n FROM dialogue_dimension_refs WHERE dimension_id = %s",
-            (dim_id,),
-        )
-        ref_count = cur.fetchone()["n"]
-        cur.execute(
-            "SELECT count(*) AS n FROM adjustment_logs WHERE dimension_id = %s", (dim_id,)
-        )
-        adjustment_count = cur.fetchone()["n"]
+    counts = store.count_dimension_references(dim_id)
+    ref_count = counts["ref_count"]
+    adjustment_count = counts["adjustment_count"]
     chroma_count = len(chroma.get_personality_event_ids_by_dimension(dim_id))
     rprint(f"维度 {dim_id}：{dim.description}（OFF，{_counts(dim)}）")
     rprint(

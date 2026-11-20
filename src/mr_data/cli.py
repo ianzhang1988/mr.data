@@ -71,6 +71,7 @@ def dimension_edit(
     if not force and not typer.confirm(f"确认修改维度 {dimension_id} 的描述？"):
         rprint("[dim]已取消。[/dim]")
         return
+    old_dim = pg.get_dimension(dimension_id)
     try:
         pg.update_dimension_description(dimension_id, description.strip())
     except ValueError as exc:
@@ -80,7 +81,12 @@ def dimension_edit(
         "dimension_edit",
         extra={
             "event": "dimension_edit",
-            "details": {"dimension_id": dimension_id, "entry": "cli", "new": description.strip()},
+            "details": {
+                "dimension_id": dimension_id,
+                "entry": "cli",
+                "old": old_dim.description if old_dim else None,
+                "new": description.strip(),
+            },
         },
     )
     rprint(f"[green]✓ 已更新维度 {dimension_id} 的描述[/green]")
@@ -313,10 +319,30 @@ def chat(
                 rprint()
 
     finally:
-        runtime.stop()
+        try:
+            runtime.stop()
+        except Exception as exc:
+            logger.warning(
+                "Failed to stop scheduler",
+                extra={
+                    "event": "cli.scheduler_stop_failed",
+                    "session_id": current_session_id,
+                    "details": {"error": str(exc)},
+                },
+            )
         # 给在途的 /newsession 归因线程收尾机会（daemon 线程，超时即弃）
-        for t in run_threads:
-            t.join(timeout=5)
+        try:
+            for t in run_threads:
+                t.join(timeout=5)
+        except Exception as exc:
+            logger.warning(
+                "Failed to join run threads",
+                extra={
+                    "event": "cli.thread_join_failed",
+                    "session_id": current_session_id,
+                    "details": {"error": str(exc)},
+                },
+            )
         # Ensure the active session is closed so offline attribution can process it.
         try:
             _ask_session_rating(pg, current_session_id)

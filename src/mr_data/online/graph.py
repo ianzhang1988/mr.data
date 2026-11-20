@@ -440,7 +440,7 @@ class DialogueGraph:
             extra={
                 "event": "retrieve.web",
                 "session_id": state["session_id"],
-                "details": {"query": state["retrieval_query"], "result_count": len(docs)},
+                "details": {"query": query, "result_count": len(docs)},
             },
         )
         return {**state, "web_docs": docs}
@@ -527,7 +527,7 @@ class DialogueGraph:
             extra={
                 "event": "retrieve.personality",
                 "session_id": state["session_id"],
-                "details": {"query": state["retrieval_query"], "result_count": len(docs)},
+                "details": {"query": query, "result_count": len(docs)},
             },
         )
         return {**state, "personality_docs": docs}
@@ -555,10 +555,11 @@ class DialogueGraph:
                 # dialogue 与 web 记忆统一计数：recall_count+1 并刷新
                 # last_recalled_at（prune 超时基准）；web 的这两个字段是
                 # WebMemoryMetadata extra 字段，用 getattr 容错缺失场景。
-                self.chroma.increment_memory_recall(recall_doc_ids)
+                found_ids = self.chroma.increment_memory_recall(recall_doc_ids)
                 # Reflect the updated recall_count in the state docs passed downstream.
+                # 只补丁实际命中（found_ids）的文档，与 Chroma 侧计数对齐。
                 for doc in docs:
-                    if doc.id in recall_doc_ids:
+                    if doc.id in found_ids:
                         doc.metadata.recall_count = getattr(doc.metadata, "recall_count", 0) + 1
                         doc.metadata.last_recalled_at = now
             except Exception as exc:
@@ -576,7 +577,7 @@ class DialogueGraph:
             extra={
                 "event": "retrieve.memory",
                 "session_id": state["session_id"],
-                "details": {"query": state["retrieval_query"], "result_count": len(docs)},
+                "details": {"query": query, "result_count": len(docs)},
             },
         )
         return {**state, "memory_docs": docs}
@@ -949,7 +950,7 @@ class DialogueGraph:
         # add_memory 幂等：同 id 已存在则跳过（保留 recall_count/added_at 等），
         # 同页重抓正文不变时同 id 原地刷新；正文变化则 base_id 变化、新 id 全新
         # 写入，不会产生孤儿分片。
-        retrieval_query = state.get("retrieval_query", user_input)
+        retrieval_query = state.get("retrieval_query") or user_input
         retrieved_at = datetime.now(timezone.utc).isoformat()
         for doc in web_docs:
             title = doc.metadata.title

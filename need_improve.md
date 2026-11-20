@@ -17,6 +17,8 @@
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
 
+98. ✅ 低风险批：review/low_risk_triage.md「范围小」16 条（F-2/11/12/13/16/18/19/20/22/23/24/27/28/29/30/31）全部核验属实并修复，triage 文件已逐条标记完成。详见 finished_improvement.md #98。
+
 97. ✅ /newsession 三步（问评分→关旧会话→建新会话）逐项 try/except 保护：评分失败照记日志继续 close→create，close/create 失败提示后保持状态自洽，对话不再因单步数据库抖动整体退出。详见 finished_improvement.md #97。
 
 96. ✅ build_runtime 拆兜：引擎构造失败独立记 offline.engine_init_failed（不再误报成 cron 串非法），cron 校验单独兜 ValueError；TUI 可见行为逐字不变。详见 finished_improvement.md #96。

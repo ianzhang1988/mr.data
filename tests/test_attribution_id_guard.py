@@ -117,6 +117,41 @@ def test_hallucinated_dimension_id_discarded_without_fk_violation(
     assert result.deltas[0].dimension_id is None
     assert _fetch_adjustments(pg) == []  # delta 被丢弃，无 FK 违规炸事务
 
+def test_same_round_duplicate_evidence_deduped(
+    pg_available, chroma_store, temp_log_dir, test_session_id
+):
+    """同一 delta 内重复 evidence_snippets（fix F-27）：vector_refs 与
+    pending_events 只登记 1 次；跨 delta 同 (target, dim, snippet) 同样去重。"""
+    if not pg_available:
+        pytest.skip("PostgreSQL not available")
+
+    pg = PostgresStore()
+    logs, _, assistant_id = _setup_session(pg, test_session_id)
+    llm = DedupFakeLLM(
+        deltas=[
+            _delta(
+                target_dialogue_log_id=assistant_id,
+                evidence_snippets=["重复证据片段", "重复证据片段"],
+            ),
+            # 跨 delta 同维度同片段：方法级 seen 同样拦截
+            _delta(
+                target_dialogue_log_id=assistant_id,
+                evidence_snippets=["重复证据片段"],
+            ),
+        ]
+    )
+
+    engine = AttributionEngine(pg_store=pg, chroma_store=chroma_store, llm=llm)
+    result = engine._attribute_session(test_session_id, logs)
+    assert result is not None
+    applied, events, purge = engine._apply(result, test_session_id, logs)
+
+    evidence_events = [e for e in events if e.source_type == "evidence"]
+    assert len(evidence_events) == 1
+    refs = pg.get_dialogue_vector_refs_by_dimension(1)
+    assert len(refs) == 1 and refs[0].dialogue_log_id == assistant_id
+
+
 def test_valid_target_persists_evidence_and_refs(
     pg_available, chroma_store, temp_log_dir, test_session_id
 ):

@@ -86,6 +86,14 @@ def test_list_pagination(pg, capsys):
     assert len(_data_lines(capsys.readouterr().out)) == total - 20  # 第二页余量
 
 
+def test_list_page_zero_digested(pg, capsys):
+    """页码 0 穿透修复（fix F-29）：就地提示且不打印表头。"""
+    run_dimension_mode(pg, input_fn=_scripted(["/list 0", "/quit"]))
+    out = capsys.readouterr().out
+    assert "页码需 ≥ 1" in out
+    assert "id   core  active" not in out  # 表头未打印
+
+
 def test_list_page_out_of_range_keeps_loop(pg):
     calls = []
     run_dimension_mode(pg, input_fn=_scripted(["/list 9", "/quit"], calls))
@@ -174,6 +182,14 @@ def test_edit_bad_id_digested(pg):
     calls = []
     run_dimension_mode(pg, input_fn=_scripted(["/edit 9999", "/edit abc", "/quit"], calls))
     assert len(calls) == 3  # 错误消化，循环继续
+
+
+def test_missing_id_prompt_uses_command_name(pg, chroma_store, capsys):
+    """缺参提示按命令生成（fix F-28）：/delete 与 /deactivate 各提示自己的用法。"""
+    run_dimension_mode(pg, chroma=chroma_store, input_fn=_scripted(["/delete", "/deactivate", "/quit"]))
+    out = capsys.readouterr().out
+    assert "/delete <id>" in out
+    assert "/deactivate <id>" in out
 
 
 # --- /deactivate / /reactivate ---

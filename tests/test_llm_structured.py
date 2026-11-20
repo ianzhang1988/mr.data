@@ -202,6 +202,26 @@ def test_parse_falls_back_to_content_json_when_parsed_is_none(monkeypatch):
     assert completions.parse_calls == 1
 
 
+def test_parse_fallback_strips_json_fence(monkeypatch):
+    """parsed=None 且 content 带 ```json 围栏：回退走 _extract_json 解析成功（fix F-31）。"""
+    monkeypatch.setattr(settings, "llm_structured_mode", "parse")
+    client = _make_client()
+    completions = _FakeParseCompletions(content='```json\n{"value": 55}\n```')
+
+    def parse_no_parsed(**kwargs):
+        completions.parse_calls += 1
+        message = SimpleNamespace(content=completions.content, parsed=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    completions.parse = parse_no_parsed
+    _inject_parse_api(client, completions)
+
+    result = client.structured_chat([{"role": "user", "content": "x"}], _SimpleResult)
+
+    assert result == {"value": 55}
+    assert completions.parse_calls == 1
+
+
 # ---------------------------------------------------------------------------
 # llm_structured_mode = "parse"
 # ---------------------------------------------------------------------------

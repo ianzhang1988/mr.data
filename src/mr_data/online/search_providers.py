@@ -77,7 +77,7 @@ class DuckDuckGoProvider(SearchProvider):
                 "body": r.get("body", ""),
                 "url": r.get("href", ""),
             }
-            for r in results
+            for r in (results or [])
         ]
         return _to_doc_format(rows[: self.max_results])
 

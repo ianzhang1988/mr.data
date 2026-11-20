@@ -154,6 +154,59 @@ def test_chat_newsession_rating_failure_still_creates_session(
     assert len(capture_events(caplog, "cli.session_rating_failed")) == 2
 
 
+def test_chat_exit_cleanup_survives_scheduler_stop_failure(
+    monkeypatch, caplog, temp_log_dir
+):
+    """改进 F-11：Runtime.stop() 抛异常不穿出 finally——记
+    cli.scheduler_stop_failed 一次，评分询问与 close_session 仍执行。"""
+    closed = []
+    ratings = []
+
+    class FakePG(_FakePostgresStore):
+        def close_session(self, session_id: str) -> None:
+            closed.append(session_id)
+
+        def update_session_rating(self, session_id: str, score: int, comment: str | None) -> None:
+            ratings.append((session_id, score, comment))
+
+    def _raise_stop(self):
+        raise RuntimeError("scheduler stuck")
+
+    monkeypatch.setattr("mr_data.runtime.DialogueGraph", _FakeDialogueGraph)
+    monkeypatch.setattr("mr_data.runtime.PostgresStore", FakePG)
+    monkeypatch.setattr("mr_data.runtime.Runtime.stop", _raise_stop)
+    monkeypatch.setattr(
+        "mr_data.cli.Prompt.ask",
+        _sequential_prompt(["hi", "/exit", "1", "nice"]),
+    )
+    open_log_propagation(caplog, monkeypatch, "mr_data.cli")
+
+    result = runner.invoke(app, ["chat"])
+
+    assert result.exit_code == 0
+    assert len(capture_events(caplog, "cli.scheduler_stop_failed")) == 1
+    assert ratings == [("sess-1", 1, "nice")]  # 评分询问照常执行
+    assert closed == ["sess-1"]  # close_session 照常执行
+
+
+@pytest.mark.usefixtures("reset_pg_state")
+def test_dimension_edit_oneshot_audit_includes_old(pg, caplog, monkeypatch):
+    """改进 F-12：one-shot dimension_edit 审计 details 含 old（对齐交互模式）。"""
+    dim_id = pg.insert_dimension("旧描述")
+    open_log_propagation(caplog, monkeypatch, "mr_data.cli")
+
+    result = runner.invoke(
+        app, ["dimension", "edit", str(dim_id), "--description", "新描述", "--force"]
+    )
+
+    assert result.exit_code == 0
+    recs = capture_events(caplog, "dimension_edit")
+    assert len(recs) == 1
+    assert recs[0].details["old"] == "旧描述"
+    assert recs[0].details["new"] == "新描述"
+    assert recs[0].details["dimension_id"] == dim_id
+
+
 def test_serve_command_defaults_and_overrides(monkeypatch):
     """serve 子命令：默认取 settings，--host/--port 可覆盖；装配走 create_app。"""
     calls = {}

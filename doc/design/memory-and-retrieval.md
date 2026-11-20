@@ -81,7 +81,7 @@ web **管道文档**（web 子管道内流转的 WebDoc）身份即 metadata.url
 - 在线 `_retrieve_memories` 命中后统一调 `increment_memory_recall`：dialogue 与 web 都计数（recall_count+1、刷新 last_recalled_at）。
 - **写回按返回 ids 对齐（Chroma 顺序契约）**：`get(ids=[...])` 返回的是存储序，与请求序无关——任何「按位置把返回的 metadata 配对回请求 id」的写法都是 bug（字段张冠李戴）。**做法**：配对一律以返回的 `ids` 数组为键（`increment_memory_recall` 即以 `found_ids` 对齐写回的范例，新写入路径照此办理）；请求中存在但返回中缺失的 id 跳过并 warning（`chroma.recall_increment_missing_ids`），不抛异常打断对话。
 - **双路径实现**：dialogue 经 `DialogueMemoryMetadata` 模型读-改-写；web 的 recall_count/last_recalled_at 是 `WebMemoryMetadata` 的 extra 字段，走裸 dict 容错路径。功能等价，统一化未做（实现卫生项，非语义问题）。
-- **内存补丁**：计数写库后，state 内文档的 recall_count/last_recalled_at 就地 +1 刷新，保证下游 prompt 渲染与 pruning 看到的是新值。
+- **内存补丁**：计数写库后，state 内文档的 recall_count/last_recalled_at 就地 +1 刷新，保证下游 prompt 渲染与 pruning 看到的是新值。补丁范围以 `increment_memory_recall` 返回的 `found_ids`（实际命中者）为准——已被删的 id 不在补丁集合内，不重复 +1。
 - 计数失败的降级：recall 计数是辅助信号，increment 失败只 warning，已检索到的记忆照常参与本轮对话。
 
 这些数字驱动修剪（#5）；维度计数（success/failure）是 PG 侧的另一套数字，驱动维度淘汰，见 [offline-attribution.md](offline-attribution.md#3)，勿混淆。

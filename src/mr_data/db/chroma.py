@@ -122,7 +122,7 @@ class ChromaStore:
             )
         ]
         backup_dir = self.persist_dir.parent / "chroma-backups"
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
         backup_path = backup_dir / f"{coll.name}-{timestamp}.json"
         payload = {
             "collection": coll.name,
@@ -409,7 +409,7 @@ class ChromaStore:
             return DialogueMemoryMetadata.model_validate(raw)
         return WebMemoryMetadata.model_validate(raw)
 
-    def increment_memory_recall(self, doc_ids: list[str]) -> None:
+    def increment_memory_recall(self, doc_ids: list[str]) -> list[str]:
         """Increment recall_count and update last_recalled_at for dialogue memories.
 
         Chroma ``get(ids=[...])`` returns documents in storage order, not request
@@ -418,7 +418,7 @@ class ChromaStore:
         exist are skipped with a warning instead of crashing the chat turn.
         """
         if not doc_ids:
-            return
+            return []
         # Deduplicate while preserving order; Chroma update expects unique ids.
         unique_ids = list(dict.fromkeys(doc_ids))
         result = self.memories.get(ids=unique_ids, include=["metadatas"])
@@ -462,6 +462,7 @@ class ChromaStore:
             )
         if new_metadatas:
             self.memories.update(ids=found_ids, metadatas=new_metadatas)
+        return found_ids
 
     def prune_stale_memories(
         self, cutoff_days: int, min_recall_count: int
@@ -520,5 +521,19 @@ class ChromaStore:
                 ids_to_delete.append(doc_id)
 
         if ids_to_delete:
-            self.memories.delete(ids=ids_to_delete)
+            try:
+                self.memories.delete(ids=ids_to_delete)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete stale memories during pruning",
+                    extra={
+                        "event": "chroma.prune_failed",
+                        "details": {
+                            "cutoff_days": cutoff_days,
+                            "min_recall_count": min_recall_count,
+                            "error": str(exc),
+                        },
+                    },
+                )
+                return 0
         return len(ids_to_delete)

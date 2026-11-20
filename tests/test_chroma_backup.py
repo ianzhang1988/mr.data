@@ -149,6 +149,19 @@ def test_export_failure_blocks_deletion(backup_store, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 备份文件名唯一性（F-23：时间戳含毫秒，同进程连续导出不碰撞）
+# ---------------------------------------------------------------------------
+
+
+def test_backup_filenames_unique_within_same_process(backup_store):
+    store = backup_store
+    _seed_personality(store, n=1)
+    p1 = store._export_collection_backup(store.personality)
+    p2 = store._export_collection_backup(store.personality)
+    assert p1.name != p2.name
+
+
+# ---------------------------------------------------------------------------
 # 恢复
 # ---------------------------------------------------------------------------
 

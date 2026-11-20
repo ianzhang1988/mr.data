@@ -146,8 +146,9 @@ class LLMClient:
         message = resp.choices[0].message
         if message.parsed is not None:
             return message.parsed.model_dump()
-        content = message.content or "{}"
-        return json.loads(content)
+        # 与 prompt 路径一致：剥 ```json 围栏等噪音后按 schema 校验（fix F-31）。
+        data = _extract_json(message.content or "")
+        return response_format.model_validate(data).model_dump()
 
     def _structured_chat_via_prompt(
         self,

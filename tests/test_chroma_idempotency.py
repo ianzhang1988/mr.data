@@ -6,6 +6,8 @@
 （_stable_web_id 各分支用例已随改进 78 删除该函数一并移除。）
 """
 
+import logging
+
 import pytest
 
 from mr_data.db.chroma import (
@@ -230,3 +232,41 @@ def test_prune_stale_memories(chroma_store, memory_form):
     else:
         remaining_ids = {d.id for d in remaining}
         assert "web:old" not in remaining_ids
+
+
+def test_prune_stale_memories_delete_failure_returns_zero(chroma_store, monkeypatch, caplog):
+    """F-16：删除阶段抛异常时兜底——返回 0 并记 chroma.prune_failed，不向上抛。"""
+    from datetime import datetime, timedelta, timezone
+
+    from conftest import capture_events, open_log_propagation
+
+    session_id = "prune-fail-session"
+    old_time = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    chroma_store.add_memory(
+        session_id,
+        "user: old stale dialogue",
+        metadata=DialogueMemoryMetadata(
+            session_id=session_id,
+            added_at=old_time,
+            last_recalled_at=old_time,
+        ),
+    )
+
+    def _failing_delete(self, ids):
+        raise RuntimeError("chroma delete boom")
+
+    # memories 是 property，每次访问可能拿到不同 wrapper；patch 类方法才稳
+    coll = chroma_store.memories
+    monkeypatch.setattr(type(coll), "delete", _failing_delete)
+
+    open_log_propagation(caplog, monkeypatch, "mr_data.chroma")
+    caplog.set_level(logging.WARNING, logger="mr_data.chroma")
+    pruned = chroma_store.prune_stale_memories(cutoff_days=90, min_recall_count=1)
+
+    assert pruned == 0
+    failed = capture_events(caplog, "chroma.prune_failed")
+    assert failed
+    details = failed[0].details
+    assert details["cutoff_days"] == 90
+    assert details["min_recall_count"] == 1
+    assert "chroma delete boom" in details["error"]

@@ -8,7 +8,7 @@ from mr_data.online import DialogueGraph
 from mr_data.online.page_extract import ExtractedPage
 from mr_data.online.search_providers import SearxngProvider
 
-from conftest import FakeLLMClient
+from conftest import FakeLLMClient, capture_events, open_log_propagation
 
 
 def test_searxng_preserves_base_url_subpath(monkeypatch):
@@ -194,10 +194,11 @@ def test_retrieve_memories_counts_web_recall(chroma_store, monkeypatch):
     monkeypatch.setattr(chroma_store, "query_memories", lambda *a, **k: [doc])
 
     captured = {}
-    original = chroma_store.increment_memory_recall
 
     def _spy(doc_ids):
         captured["doc_ids"] = list(doc_ids)
+        # 与真实 ChromaStore 契约一致：返回实际命中的 id 集合。
+        return list(doc_ids)
 
     monkeypatch.setattr(chroma_store, "increment_memory_recall", _spy)
 
@@ -213,4 +214,84 @@ def test_retrieve_memories_counts_web_recall(chroma_store, monkeypatch):
     meta = result["memory_docs"][0].metadata
     assert meta.recall_count == 1
     assert meta.last_recalled_at
+
+
+def test_retrieve_events_log_effective_query(chroma_store, monkeypatch, caplog):
+    """F-18：retrieve.* 事件的 details.query 记实际生效查询词（think 改写后的
+    search_query/personality_query/memory_query），而非 retrieval_query。"""
+    graph = DialogueGraph(
+        pg_store=object(),
+        chroma_store=chroma_store,
+        llm=FakeLLMClient(),
+        enable_web_search=True,
+    )
+    open_log_propagation(caplog, monkeypatch)  # 须在 graph 构造后（构造会重置 propagate）
+
+    class _StubWebSearch:
+        def search(self, query):
+            return []
+
+    monkeypatch.setattr(graph, "web_search", _StubWebSearch())
+    monkeypatch.setattr(chroma_store, "query_personality", lambda *a, **k: [])
+    monkeypatch.setattr(chroma_store, "query_memories", lambda *a, **k: [])
+
+    state = {
+        "session_id": "test-session",
+        "user_input": "用户原始输入",
+        "retrieval_query": "统一改写检索词",
+        "search_query": "改写后的搜索词",
+        "personality_query": "改写后的性格词",
+        "memory_query": "改写后的记忆词",
+    }
+    graph._retrieve_web(state)
+    graph._retrieve_personality(state)
+    graph._retrieve_memories(state)
+
+    web = capture_events(caplog, "retrieve.web")
+    personality = capture_events(caplog, "retrieve.personality")
+    memory = capture_events(caplog, "retrieve.memory")
+    assert len(web) == len(personality) == len(memory) == 1
+    assert web[0].details["query"] == "改写后的搜索词"
+    assert personality[0].details["query"] == "改写后的性格词"
+    assert memory[0].details["query"] == "改写后的记忆词"
+
+
+def test_retrieve_memories_recall_patch_only_found_ids(chroma_store, monkeypatch):
+    """F-20：increment_memory_recall 返回实际命中集合 found_ids，内存补丁只给
+    命中文档 +1；未命中（如存储中已不存在）的文档 recall_count 保持原值。"""
+    from mr_data.models import DialogueMemoryMetadata, MemoryDoc
+
+    graph = _make_graph(chroma_store)
+    docs = [
+        MemoryDoc(
+            id="mem:hit",
+            page_content="命中记忆",
+            metadata=DialogueMemoryMetadata(session_id="old-session"),
+        ),
+        MemoryDoc(
+            id="mem:miss",
+            page_content="未命中记忆",
+            metadata=DialogueMemoryMetadata(session_id="old-session"),
+        ),
+    ]
+
+    monkeypatch.setattr(chroma_store, "query_memories", lambda *a, **k: docs)
+    # 模拟 Chroma 实际命中集合：只命中 mem:hit（mem:miss 在库中已不存在）。
+    monkeypatch.setattr(
+        chroma_store, "increment_memory_recall", lambda doc_ids: ["mem:hit"]
+    )
+
+    state = {
+        "session_id": "test-session",
+        "user_input": "测试输入",
+        "memory_query": "测试记忆查询",
+        "retrieval_query": "测试记忆查询",
+    }
+    result = graph._retrieve_memories(state)
+
+    by_id = {doc.id: doc for doc in result["memory_docs"]}
+    assert by_id["mem:hit"].metadata.recall_count == 1
+    assert by_id["mem:hit"].metadata.last_recalled_at
+    assert by_id["mem:miss"].metadata.recall_count == 0
+    assert not by_id["mem:miss"].metadata.last_recalled_at
 

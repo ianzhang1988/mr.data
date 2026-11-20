@@ -95,3 +95,34 @@ def test_dispatcher_returns_empty_for_blank_query():
     tool = web_search.WebSearchTool(providers=["fake_success"])
     assert tool.search("") == []
     assert tool.search("   ") == []
+
+
+def test_duckduckgo_none_results_returns_empty(caplog, monkeypatch):
+    """F-19：ddgs.text 某些版本无结果时返回 None（而非 []），provider 应
+    返回 [] 且不产生 web.search_failed 事件。"""
+    import sys
+    import types
+
+    from mr_data.online.search_providers import DuckDuckGoProvider
+
+    from conftest import capture_events, open_log_propagation
+
+    class _FakeDDGS:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def text(self, query, max_results=None):
+            return None
+
+    fake_module = types.ModuleType("duckduckgo_search")
+    fake_module.DDGS = _FakeDDGS
+    monkeypatch.setitem(sys.modules, "duckduckgo_search", fake_module)
+
+    open_log_propagation(caplog, monkeypatch)
+
+    provider = DuckDuckGoProvider()
+    assert provider.search("hello") == []
+    assert capture_events(caplog, "web.search_failed") == []

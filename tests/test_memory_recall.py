@@ -75,3 +75,16 @@ def test_increment_mixed_dialogue_and_web_keeps_metadata_shape(chroma_store):
     assert web_meta["last_recalled_at"]
     # web 文档不被注入 dialogue 形态字段（如 added_at）
     assert "added_at" not in web_meta
+
+
+def test_increment_returns_only_found_ids(chroma_store):
+    """F-20：返回值是实际命中的 found_ids，缺失 id 不混入。"""
+    _add_dialogue_memory(chroma_store, "mem:a", recall_count=0)
+
+    found = chroma_store.increment_memory_recall(["mem:a", "mem:missing"])
+
+    assert found == ["mem:a"]
+
+
+def test_increment_empty_input_returns_empty_list(chroma_store):
+    assert chroma_store.increment_memory_recall([]) == []

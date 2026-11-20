@@ -659,6 +659,9 @@ class AttributionEngine:
         applied = 0
         pending_events: list[PersonalityEvent] = []
         pending_purge: list[int] = []
+        # 同轮证据去重（fix F-27）：同一 (target_log_id, dim_id, snippet) 跨 delta
+        # 也只登记一次，避免重复 INSERT vector_refs 与 Chroma 同 id 冲突。
+        seen_evidence: set[tuple[int, int, str]] = set()
         for delta in result.deltas:
             dim_id = delta.dimension_id
             if dim_id is None and delta.new_dimension_description:
@@ -707,6 +710,10 @@ class AttributionEngine:
             if delta.evidence_snippets and target_log_id is not None:
                 context = self._build_evidence_context(logs, target_log_id)
                 for snippet in delta.evidence_snippets:
+                    key = (target_log_id, dim_id, snippet)
+                    if key in seen_evidence:
+                        continue
+                    seen_evidence.add(key)
                     doc_id = evidence_doc_id(target_log_id, dim_id, snippet)
                     pending_events.append(
                         PersonalityEvent(

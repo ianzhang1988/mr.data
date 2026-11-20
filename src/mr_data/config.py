@@ -178,17 +178,36 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _fill_default_paths(self) -> "Settings":
-        """填充未显式设置的路径默认值（锚定项目根），填充后字段保持 str。"""
-        if self.data_dir is None:
+        """填充未显式设置的路径默认值（锚定项目根），填充后字段保持 str。
+
+        空串（.env 等号后留空的合法语法）与 None 同义，等同未设置——
+        防止 Path("") 解析为 CWD、派生路径退化成相对路径（改进 100）。"""
+        if not self.data_dir:
             self.data_dir = str(_PROJECT_ROOT / "data")
-        if self.pgembed_data_dir is None:
+        if not self.pgembed_data_dir:
             self.pgembed_data_dir = str(Path(self.data_dir) / "pgembed")
-        if self.chroma_persist_dir is None:
+        if not self.chroma_persist_dir:
             self.chroma_persist_dir = str(Path(self.data_dir) / "chroma")
-        if self.personality_file is None:
+        if not self.personality_file:
             self.personality_file = str(Path(self.data_dir) / "personalities" / "data.json")
-        if self.log_dir is None:
+        if not self.log_dir:
             self.log_dir = str(_PROJECT_ROOT / "logs")
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_and_validate_strings(self) -> "Settings":
+        """空串治理（改进 100）：无文档空语义的字段在此归一或响亮失败。"""
+        if not self.server_host:
+            # 空串会被 uvicorn 原样存下并静默绑定 0.0.0.0，回退回环
+            self.server_host = "127.0.0.1"
+        if not self.tokenizer_model:
+            # 空串让 tiktoken KeyError 被吞、token 计数静默降级 char/4
+            self.tokenizer_model = "cl100k_base"
+        if self.llm_structured_mode not in {"parse", "prompt", "auto"}:
+            raise ValueError(
+                f"llm_structured_mode 仅允许 parse/prompt/auto，当前值："
+                f"{self.llm_structured_mode!r}（.env 等号后留空请改为 auto 或删除该行）"
+            )
         return self
 
 

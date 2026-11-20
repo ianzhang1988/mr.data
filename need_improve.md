@@ -12,10 +12,12 @@
 
 # 待改进
 
-（空——remaining_items.md 中 F-25 / F-7 / F-9 / F-17 待后续拍板立项，不在本文件驱动）
+（空——remaining_items.md 中 F-7 / F-9 / F-17 待后续拍板立项，不在本文件驱动）
 
 # 已完成的改进项
 （保留最近三条，完成的条目放到 finished_improvement.md 中归档；35-84 已迁移归档）
+
+100. ✅ F-25 配置空串治理：5 路径字段空串等同未设置走项目根默认（Path("")=CWD 根治）；server_host 空串回退 127.0.0.1、tokenizer_model 回退 cl100k_base、llm_structured_mode 枚举校验响亮失败；teardown 加空目标/CWD 删除拒绝守卫；.env.example 注释声明空语义。详见 finished_improvement.md #100。
 
 99. ✅ F-10 行级归因状态三态化：`dialogue_logs` 新列 `attribution_status`（unprocessed/processed/failed）替换 boolean，死信落葬置 failed 不再伪装已处理；schema 幂等迁移（旧列回填后 DROP）、批号 x/y 计数含 failed 不回退；契约 offline-attribution.md #1 B2/2a 与 database-design.md 同步；死信重跑工具未做留待立项。详见 finished_improvement.md #99。
 

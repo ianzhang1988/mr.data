@@ -94,3 +94,60 @@ def test_chunk_chars_default_within_embedding_limit(clean_path_env):
     s = make_settings()
     assert s.memory_dialogue_chunk_chars == 400
     assert s.embedding_max_tokens == 512
+
+
+# --- 空串治理（改进 100）：.env 等号后留空解析为 ""，须等同未设置 ---
+
+_PATH_FIELDS = [
+    "data_dir",
+    "pgembed_data_dir",
+    "chroma_persist_dir",
+    "personality_file",
+    "log_dir",
+]
+
+_PATH_DEFAULTS = {
+    "data_dir": PROJECT_ROOT / "data",
+    "pgembed_data_dir": PROJECT_ROOT / "data" / "pgembed",
+    "chroma_persist_dir": PROJECT_ROOT / "data" / "chroma",
+    "personality_file": PROJECT_ROOT / "data" / "personalities" / "data.json",
+    "log_dir": PROJECT_ROOT / "logs",
+}
+
+
+@pytest.mark.parametrize("field", _PATH_FIELDS)
+def test_empty_string_path_field_falls_back_to_default(clean_path_env, field):
+    """5 个路径字段显式给空串 → 项目根锚定默认值（Path("")=CWD 根治）。"""
+    s = Settings(_env_file=None, **{field: ""})
+    assert getattr(s, field) == str(_PATH_DEFAULTS[field])
+
+
+def test_empty_data_dir_derived_paths_stay_anchored(clean_path_env):
+    """data_dir 空串时全部派生路径仍锚定项目根，不退化为 CWD 相对路径。"""
+    s = Settings(_env_file=None, data_dir="")
+    assert s.data_dir == str(PROJECT_ROOT / "data")
+    assert s.pgembed_data_dir == str(PROJECT_ROOT / "data" / "pgembed")
+    assert s.chroma_persist_dir == str(PROJECT_ROOT / "data" / "chroma")
+    assert s.personality_file == str(PROJECT_ROOT / "data" / "personalities" / "data.json")
+
+
+def test_empty_server_host_falls_back_to_loopback(clean_path_env):
+    """空串不再被 uvicorn 静默绑成 0.0.0.0。"""
+    assert Settings(_env_file=None, server_host="").server_host == "127.0.0.1"
+
+
+def test_empty_tokenizer_model_falls_back_to_default(clean_path_env):
+    """空串不再让 tiktoken KeyError 被吞、静默降级 char/4。"""
+    assert Settings(_env_file=None, tokenizer_model="").tokenizer_model == "cl100k_base"
+
+
+@pytest.mark.parametrize("mode", ["parse", "prompt", "auto"])
+def test_llm_structured_mode_valid_values(clean_path_env, mode):
+    assert Settings(_env_file=None, llm_structured_mode=mode).llm_structured_mode == mode
+
+
+@pytest.mark.parametrize("mode", ["", "xml", "AUTO"])
+def test_llm_structured_mode_invalid_values_raise(clean_path_env, mode):
+    """空串/非法值响亮失败（此前空串静默等价 auto）。"""
+    with pytest.raises(ValueError, match="llm_structured_mode"):
+        Settings(_env_file=None, llm_structured_mode=mode)

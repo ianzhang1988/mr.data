@@ -611,6 +611,22 @@ def teardown(
 
     pgembed_dir = Path(settings.pgembed_data_dir)
     chroma_dir = Path(settings.chroma_persist_dir)
+    # 纵深防御（改进 100）：配置归一后此处不应触发；但删除目标为空/CWD
+    # 时 rmtree 会清空当前工作目录，必须拒绝执行。
+    for name, target in (("pgembed_data_dir", pgembed_dir), ("chroma_persist_dir", chroma_dir)):
+        if not str(target) or target.resolve() == Path.cwd().resolve():
+            rprint(
+                f"[red]teardown 拒绝执行：{name} 解析为异常目标 {target!s}（空路径或当前工作目录），"
+                "请检查配置。[/red]"
+            )
+            logger.warning(
+                "teardown refused: unsafe target",
+                extra={
+                    "event": "cli.teardown_refused",
+                    "details": {"reason": "unsafe_target", "field": name, "target": str(target)},
+                },
+            )
+            raise typer.Exit(1)
     if not force:
         confirm = typer.confirm(
             "将删除以下目录及其全部内容：\n"

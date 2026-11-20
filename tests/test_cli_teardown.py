@@ -39,3 +39,16 @@ def test_teardown_refuses_with_external_dsn(tmp_path, monkeypatch):
     assert "teardown 仅支持 pgembed 嵌入式模式" in result.output
     assert pgembed_dir.exists()
     assert chroma_dir.exists()
+
+
+def test_teardown_refuses_unsafe_empty_target(tmp_path, monkeypatch):
+    """改进 100：删除目标为空串（Path("") = CWD）时拒绝执行，不能 rmtree CWD。"""
+    _, chroma_dir = _fake_data_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "postgres_dsn", "")
+    monkeypatch.setattr(settings, "pgembed_data_dir", "")
+
+    result = runner.invoke(app, ["teardown", "--force"])
+
+    assert result.exit_code == 1
+    assert "teardown 拒绝执行" in result.output
+    assert chroma_dir.exists()

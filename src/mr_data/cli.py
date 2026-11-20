@@ -18,10 +18,8 @@ from mr_data.llm import LLMClient
 from mr_data.logging import get_logger
 from mr_data.models import DialogueLog, PersonalityEvent, UserIdentity
 from mr_data.offline import (
-    OFFLINE_ADVISORY_LOCK_KEY,
     AttributionEngine,
     OfflineScheduler,
-    advisory_lock,
     guarded_offline_run,
 )
 from mr_data.runtime import build_runtime
@@ -111,6 +109,13 @@ def _newsession_offline_run(engine, dsn: str) -> None:
         rprint("[yellow]另一个离线归因正在运行，本次跳过，对话继续。[/yellow]")
     elif status == "completed":
         rprint("[dim]会话已关闭，离线归因在后台完成。[/dim]")
+    elif status == "failed":
+        # 失败详情已由护栏记 warning（offline.newsession_run_failed）；
+        # 失败是暂时的——未处理标记还在，下个 cron 整点自动重试。
+        rprint(
+            "[yellow]离线归因本次未成功，将在下个定时周期自动重试；"
+            "详情见日志。[/yellow]"
+        )
 
 
 def _ensure_session(pg: PostgresStore, session_id: Optional[str]) -> str:
@@ -388,16 +393,14 @@ def offline() -> None:
     pg.init_schema()
     pg.seed()
     engine = AttributionEngine(pg_store=pg)
-    # 与 chat 内嵌定时调度共用同一把 PG advisory lock，跨进程互斥
-    with advisory_lock(pg.dsn, OFFLINE_ADVISORY_LOCK_KEY) as acquired:
-        if not acquired:
-            rprint("[yellow]另一个离线归因正在运行（定时调度或其他进程），本次跳过。[/yellow]")
-            logger.warning(
-                "Offline attribution already running, manual run skipped",
-                extra={"event": "offline.manual_skipped_locked"},
-            )
-            raise typer.Exit(1)
-        engine.run()
+    # 与定时调度/newsession 收敛到同一双层护栏（改进 101 F-9）；
+    # locked/busy 提示后退出码 1，failed 详情在护栏 warning 日志里。
+    status = guarded_offline_run(engine, pg.dsn, source="manual")
+    if status in ("locked", "busy"):
+        rprint("[yellow]另一个离线归因正在运行，本次跳过。[/yellow]")
+        raise typer.Exit(1)
+    if status == "failed":
+        raise typer.Exit(1)
 
 
 @app.command()

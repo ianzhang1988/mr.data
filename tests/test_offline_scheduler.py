@@ -186,6 +186,100 @@ def test_cli_offline_skips_when_locked(
     assert created and not created[0].ran  # 持锁冲突：未执行归因
 
 
+def test_cli_offline_completed_exit_zero(
+    pg_available, reset_pg_state, temp_log_dir, monkeypatch
+):
+    """F-9 收敛后：手动 offline 正常完成退出码 0（guarded_offline_run completed）。"""
+    created = []
+
+    class FakeEngine:
+        def __init__(self, pg_store=None):
+            created.append(self)
+            self.ran = False
+
+        def run(self):
+            self.ran = True
+
+    monkeypatch.setattr("mr_data.cli.AttributionEngine", FakeEngine)
+
+    result = runner.invoke(app, ["offline"])
+
+    assert result.exit_code == 0
+    assert created[0].ran
+
+
+def test_cli_offline_failed_exit_one(
+    pg_available, reset_pg_state, temp_log_dir, caplog, monkeypatch
+):
+    """F-9：engine.run() 抛异常 → guarded 吞栈记 warning，CLI 退出码 1、
+    traceback 不上屏（拍板接受的可见性取舍）。"""
+
+    class FakeEngine:
+        def __init__(self, pg_store=None):
+            pass
+
+        def run(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("mr_data.cli.AttributionEngine", FakeEngine)
+    open_log_propagation(caplog, monkeypatch, "mr_data.offline")
+
+    result = runner.invoke(app, ["offline"])
+
+    assert result.exit_code == 1
+    assert len(capture_events(caplog, "offline.manual_run_failed")) == 1
+    assert "Traceback" not in result.output
+
+
+def test_cli_offline_skips_when_inprocess_busy(
+    pg_available, reset_pg_state, temp_log_dir, monkeypatch
+):
+    """F-9：进程内 _RUN_LOCK 被占（如同进程定时调度在跑）→ busy → 退出码 1、
+    未执行归因（手动路径补齐了原缺失的进程内互斥）。"""
+    created = []
+
+    class FakeEngine:
+        def __init__(self, pg_store=None):
+            created.append(self)
+            self.ran = False
+
+        def run(self):
+            self.ran = True
+
+    monkeypatch.setattr("mr_data.cli.AttributionEngine", FakeEngine)
+
+    _RUN_LOCK.acquire()
+    try:
+        result = runner.invoke(app, ["offline"])
+    finally:
+        _RUN_LOCK.release()
+
+    assert result.exit_code == 1
+    assert created and not created[0].ran
+    assert "跳过" in result.output
+
+
+# ---------- CLI：/newsession 后台归因失败提示（F-17） ----------
+
+
+def test_newsession_offline_failed_shows_retry_hint(
+    pg_available, reset_pg_state, temp_log_dir, capsys, caplog, monkeypatch
+):
+    """F-17：后台归因 failed 不再是静默——提示会重试、详情看日志（yellow）。"""
+    import mr_data.cli as cli
+
+    engine = _FakeEngine(dsn=PostgresStore().dsn, fail=True)
+    open_log_propagation(caplog, monkeypatch, "mr_data.offline")
+
+    cli._newsession_offline_run(engine, engine.pg.dsn)
+
+    out = capsys.readouterr().out
+    assert "自动重试" in out
+    assert "日志" in out
+    # 失败详情仍在护栏 warning 里（提示不替代日志）
+    assert len(capture_events(caplog, "offline.newsession_run_failed")) == 1
+
+
 # ---------- CLI：chat 内嵌调度生命周期 ----------
 
 

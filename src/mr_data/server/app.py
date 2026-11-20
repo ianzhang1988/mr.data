@@ -76,8 +76,10 @@ def create_app(
     """应用工厂（§2 决策 2）。依赖为 None 时按 TUI 相同默认值装配共享单例；
     非 None 时原样使用（测试经 TestClient 注入 FakeLLM/假 store，零真实基建）。
 
-    start_scheduler：默认（None）仅在默认装配路径启动调度器（镜像 TUI）；
-    注入依赖的测试路径默认不启动，避免守护线程噪音，可显式传 True 覆盖。
+    start_scheduler：默认（None）仅在默认装配路径启动调度器（镜像 TUI），
+    注入依赖的测试路径默认不启动，避免守护线程噪音。
+    注意：该参数只在默认装配路径生效——注入路径没有 runtime 可供启动，
+    传 True 也不会启动调度器（改进 101 F-7）。
     """
     startup_warnings: list[str] = []
     if graph is None or pg is None:

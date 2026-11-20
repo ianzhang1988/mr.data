@@ -8,7 +8,7 @@ AttributionEngine.run()，/newsession 在另一个守护线程中异步执行同
 触发通道（三条，共用 guarded_offline_run 的同一双层护栏）：
 1. cron 定时调度（OfflineScheduler 守护线程，tick()）；
 2. chat 内 /newsession：关闭会话后异步触发一次（改进 86）；
-3. 手动 `mr-data offline` 命令（cli.py 直接用 advisory_lock，同一把锁）。
+3. 手动 `mr-data offline` 命令（cli.py 调 guarded_offline_run，source="manual"）。
 
 竞争状态保护（双层，实现在 guarded_offline_run）：
 - 进程内：模块级 _RUN_LOCK 非阻塞获取，包住「advisory lock + run」全程

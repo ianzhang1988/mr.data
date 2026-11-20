@@ -174,7 +174,7 @@ CREATE INDEX idx_dialogue_processed ON dialogue_logs(processed_for_attribution);
 | `vector_doc_id` | TEXT | Chroma 中的文档 ID 或网络结果 ID |
 | `source_type` | TEXT | `line`、`event`、`evidence`、`web` 或 `dialogue` |
 | `content` | TEXT | 向量库/网络返回的文本快照 |
-| `dimension_ids` | TEXT | 该素材关联的维度 ID 列表，逗号分隔 |
+| `dimension_ids` | TEXT | 该素材关联的维度 ID，逗号分隔仅为序列化形态。契约：人格素材（event/evidence）恒单个——一篇文档只属一个维度（offline-attribution.md #4 单维不变式）；line 与记忆素材（web/dialogue）恒空 |
 | `created_at` | TIMESTAMPTZ | 创建时间 |
 
 - 一条助手回复可对应多条向量素材记录。
@@ -225,7 +225,7 @@ CREATE INDEX idx_vector_ref_dialogue ON dialogue_vector_refs(dialogue_log_id);
 | schema 类 | 存储位置 | 写入路径 | 说明 |
 |------|------|----------|------|
 | `DialogueLogMetadata` | PG `dialogue_logs.metadata`（JSONB） | `graph.py _log_dialogue` | `inner_monologue` + `blocks`（list[`ReplyBlock`]，含各块 `references`）；读回由 pydantic 自动从 JSONB dict validate，历史遗留行的顶层 `references` 等多余 key 被忽略 |
-| `PersonalityDocMetadata` | Chroma `personality` 集合 | `chroma.add_personality_event` | `utterance/context/speaker/source_type/source_id` + `dimension_ids`（领域形态 `list[int]`，落库时 `to_chroma_metadata()` 转 CSV 字符串，读回 `from_chroma_metadata()` 解析回 `list[int]`） |
+| `PersonalityDocMetadata` | Chroma `personality` 集合 | `chroma.add_personality_event` | `utterance/context/speaker/source_type/source_id` + `dimension_ids`（领域形态 `list[int]`，落库时 `to_chroma_metadata()` 转 CSV 字符串，读回 `from_chroma_metadata()` 解析回 `list[int]`；契约恒单元素——一篇文档只属一个维度，见 offline-attribution.md #4 单维不变式） |
 | `DialogueMemoryMetadata` | Chroma `memories` 集合 | `attribution._persist_session_memories` | `source_type="dialogue"` + `session_id/chunk_index/first/last_dialogue_log_id/recall_count/added_at/last_recalled_at` |
 | `WebMemoryMetadata` | Chroma `memories` 集合 | `graph.py _log_dialogue`（web 资料落库） | `source_type="web"` + `url/title/retrieved_at/retrieval_session_id/query` |
 

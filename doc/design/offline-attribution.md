@@ -54,11 +54,12 @@
 
 **本节回答：归因除了改计数，还给人格向量库「发育」什么。** 设计意图：归因证据与事件摘要是人格素材（line/event/evidence）的演化来源——维度不只能被计数，还能积累支撑自己的素材。（evidence/event 术语定义见 [02-glossary.md](02-glossary.md#1)）
 
-- **evidence**：每个证据片段一条文档——embedding 用 target 行前后窗口的上下文（`[target-2, target+1]` 四条），metadata 挂 dimension_ids、source_id=target 日志 id；PG `dialogue_vector_refs` 同步登记（doc id 在事务内预算，先于 Chroma 写入落库）。
-- **event**：event_summary 一条文档，同上形态（context 为空则嵌入摘要本体）。
+- **单维不变式**：一篇性格向量文档只关联一个维度，系统不存在跨维度文档。保证来自 id 派生与生产结构——`evidence_doc_id`/`event_doc_id` 以 dim_id 为哈希原料，素材按 delta（维度级）逐篇生成；同一内容支撑多个维度时复制成多篇单维文档，而非共享一篇。推论：按维度删除即整篇删除，是正确语义；ingest 台词（line）不带维度。
+- **evidence**：每个证据片段一条文档——embedding 用 target 行前后窗口的上下文（`[target-2, target+1]` 四条），metadata 挂所属维度 id（恒单个）与 source_id=target 日志 id；PG `dialogue_vector_refs` 同步登记（doc id 在事务内预算，先于 Chroma 写入落库）。
+- **event**：event_summary 一条文档，同上形态（context 为空则嵌入摘要本体，维度恒单个）。
 - **守卫**：无有效 target_log_id 时证据/事件不写向量库（doc id 哈希原料含 target，"None" 会污染确定性 id 与追溯链），跳过并记 info 日志。
 - 文档 id 稳定派生（`evidence_doc_id`/`event_doc_id`），重放幂等，见 [memory-and-retrieval.md](memory-and-retrieval.md#2)。
-- **维度淘汰 purge**：先按 PG refs 找该维度的文档删除并清 refs，再兜底扫描 personality 集合 metadata 中 dimension_ids 含该维度的残留文档。改进 62 后 ingest 台词不再关联维度（dimension_ids=[]），「淘汰误删共享素材」的现实场景已消除；evidence/event 均为单维度文档。
+- **维度淘汰 purge**：先按 PG refs 找该维度的文档删除并清 refs，再兜底扫描 personality 集合 metadata 中 dimension_ids 含该维度的残留文档。ingest 台词不关联维度、不参与 purge；evidence/event 与维度一一对应，按维度删除即整篇删除，无误伤空间。
 
 ## 5. 会话沉淀
 
